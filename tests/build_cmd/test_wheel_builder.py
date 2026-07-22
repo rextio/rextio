@@ -1,11 +1,91 @@
 from __future__ import annotations
 
-import zipfile
+import hashlib
+import os
+import stat
 import sys
 import sysconfig
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
+import rextio.build.wheel_builder as wheel_builder
+from rextio.build.full_c6_output_license import (
+    OutputWheelLicenseContract,
+    OutputWheelLicenseFile,
+)
 from rextio.build.wheel_builder import build_artifact_wheel
+
+
+def _external_contract() -> wheel_builder.ExternalWheelContract:
+    payloads = {
+        "demo_pkg/__init__.py": b"def affine(x): return x + 1\n",
+        "demo_pkg-1.0.0.dist-info/METADATA": b"metadata",
+        "demo_pkg-1.0.0.dist-info/WHEEL": b"wheel",
+        "demo_pkg-1.0.0.dist-info/licenses/LICENSE": b"license",
+        "demo_pkg-1.0.0.dist-info/RECORD": b"record",
+    }
+    identities = tuple(
+        wheel_builder.ExternalWheelMemberIdentity(
+            path=path,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            size=len(payload),
+        )
+        for path, payload in sorted(payloads.items())
+    )
+    return wheel_builder.ExternalWheelContract(
+        package="demo_pkg",
+        distribution="demo-pkg",
+        version="1.0.0",
+        source_members=("demo_pkg/__init__.py",),
+        external_members=identities,
+    )
+
+
+def _output_license_contract() -> OutputWheelLicenseContract:
+    return OutputWheelLicenseContract(
+        expression="MIT",
+        files=(
+            OutputWheelLicenseFile(
+                path="LICENSE",
+                data=b"Permission is hereby granted.\n",
+            ),
+        ),
+    )
+
+
+def _rewrite_wheel_with_exact_record(
+    wheel: Path,
+    mutate: Callable[[dict[str, bytes]], None],
+) -> None:
+    with zipfile.ZipFile(wheel) as archive:
+        payloads = {
+            info.filename: archive.read(info)
+            for info in archive.infolist()
+            if not info.filename.endswith(".dist-info/RECORD")
+        }
+        record_name = next(
+            info.filename
+            for info in archive.infolist()
+            if info.filename.endswith(".dist-info/RECORD")
+        )
+    mutate(payloads)
+    rows = [
+        f"{name},{wheel_builder._hash_record(data)},{len(data)}"
+        for name, data in payloads.items()
+    ]
+    rows.append(f"{record_name},,")
+    payloads[record_name] = ("\n".join(rows) + "\n").encode("utf-8")
+    rewritten = wheel.with_suffix(".rewritten")
+    with zipfile.ZipFile(rewritten, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in payloads.items():
+            info = zipfile.ZipInfo(name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, data)
+    rewritten.replace(wheel)
 
 
 def test_build_artifact_wheel_is_deterministic_and_records_files(tmp_path: Path) -> None:
@@ -114,3 +194,553 @@ def test_ctypes_payload_does_not_shadow_its_python_wrapper(tmp_path: Path) -> No
         names = set(archive.namelist())
     assert "pkg/libfoo.py" in names  # wrapper survives
     assert "pkg/libfoo.native.dylib" in names
+
+
+def test_external_wheel_contract_pins_requirement_and_excludes_source(
+    tmp_path: Path,
+) -> None:
+    contract_type = getattr(wheel_builder, "ExternalWheelContract", None)
+    verifier = getattr(wheel_builder, "verify_external_wheel_contract", None)
+    assert contract_type is not None, "external wheel contract is not implemented"
+    assert verifier is not None, "external wheel verifier is not implemented"
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    contract = _external_contract()
+
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+
+    assert result.status == "built"
+    assert result.path is not None
+    verified = verifier(Path(result.path), contract)
+    assert verified.requirement == "demo-pkg==1.0.0"
+    with zipfile.ZipFile(result.path) as archive:
+        names = archive.namelist()
+        metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+        metadata = archive.read(metadata_name).decode("utf-8")
+    assert metadata.count("Requires-Dist: demo-pkg==1.0.0\n") == 1
+    assert "demo_pkg/__init__.py" not in names
+
+
+def test_optional_output_license_contract_builds_exact_pep639_wheel(
+    tmp_path: Path,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    contract = _output_license_contract()
+
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=_external_contract(),
+        output_license_contract=contract,
+    )
+
+    assert result.status == "built"
+    assert result.path is not None
+    wheel = Path(result.path)
+    verified = wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+    assert verified.expression == "MIT"
+    assert tuple(item.path for item in verified.license_members) == (
+        "project-0.1.0.dist-info/licenses/LICENSE",
+    )
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_payload = archive.read(verified.metadata_member)
+        metadata = metadata_payload.decode("utf-8")
+        record = archive.read(verified.record_member).decode("utf-8")
+    assert verified.metadata_sha256 == hashlib.sha256(metadata_payload).hexdigest()
+    assert metadata.count("Metadata-Version: 2.4\n") == 1
+    assert metadata.count("License-Expression: MIT\n") == 1
+    assert metadata.count("License-File: LICENSE\n") == 1
+    assert "project-0.1.0.dist-info/licenses/LICENSE,sha256=" in record
+
+
+@pytest.mark.parametrize(
+    ("expression", "files", "reason"),
+    (
+        ("Unknown-1.0", (OutputWheelLicenseFile("LICENSE", b"text"),), "allowlist"),
+        ("MIT", (), "set"),
+        (
+            "MIT",
+            (
+                OutputWheelLicenseFile("LICENSE", b"one"),
+                OutputWheelLicenseFile("license", b"two"),
+            ),
+            "aliases",
+        ),
+    ),
+)
+def test_output_license_contract_rejects_noncanonical_material(
+    expression: str,
+    files: tuple[OutputWheelLicenseFile, ...],
+    reason: str,
+) -> None:
+    with pytest.raises(ValueError, match=reason):
+        OutputWheelLicenseContract(expression=expression, files=files)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "missing",
+        "tamper",
+        "license-file-duplicate",
+        "license-expression-duplicate",
+        "metadata-version",
+    ),
+)
+def test_output_license_verifier_rejects_material_or_metadata_mismatch(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    contract = _output_license_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+    assert result.path is not None
+    wheel = Path(result.path)
+    license_member = "project-0.1.0.dist-info/licenses/LICENSE"
+    metadata_member = "project-0.1.0.dist-info/METADATA"
+
+    def mutate(payloads: dict[str, bytes]) -> None:
+        if failure == "missing":
+            del payloads[license_member]
+        elif failure == "tamper":
+            payloads[license_member] = b"changed license bytes\n"
+        elif failure == "license-file-duplicate":
+            payloads[metadata_member] += b"License-File: LICENSE\n"
+        elif failure == "license-expression-duplicate":
+            payloads[metadata_member] += b"License-Expression: MIT\n"
+        else:
+            payloads[metadata_member] = payloads[metadata_member].replace(
+                b"Metadata-Version: 2.4\n",
+                b"Metadata-Version: 2.3\n",
+            )
+
+    _rewrite_wheel_with_exact_record(wheel, mutate)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="license|License|PEP 639"):
+        wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name.*:UserWarning")
+@pytest.mark.parametrize("failure", ("duplicate", "alias"))
+def test_output_license_verifier_rejects_duplicate_and_aliased_members(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    contract = _output_license_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+    assert result.path is not None
+    wheel = Path(result.path)
+    expected = "project-0.1.0.dist-info/licenses/LICENSE"
+    appended = expected if failure == "duplicate" else expected.lower()
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(appended, b"alias")
+
+    with pytest.raises(wheel_builder.WheelContractError, match="duplicate|aliased"):
+        wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+
+
+def test_output_license_verifier_rejects_record_tamper(tmp_path: Path) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    contract = _output_license_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        output_license_contract=contract,
+    )
+    assert result.path is not None
+    wheel = Path(result.path)
+    rewritten = wheel.with_suffix(".rewritten")
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(rewritten, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename.endswith(".dist-info/RECORD"):
+                data = data.replace(b"sha256=", b"sha256=bad", 1)
+            target.writestr(info, data)
+    rewritten.replace(wheel)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="RECORD digest"):
+        wheel_builder.verify_output_wheel_license_contract(wheel, contract)
+
+
+@pytest.mark.parametrize(
+    "amplification",
+    (
+        b"unlisted.py,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,0\n" * 10_000,
+        b"\n" * 10_000,
+    ),
+    ids=("excess-rows", "empty-rows"),
+)
+def test_output_record_streams_bounded_rows(
+    amplification: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_name = "demo-0.1.0.dist-info/RECORD"
+    module_name = "demo.py"
+    module = b"VALUE = 1\n"
+    record = (
+        f"{module_name},{wheel_builder._hash_record(module)},{len(module)}\n{record_name},,\n"
+    ).encode("utf-8")
+    payloads = {module_name: module, record_name: record}
+
+    wheel_builder._verify_record(payloads, record_name)
+
+    real_reader = wheel_builder.csv.reader
+    consumed_rows = 0
+
+    def guarded_reader(*args: object, **kwargs: object):
+        nonlocal consumed_rows
+        for row in real_reader(*args, **kwargs):
+            consumed_rows += 1
+            if consumed_rows > len(payloads) + 1:
+                raise AssertionError("RECORD parser consumed rows beyond its bound")
+            yield row
+
+    monkeypatch.setattr(wheel_builder.csv, "reader", guarded_reader)
+    payloads[record_name] = record + amplification
+    with pytest.raises(
+        wheel_builder.WheelContractError,
+        match="output wheel RECORD coverage is incomplete",
+    ):
+        wheel_builder._verify_record(payloads, record_name)
+    assert consumed_rows == len(payloads) + 1
+
+
+def test_external_wheel_capture_binds_native_member_to_exact_expected_bytes(
+    tmp_path: Path,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    native_name = "_rextio_native.cpython-311-test.so"
+    native_bytes = b"cargo-native-extension"
+    (python_dir / native_name).write_bytes(native_bytes)
+    contract = _external_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+    assert result.path is not None
+
+    capture = wheel_builder.capture_external_wheel_contract(
+        Path(result.path),
+        contract,
+        native_member_path=native_name,
+        native_member_bytes=native_bytes,
+    )
+
+    assert hashlib.sha256(capture.wheel_bytes).hexdigest() == (
+        capture.verification.wheel_sha256
+    )
+    assert capture.native_member.path == native_name
+    assert capture.native_member.sha256 == hashlib.sha256(native_bytes).hexdigest()
+    with pytest.raises(wheel_builder.WheelContractError, match="differs from Cargo"):
+        wheel_builder.capture_external_wheel_contract(
+            Path(result.path),
+            contract,
+            native_member_path=native_name,
+            native_member_bytes=b"different-cargo-artifact",
+        )
+
+
+@pytest.mark.parametrize("extra_native", (False, True))
+def test_external_wheel_capture_requires_exact_native_member_coverage(
+    tmp_path: Path,
+    extra_native: bool,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    native_name = "_rextio_native.cpython-311-test.so"
+    if extra_native:
+        (python_dir / native_name).write_bytes(b"expected")
+        (python_dir / "_rextio_native.other.so").write_bytes(b"extra")
+    contract = _external_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+    assert result.path is not None
+
+    with pytest.raises(wheel_builder.WheelContractError, match="coverage"):
+        wheel_builder.capture_external_wheel_contract(
+            Path(result.path),
+            contract,
+            native_member_path=native_name,
+            native_member_bytes=b"expected",
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ("demo_pkg/__init__.py", "DEMO_PKG/hidden.PY"),
+)
+def test_external_wheel_contract_rejects_staged_external_python_source(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    contract_type = getattr(wheel_builder, "ExternalWheelContract", None)
+    error_type = getattr(wheel_builder, "WheelContractError", None)
+    assert contract_type is not None, "external wheel contract is not implemented"
+    assert error_type is not None, "external wheel contract error is not implemented"
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    source_path = python_dir / relative
+    source_path.parent.mkdir()
+    source_path.write_text(
+        "def affine(x): return x + 1\n",
+        encoding="utf-8",
+    )
+    contract = _external_contract()
+
+    with pytest.raises(error_type, match="external package material"):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=contract,
+        )
+
+    assert not list((tmp_path / "dist").glob("*.whl"))
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "demo_pkg/config.json",
+        "demo_pkg-1.0.0.dist-info/licenses/LICENSE",
+        "demo_pkg-1.0.0.dist-info/RECORD",
+    ),
+)
+def test_external_contract_rejects_non_python_package_and_metadata_material(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    path = python_dir / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"external material")
+
+    with pytest.raises(
+        wheel_builder.WheelContractError, match="external package material"
+    ):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=_external_contract(),
+        )
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_ordinary_wheel_builder_preserves_linked_staging_files(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    linked = python_dir / "linked.py"
+    if link_kind == "symlink":
+        linked.symlink_to(target)
+    else:
+        os.link(target, linked)
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    with zipfile.ZipFile(result.path) as archive:
+        assert archive.read("linked.py") == b"VALUE = 1\n"
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "hardlink"))
+def test_strict_wheel_builder_rejects_linked_staging_files(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    linked = python_dir / "app" / "linked.py"
+    if link_kind == "symlink":
+        linked.symlink_to(target)
+        reason = "symlink"
+    else:
+        os.link(target, linked)
+        reason = "unalias"
+
+    with pytest.raises(wheel_builder.WheelContractError, match=reason):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=_external_contract(),
+        )
+
+
+def test_ordinary_wheel_build_does_not_require_posix_open_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "pkg").mkdir(parents=True)
+    (python_dir / "pkg" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (python_dir / "pkg" / "module.so").write_bytes(b"compiled module")
+    monkeypatch.delattr(wheel_builder.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.delattr(wheel_builder.os, "O_DIRECTORY", raising=False)
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    assert "py3-none-any" not in result.path
+    with zipfile.ZipFile(result.path) as archive:
+        names = set(archive.namelist())
+    assert "pkg/module.so" in names
+    assert "pkg/module.py" not in names
+
+
+def test_strict_wheel_build_requires_posix_open_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.delattr(wheel_builder.os, "O_NOFOLLOW", raising=False)
+    monkeypatch.delattr(wheel_builder.os, "O_DIRECTORY", raising=False)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="no-follow traversal"):
+        build_artifact_wheel(
+            tmp_path / "project",
+            python_dir,
+            tmp_path / "dist",
+            external_contract=_external_contract(),
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is POSIX-only")
+def test_ordinary_wheel_builder_omits_special_staging_entries(tmp_path: Path) -> None:
+    python_dir = tmp_path / "python"
+    python_dir.mkdir()
+    (python_dir / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    os.mkfifo(python_dir / "runtime.pipe")
+
+    result = build_artifact_wheel(tmp_path, python_dir, tmp_path / "dist")
+
+    assert result.status == "built"
+    assert result.path is not None
+    with zipfile.ZipFile(result.path) as archive:
+        names = set(archive.namelist())
+    assert "module.py" in names
+    assert "runtime.pipe" not in names
+
+
+def _strict_external_wheel(tmp_path: Path):
+    python_dir = tmp_path / "python"
+    (python_dir / "app").mkdir(parents=True)
+    (python_dir / "app" / "__init__.py").write_text("", encoding="utf-8")
+    contract = _external_contract()
+    result = build_artifact_wheel(
+        tmp_path / "project",
+        python_dir,
+        tmp_path / "dist",
+        external_contract=contract,
+    )
+    assert result.path is not None
+    return Path(result.path), contract
+
+
+@pytest.mark.parametrize(
+    ("member", "mode", "reason"),
+    (
+        ("../escape.py", stat.S_IFREG | 0o644, "unsafe"),
+        ("DEMO_PKG/hidden.PY", stat.S_IFREG | 0o644, "external package material"),
+        ("APP/__init__.py", stat.S_IFREG | 0o644, "aliased"),
+        ("payload-link", stat.S_IFLNK | 0o777, "regular file"),
+    ),
+)
+def test_external_wheel_verifier_rejects_unsafe_alias_and_nonregular_members(
+    tmp_path: Path,
+    member: str,
+    mode: int,
+    reason: str,
+) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    info = zipfile.ZipInfo(member)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = mode << 16
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(info, b"payload")
+
+    with pytest.raises(wheel_builder.WheelContractError, match=reason):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)
+
+
+def test_external_wheel_verifier_rejects_compression_bomb(tmp_path: Path) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    info = zipfile.ZipInfo("payload.bin")
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr(info, b"0" * 1_000_000)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="compression ratio"):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)
+
+
+def test_external_wheel_verifier_treats_dependency_headers_case_insensitively(
+    tmp_path: Path,
+) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    rewritten = wheel.with_suffix(".rewritten")
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(rewritten, "w") as target:
+        for original in source.infolist():
+            payload = source.read(original)
+            if original.filename.endswith(".dist-info/METADATA"):
+                payload += b"requires-dist: unexpected==9\n"
+            target.writestr(original, payload)
+    rewritten.replace(wheel)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="exact pin"):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)
+
+
+def test_external_wheel_verifier_rejects_symlinked_wheel_path(tmp_path: Path) -> None:
+    wheel, contract = _strict_external_wheel(tmp_path)
+    target = wheel.with_suffix(".real")
+    wheel.replace(target)
+    wheel.symlink_to(target)
+
+    with pytest.raises(wheel_builder.WheelContractError, match="regular file"):
+        wheel_builder.verify_external_wheel_contract(wheel, contract)

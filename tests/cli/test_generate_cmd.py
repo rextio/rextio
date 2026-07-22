@@ -7,8 +7,40 @@ import pytest
 from pathlib import Path
 from typing import Any
 
+import rextio.build.orchestrator as orchestrator
 from rextio.__about__ import __version__
 from rextio.cli.main import main
+
+
+def test_generate_reports_unavailable_host_artifact_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a + b\n",
+        encoding="utf-8",
+    )
+
+    def unsupported_host() -> str:
+        raise ValueError("unsupported host architecture 'armv7l'")
+
+    monkeypatch.setattr(orchestrator, "detect_host_target_triple", unsupported_host)
+
+    exit_code = main(["generate", str(tmp_path), "--fallback=cpython"])
+
+    captured = capsys.readouterr()
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "generate.json").read_text(encoding="utf-8")
+    )
+    assert exit_code == 1
+    assert "RXT060 Artifact profile planning failed" in captured.err
+    assert report["status"] == "artifact-profile-unavailable"
+    assert report["error"]["code"] == "RXT060"
+    from rextio.contract import TOOLING_CONTRACT_VERSION
+
+    assert report["contract_version"] == TOOLING_CONTRACT_VERSION
+    assert (tmp_path / ".rextio" / "reports" / "check.json").exists()
 
 
 def test_generate_never_emits_exempt_functions_to_rust(

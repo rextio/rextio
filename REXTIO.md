@@ -1,15 +1,18 @@
-# Rextio 0.1.4 Notes
+# Rextio 0.1.5 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-> **Release status:** Package version **0.1.4** is published to PyPI on
-> 2026-07-18 (plugin API **1.3**; tooling contract **2.2.0**), superseding
-> **0.1.3** (2026-07-17; tooling contract **2.1.0**). Related 0.1.2-line
+> **Release status:** Package version **0.1.5** is published to PyPI on
+> 2026-07-23 (plugin API **1.4**; tooling contract **2.24.0**; readiness policy
+> **11**), superseding **0.1.4** (2026-07-18; tooling contract **2.2.0**).
+> Related 0.1.2-line
 > releases were published in the completed strict order: rextio-lsp 0.1.1 →
 > core 0.1.2 → rextio-numpy 0.1.1. Release Train B also completed consumer
 > first: rextio-lsp 0.1.2 → core 0.1.4.
+> Release Train C ships in core 0.1.5, with its host source-AOT, executable,
+> and bounded Full-C6/C5.2 surfaces remaining Experimental/Alpha.
 > See [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
 
 Rextio 0.1.1 added the machine-readable tooling contract (`rextio
@@ -30,7 +33,12 @@ Experimental; API 1.1/1.2 providers keep loading; dual-map `2.x` contract
 consumers that tolerate unknown fields remain compatible. **0.1.4** advances
 the tooling contract to **2.2.0**, adding isolated promotion assessments,
 trusted marker intent, and reliable function/name ranges without changing
-legacy route/status/rejection meanings. See
+legacy route/status/rejection meanings.
+
+**0.1.5** advances to plugin API **1.4** and tooling contract **2.24.0** with
+readiness policy **11**, shipping the bounded Train C surfaces without claiming
+broad Full C6, general package AOT, CUDA support, or heavy host-lifecycle CI
+certification. See
 [docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md); the core
 workflow below is unchanged from 0.1.0.
 
@@ -237,6 +245,7 @@ flag and environment variable. Common examples:
 ```text
 --fallback / REXTIO_FALLBACK_BACKEND / [build] fallback_backend
 --fallback-threshold / REXTIO_BOUNDARY_FALLBACK_THRESHOLD / [build] fallback_threshold
+--artifact-evidence-policy / REXTIO_ARTIFACT_EVIDENCE_POLICY / [build] artifact_evidence_policy
 --target-language / REXTIO_TARGET_LANGUAGE / [build] native_backend
 --target-version / REXTIO_TARGET_VERSION / [target] version
 --target-build-option / REXTIO_TARGET_BUILD_OPTIONS / [target.build_options]

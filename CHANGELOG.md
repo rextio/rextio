@@ -1,5 +1,934 @@
 # Changelog
 
+## 0.1.5 — 2026-07-23
+
+**Published release.** Package version `0.1.5` is tagged and published to PyPI
+with plugin API **1.4**, tooling contract **2.24.0**, and readiness policy
+**11**, superseding `0.1.4`. Release Train C ships the host source/artifact and
+native-executable architecture plus the frozen, bounded Full-C6/C5.2 Alpha.
+Those new surfaces remain Experimental/Alpha: this release does not claim
+broad Full C6, general package AOT, general hermeticity, CUDA support, or heavy
+host-lifecycle CI certification.
+
+- Rename the public artifact distribution policy from its internal
+  milestone-derived label to `strict-evidence`, and rename
+  its serialized failure status to `strict-evidence-failed`. The old names are
+  not accepted; those spellings were internal and were never released.
+- Preserve CPython source-order semantics for eager function annotations in
+  bounded module initialization, and fail closed on native-symbol collisions
+  (including duplicate qualnames) within each artifact's actual emitted set.
+  Defer external-source planner loading to remove the `analyzer.module_init` ↔
+  `source.external_analysis` import-order cycle, covered by clean-interpreter tests.
+- Make final Full C6 publication retries idempotent across an interruption after
+  the atomic no-replace rename commit. An existing target succeeds only when it
+  is still an owner-private mode-`0700` directory containing the exact closed
+  bundle independently expected by the current verified request. Recovery
+  safely recaptures every original payload and the trusted public key between
+  repeated target descriptor/name-binding and byte validation passes;
+  different, mutated, unsafe, or concurrently replaced targets remain
+  fail-closed collisions and are never overwritten.
+
+### Full C6 support closure and production sandbox receipts (tooling contract 2.24.0)
+
+- Add `rextio policy bootstrap-support-lock --project-root . --output
+  authority/rextio.toolchain-support.lock.json --format json` so owners can
+  create or exactly reuse one canonical host support lock before a strict
+  lifecycle. Its host-absolute-path-free result retains the project-relative
+  config path and returns the exact
+  `artifact_toolchain_support_lock` / `_sha256` config pair plus target,
+  manifest/root roles, raw digest, and Merkle digest; it authorizes neither a
+  build nor distribution.
+- Require an existing owner-private mode-`0700` output parent and create or
+  exactly reuse a single-link mode-`0600` canonical lock. Linked, aliased,
+  changed, differently configured, or concurrently conflicting output fails
+  closed.
+- Bind the fixed platform support closure into the process-sealed plan,
+  canonical lock bytes, raw SHA-256, and tree Merkle SHA-256. Linux execution
+  runs Cargo through `bwrap`, a sealed seccomp filter, the support-locked
+  isolated CPython launcher, and Landlock; macOS uses `sandbox-exec` with the
+  exact Xcode, SDK, and sealed-system-volume anchor bindings.
+- Add the closed sandbox-engine identifier plus path-free plan/profile digests
+  to both invocation receipts, and the sealed seccomp digest on Linux.
+  `sandbox_profile_sha256` is the engine-specific, path-tokenized
+  semantic profile identity and must agree across both builds and equivalent
+  lifecycle runs; the raw rendered profile may contain private per-run paths
+  and is neither serialized nor signed. Propagate support-plan/raw-lock/Merkle
+  identities into strict SBOM and SLSA materials, and reject any receipt or
+  authority reconstruction that drops or changes those bindings.
+- Remove inherited macOS executable-mapping allowances for mutable/data-volume
+  roots by denying `file-map-executable` alongside read/write access under
+  `/private/var`, `/private/etc`, `/Library`, `/dev`, `/cores`, and
+  `/System/Volumes/Preboot`. A real macOS arm64 self-checking probe uses a
+  pre-opened Apple regular-file fixture and requires both unsandboxed mapping
+  and an explicit `read-execute` positive control before it accepts a hardened-
+  profile denial of the same executable mapping; hosts unable to establish the
+  unsandboxed control skip with an explicit reason. Sealed-system execution is
+  checked separately.
+  Only paths already bound by an explicit `read-execute` rule, or a bound
+  read-write directory capability, regain executable mapping and process
+  execution; ambient mutable paths remain blocked.
+- Reserve every configured `imports.packages.*.source_archive` path during
+  support-lock bootstrap. Before opening the output, NFC/case-folded path parts
+  cannot form exact, ancestor, or descendant aliases with any source archive
+  (including one that does not exist yet) or the other configured lifecycle
+  artifacts.
+- Perform three full support-tree verifications per strict `rextio build`
+  invocation: once while collecting the configured host lock, once at
+  native-executor entry, and once immediately before executor authority mint.
+  The executor therefore performs exactly two full rewalks, and every
+  owner-policy lifecycle stage repeats the sequence independently.
+  External/production/internal and per-build boundaries perform no additional
+  full walk; they revalidate the process seal, critical leaves, and exact
+  plan/raw/Merkle digest identity.
+- Record one local macOS arm64 observation of roughly **104,645** support
+  members, **2.67 GB**, and about **45 seconds** per full verification. These
+  are machine-specific measurements, not performance limits or guarantees.
+- Keep the bounded Alpha threat model explicit: it does not defend against
+  hostile same-UID concurrent replacement, kernel or operating-system
+  compromise, or provide complete time, randomness, scheduling, or CPU
+  virtualization. It is not a general hermetic-build claim.
+- Preserve the frozen CPython 3.11/PyO3/Cargo scope on macOS arm64 and Linux
+  x86_64 with exactly one depth-1 `py3-none-any` dependency and direct typed
+  scalar leaves. Plugins, executables, rust-crate output, top-level AOT,
+  embedding, Windows, general recursion, and broader external-source lowering
+  remain excluded.
+- Remove the 90-minute macOS arm64/Linux x86_64 Full C6 installed-wheel matrix
+  from automatic CI. Keep fast policy/unit coverage in CI and preserve the real
+  lifecycle as `python scripts/validate-full-c6-host.py`, with
+  `--preflight-only` available for a non-building host/toolchain check. The
+  command requires a clean Git worktree and index, exports only tracked `HEAD`
+  files into a fresh temporary source tree so stale local build output cannot
+  enter the wheel, and uses isolated build/install environments plus the
+  existing real-Cargo E2E harness. Its result is evidence for that host and
+  exact recorded commit, not CI certification.
+- Publish tooling contract **2.24.0**, plugin API **1.4**, and readiness policy
+  **11** with package **0.1.5**.
+
+### C5.2 / Full C6 bounded Alpha coordinator and owner-policy handoff (tooling contracts 2.22.0-2.23.0)
+
+- Connect one exact SourceLock-v2-admitted depth-1 `py3-none-any` dependency to
+  project call sites. Only direct final-import calls with statically typed
+  scalar positional arguments reach private Rust leaf functions; stale source,
+  aliases, mutation, value escape, unsupported calls, or analysis drift fail
+  closed.
+- Preserve the original dependency as exact `Requires-Dist` metadata instead
+  of vendoring it. Generated PyO3 code checks installed distribution identity,
+  version, `RECORD` membership, located paths, and exact reached-module source
+  bytes through descriptor-relative, no-follow reads. It never imports or
+  introspects the external dependency module or callable; the signed source
+  analysis already binds callable identity.
+- Carry the SourceLock wheel's exact PEP 639 license payloads into the final
+  wheel as `License-File` members below
+  `external/<normalized-distribution>/<version>/`, with exact METADATA/RECORD,
+  SourceLock-verification, subject, mapping, and byte bindings.
+- Add one sealed, same-transaction `FullC6ExternalBuildContext` and require it
+  at the orchestrator boundary. Reconstructed linkage, runtime guard, source
+  wheel inventory, and fresh analysis must all agree before Cargo or packaging.
+- Replace the initial digest/count-only bootstrap with canonical schema/domain
+  v2. The public request embeds an exact technical template for the combined
+  C6.14+C5.2 partition, transformation set, and exact project/Cargo plus
+  external-wheel license observations, while remaining host-path-free,
+  non-authorizing, and free of source/license payload bytes.
+- Add a separate canonical owner-completion document. The owner must explicitly
+  allow every applicable observed license row and accept the exact observed
+  transformation set. `rextio policy finalize` combines the explicitly named
+  bootstrap/completion files offline into the canonical v2 policy manifest; it
+  does not sign or authorize the result.
+- Bind the final manifest to the v2 bootstrap request, trusted public-key digest,
+  exact observations, and fresh production recollection. Every bootstrap,
+  signing-request, and publication `rextio build` run recollects the graph and
+  executes two actual isolated offline builds; a prior report or serialized
+  receipt cannot replace that work. `FullC6ProductionAuthority` is only a
+  process-local evidence seal, never serialized publication authority.
+- Keep the three-stage lifecycle: bootstrap; separately completed and pinned
+  policy → canonical signing request; then externally detached-signed,
+  create-if-absent atomic publication. Rextio neither invents owner decisions nor
+  accepts, creates, or retains a private signing key.
+- Seal the exact bounded project Python file/directory namespace through initial
+  analysis, C5.2 reanalysis, and transformation replay. A custom
+  `.rextioignore`, nonignored alias/special entry, namespace mutation, or replay
+  scope loss fails closed. Failures before that authority exists are stderr-only
+  and do not write through an untrusted project `.rextio` path.
+- Freeze host admission to CPython 3.11 exactly on macOS arm64 or Linux x86_64,
+  a non-editable, cache-free installed Rextio package whose complete `rextio/`
+  tree matches wheel `RECORD`, and rustup-selected Cargo/rustc. The strict host
+  requires a `pip --no-compile` installation, no `rextio/` `__pycache__`/`.pyc`
+  `RECORD` row or physical package-tree entry, and a process started with
+  `PYTHONDONTWRITEBYTECODE=1` (or equivalent `-B`). Require SHA-256-pinned
+  `Cargo.lock` plus a pinned vendored tree and run both builds as
+  `cargo build --release --locked --offline --frozen`.
+- Treat that cache-free inventory as bounded build-evidence integrity, not a
+  hostile-process secure-boot boundary: Rextio is already executing in the
+  owner process and does not defend against a compromised OS or account.
+- Treat the Cargo lock/vendor digest as owner-pinned input integrity only; this
+  does not authenticate a registry, crate publisher, or upstream origin.
+- Keep the profile to one external package and no plugins, executable,
+  rust-crate, top-level AOT, embedding, Windows, recursion, or general package
+  lowering.
+- Advance only the unreleased tooling contract to **2.23.0**. Package **0.1.4**
+  and plugin API **1.4** remain unchanged.
+
+### Full C6 strict authority and publication primitives (tooling contract 2.21.0)
+
+- Add immutable Full-C6 preauthorization/final evidence and a sealed
+  distribution-authorization token that only the hard gate can mint.
+- Execute two isolated, offline, frozen-input Cargo builds and require
+  byte-identical wheel output, exact live toolchain/environment validation, and
+  no source-tree mutation outside the single bounded lock-generation
+  transition. Semantic receipts preserve caller-controlled environment values
+  exactly while projecting executor-owned `HOME`, `CARGO_HOME`,
+  `CARGO_TARGET_DIR`, and the project/build remap operands to stable
+  `/rextio/project` and `/rextio/build` identities.
+- Rebuild and cross-bind the standards SBOM/provenance, complete frozen policy,
+  SourceLock v2 source wheel, build-input closure, Cargo source identities,
+  runtime authorization, toolchain identity, and reproducibility receipts.
+- Verify the detached Ed25519 authorization over the domain-separated message
+  `REXTIO-FULL-C6-ED25519-V1\0 || canonical-request-bytes`, using one pinned raw
+  32-byte public key and a closed seven-field canonical envelope containing the
+  canonical Base64 form of one raw 64-byte signature. The envelope is bounded
+  to 16 KiB. Rextio accepts no private signing key and never treats a preview
+  lock or readiness record as a final signature.
+- Publish a seven-file pinned-parent atomic bundle: wheel, CycloneDX, SLSA
+  provenance, final evidence, detached-signature envelope, authorization, and
+  `rextio.full-c6-manifest.json`. Existing targets,
+  unsafe links/types, byte changes, races, or partial publication fail closed.
+  Temporary host-output and private-quarantine cleanup completes before the
+  final no-replace directory rename; that successful rename is the publication
+  commit point.
+- Certify the complete local macOS arm64 installed-wheel lifecycle at commit
+  `f9eb5e6`: CPython 3.11.15, Cargo 1.93.1, all five real-E2E checks, all three
+  stages with exactly two distinct Cargo PIDs each, final published/authorized
+  state, fresh installation, external LICENSE/METADATA/RECORD bindings, runtime
+  guard poison check, and no bytecode cache. The subsequent 256 MiB installed-
+  input budget hardening is unit-tested; exact-HEAD and Linux x86_64 blocking
+  CI remain pending.
+
+### Fixed
+
+- Normalize malformed or adversarial support-lock property failures at the
+  external-execution and production boundaries into their fixed fail-closed
+  Full-C6 errors instead of leaking lower-layer exception types.
+- Require a cache-free Full-C6 host process and install. `sys.dont_write_bytecode`
+  must already be true; wheel installation must omit compilation; RECORD and
+  the complete physical `rextio/` namespace reject every `rextio/`
+  `__pycache__`/`.pyc` row or entry, unrecorded package directory/member, alias,
+  special entry, and between-walk addition.
+  Enforce the existing 256 MiB cumulative installed-input budget twice: reject
+  the aggregate sizes declared for `rextio/` `RECORD` members before the tree walk, then
+  independently recheck aggregate actual `stat` sizes and bounded reads during
+  the walk. This closes executable bytecode and oversized inputs outside the
+  RECORD-backed evidence set without claiming hostile-process secure boot.
+- Open the external installed-distribution root from `/` one directory component
+  at a time with `openat`/`O_NOFOLLOW`, rather than following a linked root or
+  ancestor. Open the final source with `O_NONBLOCK` as well as `O_NOFOLLOW`, then
+  require a single-link regular file, so a FIFO or other special file fails
+  quickly instead of blocking extension import.
+- Resolve `importlib.import_module`, `globals`/`vars`, `sys.modules`,
+  `__builtins__`, `__dict__`, and other loader/reflective capabilities through
+  the complete project re-export graph. Direct, multi-hop, and package-init
+  laundering now fail the strict external-linkage gate.
+- Canonicalize only executor-owned per-run environment paths in lifecycle
+  receipts after validating the exact absolute values supplied to Cargo. This
+  keeps bootstrap, signing-request, and publication authorization requests
+  stable without weakening caller-controlled environment binding.
+- Permit unrelated ambient directory size/time churn only for absolute
+  ancestors above the generated root while keeping their device/inode/mode and
+  every generated-root/descendant identity exact. The separate bounded C6.9
+  refresh may still admit only the generated root's expected size/time delta.
+- Recheck the final loaded-image snapshot after symbol-provider identity probes
+  and on every native-runtime authority validation. A late loader side effect
+  taints the process and cannot mint or retain Full-C6 runtime authority.
+- Accept the concrete platform `Path` type in strict finalization and project
+  every strict analysis report path to a canonical project-relative value;
+  residual private roots, unexpected containers, or unsafe projection fail
+  through the fixed `RXT060` boundary.
+- Preserve portable ordinary wheel behavior on POSIX and Windows while keeping
+  the strict Full-C6 external-source collector descriptor-pinned and no-follow.
+- Reject Windows drive-relative Full-C6 config paths and cover ordinary
+  symlink, hardlink, Nuitka-sibling, and FIFO wheel inputs independently from
+  the strict profile.
+- Bind pip-rewritten installed dependency `RECORD` bytes separately from the
+  source-wheel archive's own `RECORD`, while requiring every shared source,
+  METADATA, WHEEL, and license identity to agree exactly.
+- Accept Cargo's exact historical `MIT/Apache-2.0` metadata spelling only at
+  Full-C6 Cargo-license ingestion, where its policy observation is canonicalized
+  to `MIT OR Apache-2.0`. The original `Cargo.toml` bytes and digest remain
+  evidence-bound; whitespace, reversed operands, and every other slash form
+  still fail closed.
+- Raise the bounded output-wheel license-file count from 64 to **128** so the
+  frozen real PyO3 graph's 108 exact files (project 1 + Cargo 106 + external 1)
+  fit the declared profile. A 129th file still fails closed; path, ordering,
+  alias, per-file, and 64 MiB aggregate-byte bounds are unchanged.
+- Bind the strict Cargo host linker through the active target's exact
+  executor-owned `CARGO_TARGET_*_LINKER` variable. Its value must be the already
+  verified linker path, caller overrides and the inactive target variable are
+  rejected, and the scrubbed `PATH` remains limited to Cargo rather than being
+  broadened to ambient compiler tools.
+- Stabilize the macOS Full-C6 Mach-O self identity as the exact
+  `@rpath/lib_rextio_native.dylib` while retaining the linker's default,
+  content-derived deterministic `LC_UUID` required for dyld loadability; Linux
+  linker flags are unchanged. Runtime inventory accepts that value only as the
+  independently verified first self-ID row and rejects unverified or misplaced
+  lookalikes. A dedicated real two-build experiment produced byte-identical
+  unsigned wheels, UUIDs, ad-hoc signatures, and `RECORD`, contained no
+  quarantine path bytes, and loaded the native extension. That narrower
+  experiment alone was not a complete lifecycle claim; the later macOS arm64
+  local real-E2E above certifies the full three-stage path through `f9eb5e6`.
+- Admit exactly `/usr/lib/system/libcommonCrypto.dylib` as an additional
+  macOS dyld shared-cache singleton provider for the direct
+  `/usr/lib/libSystem.B.dylib` dependency. This is a bounded one-hop relation,
+  not a broad `/usr/lib/system/*` allowance: the provider must be observed in
+  the final platform-image snapshot, scoped and global lookup must resolve the
+  same address, and `dladdr` must identify that exact provider. Unobserved,
+  differently addressed, or otherwise named descendants fail closed; the
+  existing OS-build and native-runtime authority bindings remain unchanged.
+
+### C6.15 scoped artifact-class policy verification
+
+- Add optional `artifact_evidence.artifact_class_policy_verification` schema 1
+  for `host-extension-wheel-cpython-v1`. The strict project-root
+  `rextio.artifact-policy.lock.json` binds the canonical SHA-256 and partition
+  digest of one exact C6.14 inventory plus exactly thirteen ordered nested
+  coverage rows.
+- Require a closed, deterministic disposition pair for every class. Existing
+  C6.10-C6.13 receipt-bound license or transformation states remain
+  `prerequisite-receipt-bound` and cannot be weakened; unobserved,
+  logical-system-leaf, not-applicable, and owner-declared-unverified cases use
+  fixed tokens rather than free-form policy text.
+- Reuse the bounded descriptor-pinned, no-follow, single-link strict JSON
+  reader; reject duplicate keys, non-finite/deep/oversized JSON, boolean-as-
+  integer confusion, missing/extra/reordered rows, stale digests, path aliases,
+  and any disposition/state mismatch. Final collection recollects C6.10-C6.13,
+  re-derives C6.14, and rereads the lock, requiring full equality without
+  adopting changed bytes.
+- Add the exact lock once as provenance material outside C6.14, avoiding a
+  cyclic digest. Count or sidecar pressure omits C6.15 before C6.14; any C6.15
+  failure leaves ordinary build success and the independent C6.3 gate
+  unchanged.
+- Advance readiness to policy version 11 with the fourteenth observation
+  `scoped-artifact-class-policy-declaration-bound` and fixed
+  `scoped-artifact-class-policy-declaration-unavailable` blocker. Attestor
+  identity, SPDX, files/notices, obligations, compatibility, ownership/rights,
+  legal approval, technical provenance, global completion, signatures, and
+  distribution authority remain false. Advance only the unreleased tooling
+  contract to **2.20.0**; package **0.1.4** and plugin API **1.4** are unchanged.
+
+### C6.14 artifact-policy coverage inventory
+
+- Add optional `artifact_evidence.artifact_policy_coverage_inventory` schema 1
+  for the existing `host-extension-wheel-cpython-v1` evidence scope. Thirteen
+  fixed, disjoint classes summarize only already-observed inputs, Cargo
+  components, native-runtime nodes, and wheel outputs with an observed count
+  and domain-qualified canonical identity-set SHA-256; evidence sidecars and
+  the inventory itself are excluded.
+- Keep identity, license-policy, and transformation-provenance semantics
+  orthogonal. Exact file bytes, declared Cargo checksums, and logical-only
+  identities are distinguished; only the exact C6.11/C6.12 owner receipts and
+  C6.10 replay/C6.13 analysis-input receipts are referenced. No license,
+  transformation, ownership, legal approval, or distribution authority is
+  inferred for any other class.
+- Deeply reconstruct and cross-bind the complete C6.9-C6.13 prerequisite chain,
+  reject path aliases and overlapping wheel classes, and derive the inventory
+  only after final runtime/lock/replay recollection. Malformed or changed
+  prerequisites omit C6.14 without changing an ordinary build or the C6.3
+  required-evidence result.
+- Add the compact inventory to unsigned provenance metadata only, with no new
+  material. At the provenance ceiling C6.14 is omitted first, then the existing
+  C6.13 through C6.6 order applies. Advance readiness to policy version 10 with
+  `artifact-policy-coverage-bound` and the dedicated
+  `artifact-policy-coverage-unavailable` blocker. All ten global readiness
+  checks remain blocked and completeness, signing, and distribution authority
+  remain false. Advance only the unreleased tooling contract to **2.19.0**;
+  package **0.1.4** and plugin API **1.4** are unchanged.
+
+### C6.12 scoped project-source license-policy verification
+
+- Add optional immutable
+  `artifact_evidence.project_source_license_policy_verification` schema 1 for
+  the fixed `project-functions-pyo3-plugin-free-source-license-v1` scope. It is
+  collected only for a present valid C6.10 receipt and binds that receipt's
+  canonical digest, exact project-source `EvidenceFileRef` set and input-set
+  digest, and exact generated Rust `src/lib.rs` reference.
+- Add the strict project-root `rextio.source-license.lock.json` schema 1
+  (`kind: rextio.project-source-license-policy-lock`, policy
+  `project-owner-exact-source-license-declaration-v1`). The closed document
+  repeats the C6.10/source/output bindings, declares separate nonblank licenses
+  for `project_sources` and `generated_rust`, and carries the fixed owner
+  relationship, `allow` decision, local-build/package/redistribution scopes,
+  and `REXTIO_PROJECT_SOURCE_LICENSE_POLICY_ACK_V1` acknowledgement.
+- Use the bounded descriptor-relative, no-follow, single-link strict JSON
+  reader shared with C6.11. Immediately before evidence return, rerun the C6.10
+  collector with the same plan, snapshot, inventory, and embedding setting and
+  require full receipt equality; only then recollect C6.12 and require full
+  equality. A source, generated `src/lib.rs`, or lock change removes only
+  C6.12 and rebuilds provenance without its material.
+- Serialize the exact receipt in evidence and unsigned provenance and add the
+  source-license lock as a separate resolved provenance material, never as a
+  C6.2 input or CycloneDX component. Material-count and provenance ceilings
+  omit in deterministic order C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, then
+  C6.6.
+- Advance readiness to policy version 8 with the eleventh observation
+  `scoped-project-source-license-policy-verified` and fixed
+  `scoped-project-source-license-policy-verification-unavailable` blocker.
+  This is an owner declaration, not proof of attestor identity, SPDX validity,
+  license/NOTICE files, obligations, compatibility, source ownership,
+  generated-output or derivative-work rights, legal approval, signing, global
+  license policy, or distribution authority. All existing readiness blockers,
+  `complete: false`, `signed: false`, and `distribution_authorized: false`
+  remain unchanged. Advance only the unreleased tooling contract to **2.17.0**;
+  package **0.1.4** and plugin API **1.4** remain unchanged.
+
+### C6.13 scoped analysis-input verification
+
+- Add an optional bounded receipt for the exact C6.10 source set's sibling
+  `.pyi` observations. Every source records its sibling as exactly present or
+  absent; present stubs bind logical path, byte SHA-256, size, and the
+  deterministic supported-signature projection/version to the exact C6.10
+  replay and source set.
+- Present stubs are `project-python-stub` in-toto materials. Absent records are
+  metadata observations only; raw bytes, source text, absolute roots, and
+  exception text are never serialized. Secure immutable snapshots are
+  evidence-eligible; compatibility snapshots on Windows or platforms without
+  the required secure-open behavior remain analyzer-compatible but are
+  evidence-ineligible.
+- Advance readiness to policy version 9 with twelve observations and ten
+  readiness checks. Missing C6.13 makes only
+  `scoped-analysis-inputs-verified` unavailable with its dedicated blocker;
+  malformed or forged present receipts fail the readiness assessment closed.
+  `complete_for_scope` covers only the C6.10 sibling-stub scope; global
+  build-input closure, reproducibility, signing, policy satisfaction, and
+  distribution authorization remain false or blocked. Advance only the
+  unreleased tooling contract to **2.18.0**; package **0.1.4** and plugin API
+  **1.4** remain unchanged.
+
+### C6.11 scoped Cargo component-license policy verification
+
+- Add optional immutable
+  `artifact_evidence.component_license_policy_verification` schema 1 for the
+  narrow `reachable-registry-cargo-license-metadata-v1` scope. It binds the
+  canonical full C6.7 inventory digest, exact sorted registry `bom_ref` set,
+  exact bytes of project-root `rextio.cargo-license.lock.json`, and a canonical
+  semantic snapshot of that strict JSON document. The generated path root is
+  excluded from the allow rows but remains bound through the full inventory
+  digest.
+- Require every reachable registry component to have a nonblank raw Cargo
+  metadata license value that is neither an exact nor compound unknown sentinel.
+  The owner lock must reproduce every registry record verbatim and in order,
+  carry `decision: allow`, the exact local-build/package/redistribution scopes,
+  the fixed acknowledgement, and a closed human-owner or organization-owner
+  relationship. This is metadata policy only: no SPDX parsing, normalization,
+  license-file/NOTICE review, obligation or compatibility analysis, legal
+  approval, authenticated attestor identity, signature, or distribution
+  authorization is claimed.
+- Read the fixed lock through bounded `openat`/`O_NOFOLLOW` traversal that pins
+  and revalidates every absolute project-root ancestor, with regular-file,
+  single-link, inode/device/time/size, UTF-8, duplicate-key, nonfinite-number,
+  and JSON-depth checks. Recollect immediately before final evidence
+  construction and require exact receipt equality; a missing or changed lock
+  drops only C6.11 and rebuilds provenance without its material.
+- Record the exact receipt in unsigned provenance and add its lock reference as
+  a separate resolved material only while C6.11 is present. It is not added to
+  C6.2 inputs or the SBOM. The additive ceiling now omits C6.11, C6.10, C6.9,
+  C6.8, C6.7, then C6.6; material-count exhaustion caused only by the lock also
+  omits C6.11 without changing the ordinary build or C6.3 gate.
+- Advance readiness to policy version 7 with the tenth observation
+  `scoped-component-license-policy-verified` and fixed
+  `scoped-component-license-policy-verification-unavailable` blocker. The
+  evidence-model binding independently reconstructs the canonical policy
+  snapshot and rejects missing or compound unknown registry licenses. The
+  existing global `component-license-policy-complete` check remains blocked;
+  `complete`, `signed`, and `distribution_authorized` remain false. Advance
+  only the unreleased tooling contract to **2.16.0**; package **0.1.4** and
+  plugin API **1.4** remain unchanged.
+
+### C6.10 scoped source-transformation replay verification
+
+- Add optional immutable `artifact_evidence.source_transformation_verification`
+  schema 1 for the narrow `project-functions-pyo3-plugin-free-v1` scope. It
+  binds the canonical C6.6 inventory digest, exact project-source input set,
+  canonical ModuleIR digest, complete accepted-function qualname set, and the
+  captured plus independently regenerated `src/lib.rs` SHA-256/size.
+- Reopen every project-owned source through bounded component-by-component
+  `O_NOFOLLOW` traversal, reject symlink/hardlink/path/identity changes, parse
+  the AST again, and rederive module qualname, UTF-8 byte range, and semantic
+  fingerprint. Reanalyze the project with plugins, embedding, native top-level,
+  runtime shims, and fallback boundary calls excluded; relower the entire
+  accepted native closure and require byte-identical full Rust regeneration.
+- Keep the collector total and noninterfering. Unsupported scope, mutation,
+  replay mismatch, or resource-limit failure omits only C6.10; C6.6 and the
+  independent C6.3 gate retain their outcomes. At the provenance ceiling omit
+  C6.10 first, then C6.9, C6.8, C6.7, and C6.6.
+- Advance readiness policy to version 6 with
+  `scoped-source-transformation-verified` and the fixed
+  `scoped-source-transformation-verification-unavailable` blocker. The receipt
+  is complete only for its narrow scope; global transformation provenance,
+  license policy, signatures, and distribution authorization remain blocked.
+  Advance the unreleased tooling contract to **2.15.0** while keeping package
+  **0.1.4** and plugin API **1.4** unchanged.
+
+### C6.9 bounded transitive native-runtime graph observation
+
+- Add immutable `artifact_evidence.native_runtime_transitive_closure` schema 1.
+  It is rooted in the exact C6.4 subject and C6.8 direct records, serializes
+  canonical packaged-content-bound nodes, deterministic name-bound/byte-unbound
+  system leaves, and dependency edges, preserves cycles, and
+  remains explicitly `complete: false`,
+  `transitive_closure_complete: false`, and observation-only.
+- Recursively inspect only exact packaged Mach-O/ELF wheel members reached by
+  the existing loader-path/self-rpath or ORIGIN RPATH/RUNPATH semantics. Rebind
+  every packaged node to one canonical wheel member/SHA-256/size, inspect an
+  immutable private same-byte snapshot, validate object format/architecture
+  (and `MH_DYLIB` for non-root Mach-O nodes), and revalidate final file receipts.
+  System dependencies remain deterministic name-bound, byte-unbound terminal
+  leaves; ELF leaves are rechecked against the target-triple C6.4 allowlist.
+- Apply both the C6.8 path parser and C6.4 strict parser to every recursive ELF
+  inspection and require identical dependency coverage, so malformed,
+  unexpected, or partially parsed dynamic rows fail closed.
+- Make traversal deterministic and cycle-safe with fixed node, edge, depth,
+  per-dependency candidate, aggregate candidate, inspector invocation, total
+  inspector-output, cooperative total-deadline, and serialized-size ceilings. Reject missing
+  or multiple candidate paths, malformed inspectors, byte mutation, symlinks,
+  hardlink/inode aliases, case-fold/Unicode-normalization aliases, unsupported loader forms, and
+  Linux system-SONAME shadowing. Never consult ambient loader variables/cache,
+  `ldd`, `ldconfig`, `dlopen`, or actual loader selection.
+- Build exact and normalization-aware case-folded wheel member/basename indexes once per attempt and
+  charge indexing, candidate loops, and every final receipt I/O to the single
+  total deadline; synchronous filesystem reads are checked before and after but
+  are not preempted mid-call. Keep the generated root's leading-underscore binary basename
+  while enforcing the closed dependency basename grammar on nodes and edges.
+- Keep C6.9 optional and noninterfering. A C6.9-only collection/final-receipt
+  failure retains C6.8; a C6.8 failure omits both dependent observations. At
+  the 2.14.0 provenance ceiling omit C6.9, then C6.8, C6.7, and C6.6; the
+  cumulative 2.15.0 producer added C6.10 before that sequence, and 2.16.0 now
+  omits C6.11 before C6.10. The
+  independent C6.3 required-evidence gate is unchanged.
+- Read-only refresh exact C6.8 packaged receipts after every C6.9 attempt. It
+  requires complete prior receipt coverage, preserves exact file and non-root
+  directory identity, and permits only the generated root's size/ctime/mtime
+  delta caused by snapshot create/remove. Refresh failure still omits C6.8 and
+  dependent C6.9. Private snapshot unlink/rmdir/absence-check failures now fail
+  closed while preserving any already-active inspection exception.
+- Advance readiness policy to version 5 with
+  `bounded-static-native-runtime-graph-bound` and the fixed
+  `bounded-static-native-runtime-graph-unavailable` blocker. Keep
+  `native-runtime-transitive-closure-complete` blocked. Advance the tooling
+  contract to **2.14.0** while keeping package **0.1.4**, plugin API **1.4**,
+  signatures, completeness, and distribution authority unchanged.
+
+### C6.8 one-hop native runtime path-resolution observation
+
+- Add immutable `artifact_evidence.native_runtime_path_resolution` schema 1,
+  exactly bound to the C6.4 native subject and every direct dependency in
+  canonical `dependency_bom_ref` order. Records distinguish only
+  `wheel-member | system-logical | unresolved` and the closed Mach-O/ELF
+  mechanisms; successful evidence accepts the exact format/origin truth table
+  and does not treat `unresolved` as a completed path observation.
+- Resolve Mach-O packaged candidates only through contained `@loader_path` or
+  `@rpath` with self `@loader_path`-anchored run paths. Resolve Linux packaged
+  SONAMEs only through bounded `$ORIGIN`/`${ORIGIN}` RUNPATH or RPATH segments.
+  Reject traversal, absolute/private/executable/inherited paths, unsupported
+  variables and alternate load commands/tags, conflicting path tags,
+  ambiguity, missing candidates, symlinks, and hash/size mismatch. Use fixed
+  inspectors and pinned `O_NOFOLLOW` file receipts; never execute or load a
+  candidate and never consult ambient loader state.
+- Treat trusted macOS system paths and the existing Linux system-name allowlist
+  as logical leaves without claiming their bytes. Keep Linux C6.4's historical
+  `unresolved` origin serialization for those names; C6.8 adds the separate
+  `system-logical` observation.
+- Keep collection optional and noninterfering. Missing or unsafe C6.8 data
+  omits only this field, adds the dedicated
+  `native-runtime-path-resolution-inventory-unavailable` readiness blocker,
+  and leaves ordinary builds plus C6.3 unchanged. Malformed present data fails
+  readiness reconstruction closed. In the cumulative Train C producer the
+  provenance ceiling omits C6.9 first, then C6.8, C6.7, and C6.6.
+- Advance the always-blocked assessment to policy version 4 with
+  `direct-native-path-resolution-bound`, and the unreleased tooling contract to
+  **2.13.0**. Keep package **0.1.4**, plugin API **1.4**, all completeness,
+  signature, and authorization fields false. Actual loader selection,
+  complete transitive closure beyond C6.9's bounded graph, system-library bytes, `dlopen`, Windows PE, WASM,
+  runtime-bearing plugins, complete license/legal policy, and signatures remain
+  deferred.
+
+### C6.7 reachable Cargo component-license observation
+
+- Add immutable `artifact_evidence.component_license_inventory` with exact
+  coverage of every reachable `cargo_package`, including the generated path
+  root, in canonical `bom_ref` order. Each record binds only package identity,
+  kind, the bounded Cargo metadata license string or null, and the closed
+  `declared-unvalidated | missing` observation.
+- Treat null and whitespace-only metadata as missing. Preserve every other
+  string verbatim (including surrounding whitespace) while rejecting control
+  characters and fixed per-string/count/serialized-size bounds. Do not parse or
+  normalize SPDX, classify sentinel/compound strings, read license files, make
+  owner allow/deny decisions, change SourceLock, or claim legal approval.
+- Advance the always-blocked readiness assessment to `policy_version: 3` and
+  add `component-license-inventory-bound`. Missing inventory makes only that
+  observation unavailable with the fixed
+  `component-license-inventory-unavailable` blocker; malformed, reordered,
+  duplicated, stale, extra, omitted, or non-exactly-bound models retain the
+  all-`not-evaluated` `readiness-assessment-unavailable` shape.
+- Emit the inventory in `build.json` and unsigned provenance with explicit
+  observation-presence metadata. Under the closed sidecar ceiling, omit C6.7
+  first and preserve C6.6 whenever possible; only then apply the existing C6.6
+  omission rule. Ordinary build and C6.3 gate outcomes are unchanged.
+- Keep package version **0.1.4** and plugin API **1.4**. Advance only the
+  unreleased tooling contract to **2.12.0**. The existing
+  `component-license-policy-complete` check and blocker remain blocked, and all
+  completeness/signature/distribution-authority fields remain false.
+
+### C6.6 bounded source-transformation provenance observation
+
+- Add immutable `artifact_evidence.source_transformation_inventory` for the
+  existing ordinary host-extension + CPython wheel evidence scope. Every
+  accepted project-owned native function is bound to one project-relative
+  source path and exact source SHA-256, module/qualname, reliable half-open
+  source range, SHA-256 of the analyzer's semantic AST identity, the exact
+  generated Rust `src/lib.rs` input path/hash/size, the closed
+  `rextio-core-rust-pyo3-v1` generator/backend id, and sorted unique plugin ids.
+- Serialize the same bounded observation into unsigned provenance metadata
+  without binding the provenance sidecar back into the inventory. Never emit
+  raw source, AST dumps, absolute paths, exception text, credentials, or
+  unbounded output. Cross-check the exact ordered accepted-function coverage
+  against the analyzer list used by code generation; reject malformed
+  hashes/ranges/paths, duplicates, noncanonical order, stale/omitted/extra
+  functions, and orphan, ambiguous, external-source bindings. Cap records,
+  total plugin references, unique plugin ids, and deterministic serialized
+  inventory size.
+- Advance the always-blocked authorization assessment to `policy_version: 2`
+  and add `source-transformation-inventory-bound`. A valid inventory may satisfy
+  that observation, but `source-transformation-provenance-complete` and its
+  blocker remain blocked; completeness, signatures, and distribution authority
+  remain false. Do not claim component-license policy completion.
+- Preserve independent build and C6.3 semantics. Missing/unsupported inventory
+  uses the fixed `source-transformation-inventory-unavailable` observation and
+  blocker without changing best-effort success or required-evidence
+  transaction/publication outcomes. If adding the inventory would exceed the
+  provenance sidecar ceiling, rebuild the provenance with only that observation
+  omitted. Malformed, noncanonical, or source/generated-binding-breaking
+  inventory retains the total all-`not-evaluated`
+  `readiness-assessment-unavailable` shape. The evaluator does not independently
+  re-derive structurally valid observation values from source or `BuildPlan`.
+- Keep package version **0.1.4** and plugin API **1.4**; advance only the
+  unreleased tooling contract to **2.11.0**. Validated license policy, runtime path/transitive
+  closure, `dlopen`, signatures, executables, Rust crates, Nuitka/WASM/Windows,
+  runtime-bearing plugins, full C6, and C5.2 remain out of scope.
+
+### C6.5 hard distribution-authorization readiness contract
+
+- Add top-level `build.json.artifact_distribution_authorization` for the same
+  bounded ordinary host-extension + CPython wheel path that emits
+  `artifact_evidence`. The immutable assessment is derived only from the final
+  validated evidence record, after required-mode evidence revalidation and
+  output transaction handling.
+- Keep the assessment unconditionally `status: "blocked"` with
+  `authority: "readiness-assessment-only"`, `complete: false`, `signed: false`,
+  and `distribution_authorized: false`. No configuration or constructor input
+  can promote it, and ordinary build success plus the C6.3 preview-evidence
+  gate retain their existing semantics.
+- Use a closed, canonical check/blocker vocabulary and order. Preview-ready
+  evidence satisfies only subject, declared-input snapshot, reachable Cargo
+  graph, and direct-native-linkage observations; fixed blockers identify the
+  remaining license policy, native-runtime resolution/transitive closure,
+  runtime dynamic loading, complete build-input closure, source-transformation
+  provenance, builder identity, reproducibility, signature, and SBOM-composition
+  gaps. Unavailable evidence
+  carries only `evidence-unavailable` plus its existing sanitized fixed reason,
+  without raw paths/errors or speculative downstream blockers.
+- Make readiness evaluation total and report-only. It deeply reconstructs the
+  nested evidence models and validates structural/model bindings without
+  reopening output files or re-inspecting bytes. If a preview model fails that
+  stricter validation, the build and C6.3 gate keep their prior outcome while
+  all readiness checks become `not-evaluated` and the sole closed blocker is
+  `readiness-assessment-unavailable`; exception text is never serialized.
+- Keep dependency path resolution, transitive native closure, runtime
+  `dlopen`, Windows PE, runtime-bearing plugins, host executables, Rust crates,
+  Nuitka/WASM evidence, signatures, and final distribution authorization out
+  of scope. Package version remains **0.1.4**, plugin API remains **1.4**, and
+  the additive tooling contract advances to **2.10.0**.
+
+### C6.4 direct native runtime linkage inventory preview
+
+- Extend `artifact_evidence` for an otherwise preview-ready ordinary
+  host-extension + CPython wheel with a sanitized inventory of directly
+  observed dynamic linkage only: macOS Mach-O uses bounded `otool -L`, and
+  Linux ELF uses bounded `readelf -W -d`. Inspector children run reviewed
+  absolute system tools without a shell or inherited parent environment, using
+  only a minimal C locale, short timeout, and capped output; tool paths, raw
+  output, and machine-private absolute paths are never serialized.
+- Bind the inspected, contained installed native extension to one exact wheel
+  member by generated-Python relative identity, SHA-256, and byte size, and
+  create one private same-byte snapshot bound to both. Binary-header and
+  `otool`/`readelf` inspection read only that snapshot; original and snapshot
+  identity/digest are revalidated before evidence is accepted. Architecture,
+  binary format, ambiguous search paths, unexpected loading tags, unsafe names,
+  count/size bounds, and mutation mismatches fail closed to a fixed sanitized
+  reason.
+- Record the direct native-binary-to-dependency edges in the incomplete
+  CycloneDX preview and the corresponding sanitized observation in provenance.
+  This is not dependency path resolution, a transitive dylib closure, runtime
+  `dlopen` discovery, or a claim that observed dependencies were build inputs.
+- Record the normalized binary-header architecture. Each accepted dependency
+  carries `origin = system | unresolved` and a deterministic, path-free
+  `bom_ref`. Apply a closed expected-runtime allowlist: Mach-O admits only
+  `/usr/lib` and `/System/Library` install roots (serialized as basenames), and
+  rejects other Mach-O path forms as unsafe; ELF rejects arbitrary `NEEDED`
+  libraries with the fixed allowlist reason
+  `native-runtime-unexpected-dependency`.
+- Treat the first `otool -L` row as an ignorable private Cargo self-ID only when
+  the private snapshot is an `MH_DYLIB` and a separate bounded `otool -D`
+  observation exactly matches that row. Otherwise the row remains a dependency
+  and normal closed-allowlist validation applies.
+- Preserve policy semantics: `best-effort` keeps a successful wheel but reports
+  evidence `unavailable`; `required` emits `RXT060` and transactionally rolls
+  back this run's exact wheel and sidecars. Required wheels are built in a
+  private transaction directory and published only by a create-if-absent hard
+  link carrying an exact receipt; an observed public file is never claimed as
+  this run's output. Rollback atomically moves a candidate into private
+  quarantine before checking its receipt, so a concurrent replacement is
+  restored or retained for recovery rather than deleted. Pre-existing-output
+  preservation is write-ahead recorded before rename. A receipt/content
+  mismatch fails publication closed and reports incomplete rollback. Success
+  remains
+  `composition: incomplete`, `signed: false`, and
+  `distribution_authorized: false`.
+- Windows PE, runtime-bearing plugins, host executables, Rust-importable crates,
+  Nuitka/WASM paths, signatures, and path/transitive dependency resolution are
+  outside C6.4. Package version remains **0.1.4**, plugin API remains **1.4**,
+  and tooling contract advances additively to **2.9.0**.
+
+### C6.3 opt-in required artifact-evidence gate
+
+- Add `[build] artifact_evidence_policy = "best-effort" | "required"`,
+  `--artifact-evidence-policy`, and `REXTIO_ARTIFACT_EVIDENCE_POLICY` with the
+  normal CLI > environment > TOML > default precedence. `best-effort` remains
+  the default and preserves C6.2 behavior.
+- `required` accepts only one native host-extension + CPython wheel backed by
+  an accepted native region (a function and/or native top-level segment), with
+  no executable, Rust-importable crate, or additional artifact profile. Other
+  artifact sets fail before external toolchain work with `RXT060`, status
+  `artifact-evidence-required-failed`, and reason
+  `artifact-set-out-of-scope`.
+- Required builds succeed only for `artifact_evidence.status =
+  "preview-ready"`. Unavailable evidence fails closed, removes only this run's
+  exact wheel/sidecars while preserving pre-existing outputs, and retains
+  generated source and reports for debugging. The output transaction rejects
+  symlinked parents, pins parent identity, verifies exact ownership/content
+  receipts, restores on exceptional exits, preserves concurrently replaced
+  content, and reports an incomplete rollback explicitly instead of claiming
+  cleanup succeeded.
+- Add immutable `artifact_evidence_gate` only in required mode. A satisfied
+  gate still reports `distribution_authorized: false`, `complete: false`, and
+  `signed: false`; C6.2 remains preview-only and is not full distribution
+  authorization. Tooling contract **2.8.0** (additive minor).
+
+### C6.2 bounded host-extension wheel artifact-evidence preview
+
+This is **not** full C6 completion. The preview is incomplete and unsigned
+(`authority: evidence-only`). It does not claim reproducibility, hermeticity,
+completeness, recursive package inventory, signatures, or external-source
+authorization. C6.2 itself had no native dylib/runtime inventory; C6.4 adds only
+the bounded direct observation described above. Host-executable, rust-crate,
+host-extension+Nuitka, WASM, and external-package source-native builds omit
+the field.
+
+- In-scope host-extension+`cpython` wheels always write
+  `build.json.artifact_evidence` as `preview-ready` or `unavailable` with a
+  sanitized fixed reason. Evidence unavailability never changes ordinary build
+  success or suppresses `build.json`.
+- Snapshot project/generated inputs before native compile; re-verify at evidence
+  time. Concurrent mutation → `unavailable`, never a false claim. No silent
+  skip of unreadable inputs or truncation at count limits.
+- Bounded final-wheel ZIP inventory without extraction (path/dup/encrypt/
+  symlink/zip-bomb bounds) included in incomplete CycloneDX output.
+- Reachable Cargo resolve graph only (`resolve.root`/`nodes`); only the
+  generated root may be path/source-less; reject other path and all git
+  packages; registry packages require lock checksums; streaming metadata output
+  is hard-capped (process group terminated on overflow).
+- CycloneDX: primary component only in `metadata.component`; real wheel version;
+  top-level `dependencies`. Provenance: wheel+SBOM as subjects; SBOM is not a
+  resolvedDependency; no wheel-hash `invocationId`.
+- Tooling contract **2.7.0** (additive minor).
+
+### C6.1 bounded prebuild authorization-contract preview
+
+This is **not** full C6 completion. Full/signed authorization beyond the
+project SourceLock prebuild contract, and C5.2 source-native implementation,
+remain pending. C6.2 wheel evidence is a separate host-extension path and
+does not authorize external-source packaging.
+
+- Extend C5.1 plans with verified byte sizes only on `AuthorityFile` entries
+  (not the shared host `SourceModule` wire shape). Bind RECORD, METADATA,
+  WHEEL, and every PEP 639 `License-File` under
+  `<dist-info>/licenses/<value>` (Metadata ≥ 2.4; reject backslashes; reject
+  License-Expression+License). Reject missing/blank/UNKNOWN licenses before
+  preview-ready. Enforce module/file/size bounds so every preview-ready plan
+  can fit a valid 256 KiB SourceLock.
+- Publish `plan_snapshot`, `plan_snapshot_sha256`, and shared
+  `license_material_sha256` in check/generate JSON so projects can author
+  locks without internal helpers or local paths.
+- Project-owned `rextio.external-source.lock.json` binds exact identity,
+  path/hash/size/**role**, custom `source_inventory` (not full SPDX/CycloneDX),
+  provenance (`subject_snapshot_sha256`, exact ordered evidence, closed
+  relationship→attestor_kind matrix), and closed license attestation
+  (`decision: allow`, fixed scopes, exact ack constant). Rextio validates
+  structure/binding only — never legality. Project/VCS review is the trust
+  boundary (no signature).
+- Safe lock I/O: single-descriptor open/fstat/read with no-follow and
+  nonblocking where supported; reject symlink/FIFO/non-regular/oversized
+  locks. Strict JSON rejects duplicate keys, NaN/Infinity, excessive depth,
+  and never echoes attacker-controlled key names.
+- Authorization nested only under `external_source_plan.authorization`.
+  Verified still stops with `external-source-c5-not-implemented` and never
+  opens a build path.
+
+### C5.1 external pure-Python source inventory/gate preview
+
+- Add a config-only preview for exactly one imported external package declared
+  with `policy = "try-native"`, `max_depth = 1`, and exact `distribution` plus
+  `version` fields. Existing `try-native` declarations without the exact pair
+  remain metadata-only; CLI/environment policy overrides cannot activate this
+  authority-sensitive path.
+- Resolve installed metadata without importing or executing the package. Require
+  exact distribution identity/version, one purelib `py3-none-any` WHEEL tag,
+  one contained dist-info root, safe unique RECORD paths, and matching SHA-256
+  plus size for WHEEL, METADATA, and selected source files. Reject symlinks,
+  path escapes, unresolved imports, non-UTF-8/unparseable source, and every
+  source module below the direct depth-1 slice.
+- Emit only sanitized `external_source_plan` inventory and lexical names of
+  fully annotated scalar function candidates. Absolute installation paths and
+  source bytes are not serialized, package source is not copied into generated
+  fallback output, and no project-call linkage or Rust lowering is claimed.
+- Block every build carrying an available or unavailable external-source plan
+  before configured CPython/Nuitka/Cargo probes or artifact work. Without a
+  verified C6 SourceLock the status is `external-source-c6-blocked`; with a
+  verified lock the distinct post-authorization block is
+  `external-source-c5-not-implemented`. Programmatic build orchestration fails
+  closed as well. In this preview path, packaging, executable/crate output, and
+  redistribution remain unavailable; only the separate strict Full-C6/C5.2
+  profile described above opens the bounded host-extension path.
+- Serialize and emit a mandatory warning that dependency source translation can
+  create derivative-work or redistribution obligations, especially for
+  GNU/copyleft licenses, and that the preview is not legal advice.
+
+### Plugin API 1.4 — standalone artifact capability (fail-closed)
+
+- Bump `PLUGIN_API_VERSION` to **1.4** (same major as 1.1–1.3). Host-extension
+  lowering for API 1.1–1.3 providers is unchanged.
+- Add the optional `artifact_capability(profile: ArtifactProfile)` hook on a
+  **separate** `RextioArtifactCapabilityPlugin` Protocol (not on
+  `RextioLoweringPlugin`), so legacy Protocol inheritance does not create a
+  callable stub. Concrete-implementation detection ignores Protocol stubs.
+  Presence requires `api_version >= 1.4` **and** a lowering provider;
+  describe-only providers that declare the hook fail load. Absence is valid and
+  means standalone unsupported. The hook is **not** part of the all-or-none
+  lowering member set (`type_vocabulary` / `claim` / `lower` /
+  `crate_dependencies`).
+- Add immutable `PluginArtifactTypeSupport` and `PluginArtifactCapability`
+  records covering exact plugin type keys, claim rule ids, and profile-specific
+  crate dependencies plus uses/helpers. Validate namespace ownership, membership
+  against actual `describe()` rules and `type_vocabulary()` keys, duplicates
+  (canonicalized uses/helpers/deps), malformed returns, reserved core crates,
+  and conflicting pins. Hook exceptions / invalid returns are `PluginError`
+  (CLI `RXT060` with failure evidence; programmatic paths fail-closed).
+- Resolve capability **exactly once per exact** `ArtifactProfile` per
+  generate/build command via immutable `StandalonePluginContext` (reuse for
+  closure, codegen, dependency selection, and JSON — never re-call the hook for
+  reporting). A function is standalone-capable only when every claim rule and
+  every plugin type it uses is covered: signature keys **plus** claim
+  operand/result/receiver types. Never infer support from `PluginType`
+  conversion, resident status, host-extension `crate_dependencies()`, uses, or
+  helpers.
+- `LoweringContext` gains defaulted `backend` (`pyo3` | `standalone-rust`) and
+  `artifact_profile` (exact resolved profile on standalone lowers). Host-
+  extension construction remains valid without those fields.
+- Thread profile-resolved standalone context through rust-crate and
+  host-executable codegen: capable plugin functions render with native Rust types
+  only (no PyO3 boundary). Codegen defense-in-depth rejects uncovered claim type
+  keys and undeclared uses/helpers. Legacy functions without matching capability
+  stay excluded transitively.
+- Inject only profile-specific exact capability crates from functions **actually
+  emitted after transitive exclusion**. Unsupported reachable plugin functions
+  block pre-Cargo for native-only executables; unreachable ones do not. Rust
+  executable CLI preflight uses the capability-aware exact closure / precomputed
+  context so a valid plugin executable is not misclassified as unavailable.
+- Capabilities introspection reports additive `artifact_capability_declared`
+  presence only (no host probe, no profile-hook execution). Generate/build JSON
+  may include resolved `standalone_plugin_capabilities` with deterministic
+  per-function decisions (`function_decisions`); rejected/fallback functions
+  never appear in `capable_functions`. `lowering_provided` semantics are
+  unchanged.
+
+### Host source and artifact planning
+
+- Add immutable `ArtifactProfile`, `SourceModule`/`SourceModuleGraph`, and
+  source-ordered `ModuleInitIR` records with deterministic serialization,
+  project-relative provenance, source hashes, and fail-closed coherence checks.
+- Add a descriptive-only `host_source_plan` to check and build-plan reports.
+  A missing source, unavailable initializer, or module/path/hash mismatch makes
+  the plan unavailable instead of approximating Python import order.
+- Resolve artifact profiles only for outputs actually requested during
+  generate/build. `BuildPlan.artifact_profiles` is authoritative; fallback-only
+  work does not probe or advertise a host target triple.
+
+### Native executable architecture
+
+- Make the Rust executable fallback strategy explicit and closed:
+  `error | python-subprocess | nuitka-sidecar`. Preserve
+  `hybrid_runtime = source | nuitka` as a compatibility alias.
+- Extend executable closure reports with ordered `module_initializers` and fail
+  before external build work when source/initializer authority is unavailable.
+- Connect a deliberately narrow initializer-before-main vertical slice:
+  exactly one source module, no load-time imports/cycles, same-module
+  direct-native entrypoint, and plain single-name assignments to exact scalar
+  literals (`bool`, `int`, `float`, `str`). Revalidate the source hash, plan,
+  and statement indexes before lowering; run the `() -> None` initializer before
+  argv handling and the entrypoint.
+- Do not publish initializer values as Rust globals or Python module values.
+  Native reads of those values remain blocked; broader top-level semantics are
+  deferred.
+
+### Tooling contract 2.7.0 (and prior Train C additions)
+
+- Advance the unreleased producer to **2.7.0** for the C6.2 host-extension
+  wheel artifact-evidence preview. Prior **2.6.0** covers the C6.1 authorization-
+  contract preview: plan authority material (`source_files`, `metadata_files`,
+  `plan_snapshot`, `plan_snapshot_sha256`) plus nested
+  `external_source_plan.authorization`. The plan remains non-distributable;
+  `c6_gate` is `required` or `authorization-verified`; verified authorization
+  still does not grant source-native lowering or packaging.
+- Contract **2.4.0** added plugin standalone-capability
+  presence/declaration and generate/build resolved per-profile allow/deny
+  details, without changing route, native-status, rejection, promotion, or
+  `lowering_provided` semantics.
+- Contract **2.3.0** (still on this branch history) added `host_source_plan`,
+  resolved `artifact_profiles`, closure `module_initializers`, and capabilities
+  `artifact_contract` fields.
+- Add a non-operational `device_provider_contract` marker and immutable draft
+  `manifest()` / `preflight()` records. There is no provider discovery,
+  selection, build/link hook, or runtime dispatch; every preflight result has
+  `support_claim: false`.
+- Add a no-dependency CUDA Driver API inventory probe and Windows/Linux
+  validation workflows. On Windows x64 the probe resolves `nvcuda.dll` from
+  System32 only; on Linux x86_64/aarch64 it loads arch-split reviewed absolute
+  `libcuda.so.1` candidates (specialized WSL2/NVIDIA-container/Jetson mounts
+  before generic distro paths), canonicalizes under reviewed system roots with
+  a group-/world-writable ancestry provenance guard (`0o022`), distinguishes
+  `LIBCUDA_SO_NOT_FOUND` from `LIBCUDA_SO_LOAD_FAILED` without path/`dlerror`
+  leakage, and fails closed otherwise. Loose and strict (`--require-device` /
+  `REXTIO_LINUX_CUDA_REQUIRE_DEVICE=1`) Linux validation modes are documented;
+  its provenance guard rejects writable canonical library leaves as well as
+  writable directory ancestry. Ordinary e2e CI runs host `cargo test` on
+  ubuntu/macOS and a loose Linux validate plus aarch64 compile-only `cargo
+  check`; a separate GPU-free Windows x64 lane compiles/tests the MSVC probe
+  and exercises the PowerShell wrapper and JSON non-claim contract. All
+  platform paths share the
+  same six-symbol inventory surface, never create a context or launch a kernel,
+  and always report `support_claim: false`; this is not CUDA support or
+  certification.
+- Document the released-versus-unreleased boundary, explicit executable
+  fallback, source initializer limitations, device-provider draft, and
+  Windows/Linux CUDA inventory validation procedure.
+
 ## 0.1.4 — 2026-07-18
 
 **Published release.** Package version `0.1.4` is tagged and published to PyPI

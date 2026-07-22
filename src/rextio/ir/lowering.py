@@ -9,8 +9,11 @@ accepted the input, so a failure here is an internal invariant violation, not us
 from __future__ import annotations
 
 import ast
+import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rextio.analyzer.call_resolution import FunctionResolver
 from rextio.analyzer.executable_identity import (
@@ -50,6 +53,7 @@ from rextio.analyzer.models import (
 from rextio.analyzer.native_marker import dotted_name
 from rextio.analyzer.top_level import collect_native_top_level_statements
 from rextio.ir.module import module_from_functions
+from rextio.ir.module_init import ModuleInitIR, ModuleInitSegmentKind
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -90,7 +94,10 @@ from rextio.ir.nodes import (
     WhileIR,
 )
 from rextio.ir.types import type_from_annotation, type_from_string
-from rextio.ir.types import RxtDict, RxtPluginType, RxtPyObject, RxtStr, RxtType
+from rextio.ir.types import RxtDict, RxtNone, RxtPluginType, RxtPyObject, RxtStr, RxtType
+
+if TYPE_CHECKING:
+    from rextio.source.external_linkage import ExternalNativeRegistry
 
 
 class LoweringError(RuntimeError):
@@ -117,6 +124,8 @@ class _PluginLoweringState:
     # The function's resolved import map (visible name -> dotted target),
     # used to resolve plugin annotation spellings like the claim engine does.
     imports: dict[str, str] = field(default_factory=dict)
+    external_native_registry: ExternalNativeRegistry | None = None
+    caller_qualname: str | None = None
 
 
 # Module-level plugin state, set/cleared (try/finally) around each
@@ -132,8 +141,18 @@ def lower_project(
     analysis: ProjectAnalysis,
     include_embedding: bool = False,
     plugin_types: PluginTypeMaps | None = None,
+    *,
+    executable_module_initializers: Mapping[str, ModuleInitIR] | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> ModuleIR:
-    """Lower every accepted native function (and embedding candidate, if included) to a module IR."""
+    """Lower accepted native functions and the explicitly selected top levels.
+
+    ``None`` preserves the existing PyO3 top-level lowering. A mapping is the
+    standalone executable path: only listed, snapshot-authorized initializers
+    are lowered, and they return unit rather than publishing Python globals.
+    """
+    if external_native_registry is not None:
+        external_native_registry.require_fresh_analysis(analysis)
     functions: list[FunctionIR] = []
     nodes_by_file: dict[str, _FunctionSource] = {}
     module_trees_by_file: dict[str, ast.Module] = {}
@@ -141,7 +160,12 @@ def lower_project(
     for function in analysis.accepted_native_functions:
         functions.append(
             _lower_analysis_function(
-                function, analysis, nodes_by_file, resolver, plugin_types=plugin_types
+                function,
+                analysis,
+                nodes_by_file,
+                resolver,
+                plugin_types=plugin_types,
+                external_native_registry=external_native_registry,
             )
         )
     if include_embedding:
@@ -154,9 +178,23 @@ def lower_project(
                     resolver,
                     embedded=True,
                     plugin_types=plugin_types,
+                    external_native_registry=external_native_registry,
                 )
             )
     for top_level in analysis.accepted_native_top_levels:
+        if executable_module_initializers is not None:
+            init_plan = executable_module_initializers.get(top_level.qualname)
+            if init_plan is None:
+                continue
+            module = _module_for_top_level(analysis, top_level)
+            if module is None:
+                raise LoweringError(
+                    f"module was not found for accepted top level: {top_level.qualname}"
+                )
+            functions.append(
+                lower_executable_module_initializer(top_level, init_plan, module, resolver)
+            )
+            continue
         tree = module_trees_by_file.setdefault(
             top_level.file_path,
             _module_tree(Path(top_level.file_path)),
@@ -167,6 +205,8 @@ def lower_project(
                 f"module was not found for accepted top level: {top_level.qualname}"
             )
         functions.append(lower_top_level(top_level, tree, module, resolver))
+    if external_native_registry is not None:
+        functions.extend(external_native_registry.private_functions)
     return module_from_functions(functions)
 
 
@@ -178,6 +218,7 @@ def _lower_analysis_function(
     *,
     embedded: bool = False,
     plugin_types: PluginTypeMaps | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> FunctionIR:
     source = nodes_by_file.setdefault(
         function.file_path,
@@ -197,7 +238,13 @@ def _lower_analysis_function(
     if module is None:
         raise LoweringError(f"module was not found for function: {function.qualname}")
     return lower_function(
-        function, node, module, resolver, embedded=embedded, plugin_types=plugin_types
+        function,
+        node,
+        module,
+        resolver,
+        embedded=embedded,
+        plugin_types=plugin_types,
+        external_native_registry=external_native_registry,
     )
 
 
@@ -209,6 +256,7 @@ def lower_function(
     *,
     embedded: bool = False,
     plugin_types: PluginTypeMaps | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
 ) -> FunctionIR:
     """Lower a single analyzed native function (signature + body) to a ``FunctionIR``."""
     global _PLUGIN_STATE
@@ -262,6 +310,8 @@ def lower_function(
         },
         type_maps=plugin_types,
         imports=function.imports,
+        external_native_registry=external_native_registry,
+        caller_qualname=function.qualname,
     )
     try:
         args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
@@ -313,6 +363,92 @@ def lower_top_level(
         params=[],
         return_type=RxtDict(RxtStr(), type_from_string(top_level.export_value_type)),
         body=BlockIR(statements=statements),
+    )
+
+
+def lower_executable_module_initializer(
+    top_level: TopLevelAnalysis,
+    plan: ModuleInitIR,
+    module: ModuleAnalysis,
+    resolver: FunctionResolver,
+) -> FunctionIR:
+    """Lower one exact, pre-authorized initializer snapshot to ``Result<(), _>``.
+
+    This does not reuse ``collect_native_top_level_statements``. It re-hashes
+    and re-plans the same bytes, then consumes only the exact native statement
+    indexes carried by ``ModuleInitIR``. That keeps report authorization and
+    executable codegen on one source snapshot.
+    """
+    if plan.module_name != top_level.module_name:
+        raise LoweringError(
+            f"module-init plan does not match accepted top level: {top_level.qualname}"
+        )
+    source_path = Path(top_level.file_path)
+    try:
+        source_bytes = source_path.read_bytes()
+    except OSError as error:
+        raise LoweringError(
+            f"module source is unavailable for executable initializer: {top_level.qualname}"
+        ) from error
+    if hashlib.sha256(source_bytes).hexdigest() != plan.source_sha256:
+        raise LoweringError(
+            f"module source changed after executable initializer planning: {top_level.qualname}"
+        )
+
+    # Reconstruct the plan from the exact bytes to defend against a malformed or
+    # stale programmatic caller supplying valid source hash with different indexes.
+    from rextio.analyzer.module_init import build_module_init_ir
+
+    rebuilt = build_module_init_ir(
+        source_bytes,
+        module_name=plan.module_name,
+        path=plan.path,
+        is_package_init=plan.path == "__init__.py" or plan.path.endswith("/__init__.py"),
+    )
+    if rebuilt != plan:
+        raise LoweringError(
+            f"module-init plan does not match the executable source snapshot: {top_level.qualname}"
+        )
+    try:
+        tree = ast.parse(source_bytes.decode("utf-8"), filename=plan.path)
+    except (UnicodeDecodeError, SyntaxError) as error:
+        raise LoweringError(
+            f"module source cannot be parsed for executable initializer: {top_level.qualname}"
+        ) from error
+
+    indexes = tuple(
+        statement_index
+        for segment in plan.segments
+        if segment.kind is ModuleInitSegmentKind.NATIVE
+        for statement_index in segment.statement_indexes
+    )
+    if not indexes or any(index >= len(tree.body) for index in indexes):
+        raise LoweringError(f"module-init statement indexes are unavailable: {top_level.qualname}")
+    statements = [tree.body[index] for index in indexes]
+    if any(
+        not (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Constant)
+            and type(statement.value.value) in {bool, float, int, str}
+        )
+        for statement in statements
+    ):
+        raise LoweringError(
+            "executable module initializer exceeded the scalar-literal assignment slice: "
+            f"{top_level.qualname}"
+        )
+
+    lowered = lower_block(statements, module, resolver).statements
+    lowered.append(ReturnIR(value=None))
+    return FunctionIR(
+        name=top_level.name,
+        qualname=top_level.qualname,
+        module_name=top_level.module_name,
+        params=[],
+        return_type=RxtNone(),
+        body=BlockIR(statements=lowered),
     )
 
 
@@ -675,8 +811,23 @@ def lower_expr(
                 f"statically lowered call target was mutated during module execution: {target}"
             )
         args = _lower_call_args(node, target, module, resolver)
+        external_target: str | None = None
+        if (
+            _PLUGIN_STATE is not None
+            and _PLUGIN_STATE.external_native_registry is not None
+            and _PLUGIN_STATE.caller_qualname is not None
+        ):
+            external_target = _PLUGIN_STATE.external_native_registry.resolve(
+                _PLUGIN_STATE.caller_qualname,
+                node.lineno,
+                node.col_offset,
+            )
         return CallIR(
-            function=_lower_call_target(target, module, resolver),
+            function=(
+                external_target
+                if external_target is not None
+                else _lower_call_target(target, module, resolver)
+            ),
             args=args,
         )
     if isinstance(node, ast.Subscript):

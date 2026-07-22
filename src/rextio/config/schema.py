@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rextio.artifacts.models import FallbackStrategy
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS
 
 
@@ -18,6 +19,31 @@ class BuildConfig:
     # (cargo/maturin/nuitka). A hung toolchain fails the build instead of
     # blocking indefinitely.
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS
+    artifact_evidence_policy: str = "best-effort"
+    # Final Full-C6 distribution is an independent, opt-in hard gate.  It does
+    # not promote the preview artifact-evidence policy by implication.
+    artifact_distribution_policy: str = "disabled"
+    # Full-C6 signing is deliberately split into an owner-signed SourceLock v2
+    # admission and a final artifact-authorization signature. Every path is
+    # project-relative; private signing keys are never accepted by Rextio.
+    artifact_source_lock_manifest: str | None = None
+    artifact_source_lock_signature: str | None = None
+    artifact_policy_manifest: str | None = None
+    artifact_policy_manifest_sha256: str | None = None
+    artifact_cargo_vendor: str | None = None
+    artifact_cargo_vendor_sha256: str | None = None
+    artifact_cargo_lock: str | None = None
+    artifact_cargo_lock_sha256: str | None = None
+    # Owner-prepared lock for every non-project toolchain/support input used
+    # by strict Full C6.  The lock is project-relative; its entries keep
+    # private host locators out of public evidence.
+    artifact_toolchain_support_lock: str | None = None
+    artifact_toolchain_support_lock_sha256: str | None = None
+    artifact_trusted_public_key: str | None = None
+    artifact_trusted_public_key_sha256: str | None = None
+    artifact_final_signature: str | None = None
+    artifact_signing_request_output: str | None = None
+    artifact_repeat_builds: int = 2
 
 
 @dataclass(frozen=True)
@@ -59,6 +85,15 @@ class ImportPackagePolicy:
     policy: str = "fallback"
     plugin: str | None = None
     max_depth: int = 0
+    # Train C5 source-native preview activation.  Both values must be present,
+    # exact, and paired with ``policy = "try-native"`` / ``max_depth = 1``.
+    # Older try-native declarations intentionally remain metadata-only.
+    distribution: str | None = None
+    version: str | None = None
+    # Exact, project-owned source archive used by the strict Full-C6/C5.2
+    # profile.  The hard gate securely opens and revalidates these bytes.
+    source_archive: str | None = None
+    source_archive_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,10 +123,13 @@ class ExecutableConfig:
     # calls (bare name on PATH, absolute path, or a relative path resolved against
     # `<binary>.runtime`). None -> the built-in default (`python3`).
     python: str | None = None
-    # How the `rust` backend ships the delegated Python: "source" (dispatcher.py +
-    # project source, run with `python`) or "nuitka" (a self-contained compiled
-    # dispatcher executable, so no separate Python install is needed at runtime).
-    hybrid_runtime: str = "source"
+    # Explicit fallback for the Rust executable entry graph.  This is separate
+    # from [build].fallback_backend, which continues to control wheel fallback.
+    fallback: FallbackStrategy = FallbackStrategy.PYTHON_SUBPROCESS
+    # Compatibility input retained for old configs.  The loader maps source to
+    # python-subprocess and nuitka to nuitka-sidecar, then uses ``fallback`` as
+    # the canonical authority.
+    hybrid_runtime: str | None = "source"
 
 
 # One pattern shared by config validation and the pin matcher so the two can

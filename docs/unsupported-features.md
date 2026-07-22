@@ -1,13 +1,38 @@
 # Unsupported Features in 0.1.x
 
-Rextio is a focused, alpha-stage hybrid build tool. The package version on this
-branch is **0.1.4** (published to PyPI on 2026-07-18; plugin API 1.3; tooling
-contract **2.2.0**). The direct-Rust subset and boundary rules below still rest
+Rextio is a focused, alpha-stage hybrid build tool. The current package version
+is **0.1.5** (published to PyPI on 2026-07-23; plugin API **1.4**; tooling
+contract **2.24.0**; readiness policy **11**), superseding 0.1.4. The
+direct-Rust subset and boundary rules below still rest
 on the original **0.1.0** design; historical “0.1.0” wording in later sections
 is preserved as design scope, not as a claim that 0.1.0 is the only shipped
 version. Rextio compiles eligible Python functions with statically resolved
 types to Rust native modules and keeps the rest of the project as Python
 fallback.
+
+Release Train C shipped in 0.1.5 with experimental host source/executable
+planning, plugin standalone capability, the C5.1 external-source inventory gate, and the
+C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
+tooling contract **2.24.0**, including C6.2 preview evidence, the C6.3
+required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
+inventory plus C6.5's always-blocked distribution-readiness assessment and
+C6.6's bounded source-transformation inventory observation, C6.7's
+unvalidated reachable-Cargo component-license string observation, C6.8's
+one-hop static packaged path-resolution observation, and C6.9's bounded static
+native-runtime graph observation, plus C6.10's narrow plugin-free
+source-transformation replay verification, C6.11's scoped project-owner
+Cargo component-license policy receipt, and C6.12's separate scoped
+project-source/generated-Rust owner-declaration receipt, C6.13's scoped
+analysis-input receipt, C6.14's compact artifact-policy coverage inventory,
+and C6.15's exact scoped artifact-class policy receipt,
+plus the separate strict Full-C6 primitives in 2.21.0, bounded C5.2/initial CLI
+coordinator in 2.22.0, exact policy handoff/closure hardening in 2.23.0, and
+the public support-lock bootstrap plus path-free production sandbox/support
+receipt surface in 2.24.0. These surfaces are shipped but remain
+Experimental/Alpha. Train C boundaries are called out explicitly below so
+planning records are not mistaken for broad source-AOT support, broad Full C6,
+general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
+CI certification.
 
 Unsupported native features are not bugs in the fallback path. When a native
 candidate uses unsupported syntax, unsupported types, or unsafe boundaries,
@@ -42,6 +67,36 @@ blocks that update variables assigned before the block. Assigned module
 variables must share one supported value type so the initializer can return
 `dict[str, T]`. Rextio still keeps a full original fallback module for
 `REXTIO_NATIVE_MODE=fallback` and native import failures.
+
+### Train C Rust-executable initializer boundary (0.1.5 Experimental)
+
+The Rust executable's initializer-before-main path is separate from, and much
+narrower than, the Python/PyO3 top-level path above. With `native_top_level`
+enabled, it accepts only a single project source module, the initializer and
+direct-native entrypoint in that same module, no module-load imports or graph
+cycles, and plain single-name assignments to exact `bool`, `int`, `float`, or
+`str` literals. Exact source hashes and statement indexes are revalidated
+before lowering.
+
+It does **not** accept annotated/augmented/expression-valued assignments,
+calls, control flow, multiple targets, imports, conditional/deleted/unknown
+bindings, or more than one source module. The generated initializer runs before
+argv handling and the entrypoint, but its values are discarded. They are not
+published as Rust globals or Python module values, and a native function cannot
+read them. A stale or unsupported initializer makes the executable closure
+unavailable and stops before Cargo under every fallback strategy.
+
+Native executable fallback is explicit and closed:
+
+| `[executable] fallback` | Meaning |
+| --- | --- |
+| `error` | Only a fully closed direct-native entry graph is accepted. |
+| `python-subprocess` | Supported immutable-scalar fallback calls use an external CPython dispatcher. |
+| `nuitka-sidecar` | The bounded dispatcher path is compiled as a Nuitka sidecar. |
+
+The legacy `hybrid_runtime = "source" | "nuitka"` input maps to
+`python-subprocess | nuitka-sidecar`. It does not add a fourth strategy.
+See [Host source-AOT and native executables](source-aot-and-executables.md).
 
 If a source function has no annotations and no `.pyi` signature, Rextio only
 compiles it when constants, arithmetic, comparisons, `if` tests, loops,
@@ -318,6 +373,133 @@ that package keep the native candidate on CPython/Nuitka fallback and emit
 `RXT030`. When such a call is inside a loop, the diagnostic suggests
 function-level fallback, adding a plugin, or refactoring to a batch API.
 
+The ordinary C5.1/C6.1 preview adds only a bounded inventory plus prebuild
+authorization contract, not native lowering: one imported package may name an
+exact installed distribution/version with `max_depth = 1`. Rextio verifies
+pure-wheel metadata and RECORD hashes/sizes, then reports sanitized direct-
+module and lexical scalar-function evidence plus authority material without
+importing, copying, lowering, compiling, packaging, or redistributing that
+source. A project-owned `rextio.external-source.lock.json` may authorize one
+available plan (exact hashes/sizes, custom source inventory, provenance with
+subject snapshot binding, closed license attestation); Rextio never
+auto-approves licenses. Outside the separately configured strict profile, every
+resulting plan still blocks `build` before
+configured toolchain or artifact work: missing/invalid authorization is
+`external-source-c6-blocked`, and verified authorization is the distinct
+`external-source-c5-not-implemented` block because the preview itself cannot
+authorize C5.2.
+
+The `strict-evidence` Alpha is the sole narrow exception. On macOS arm64 or
+Linux x86_64 with CPython 3.11/PyO3/Cargo, it requires a non-editable
+RECORD-verified, cache-free Rextio install, no project `.rextioignore`, a sealed
+bounded project Python namespace, and owner-pinned Cargo lock/vendor inputs for
+two `--locked --offline --frozen` builds. Install with `pip --no-compile` and
+run with bytecode writing disabled; any `__pycache__`/`.pyc` among the
+`rextio/` RECORD members or physical package tree, unrecorded tree member,
+between-walk addition, or cumulative installed input above 256 MiB (checked
+first from declared `rextio/` RECORD-member sizes and again from actual
+`stat`/read sizes) fails closed. This protects evidence integrity inside an
+already-running owner-controlled process; it is not hostile-process secure
+boot. It does not defend against hostile same-UID concurrent replacement,
+kernel or operating-system compromise, or provide complete time, randomness,
+scheduling, or CPU virtualization.
+
+The owner must bootstrap and pin the fixed host support closure before the
+strict lifecycle:
+
+```text
+rextio policy bootstrap-support-lock \
+  --project-root . \
+  --output authority/rextio.toolchain-support.lock.json \
+  --format json
+```
+
+The parent must already be owner-owned mode `0700`; the command creates or
+exactly reuses a canonical single-link mode-`0600` file. Its
+host-absolute-path-free JSON retains the project-relative config path and
+returns the exact `artifact_toolchain_support_lock` /
+`artifact_toolchain_support_lock_sha256` config pair, target, fixed roles, raw
+digest, and tree Merkle digest. It does not authorize a build or distribution.
+Before output creation, NFC/case-folded path parts cannot form an exact,
+ancestor, or descendant alias with any configured lifecycle artifact,
+including every `imports.packages.*.source_archive` whether or not it exists.
+
+Linux x86_64 admits only the fixed GNU/Python/Rust closure and executes Cargo
+through `bwrap`, a sealed seccomp filter, the support-locked isolated CPython
+launcher, and Landlock. macOS arm64 executes Cargo through `sandbox-exec` and
+binds the exact Xcode/SDK resources, required system sandbox profiles, and
+captured sealed-system-volume anchor while denying inherited
+`file-map-executable` access under mutable/data-volume roots. Only explicit
+bound read-execute paths and bound read-write directories regain mapping and
+process execution; ambient paths do not. Each strict
+`rextio build` invocation performs three full support-tree verifications: one
+at configured host collection and two inside the executor (entry and
+immediately before authority mint); every owner-policy stage repeats that
+sequence. External, production, internal, and per-build boundaries perform no
+full walk; they
+recheck the process seal, critical leaves, and exact plan/raw/Merkle identity.
+Invocation receipts carry the closed sandbox-engine identifier plus path-free
+plan/profile digests and the Linux seccomp digest; SBOM/SLSA materials carry
+the path-free support identities. In particular, `sandbox_profile_sha256` is a
+path-tokenized,
+engine-specific semantic identity that must agree across both builds and
+equivalent lifecycle runs; the process-local rendered profile is neither a
+public nor signed identity.
+
+One local macOS arm64 run observed about 104,645 members / 2.67 GB and about
+45 seconds for each full verification. This is an observation, not a limit or
+guarantee. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
+requires the manual `python scripts/validate-full-c6-host.py` host validation and is not
+CI-certified. This bounded profile is not a general hermetic-build claim.
+
+The profile securely reopens exactly one
+SourceLock-authorized depth-1 `py3-none-any` source wheel, links only direct
+typed scalar leaf calls, and retains exact `Requires-Dist` plus an
+installed-distribution/source-byte runtime guard. The guard never imports or
+introspects the external dependency module/callable; it verifies `RECORD`
+membership, located paths, exact source size/hash, links, and temporal metadata.
+It opens `/`, walks each directory component with `openat` plus
+`O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC`, and opens the final file with
+`O_NONBLOCK`; linked roots/ancestors, hard links, FIFOs, and other special files
+therefore fail closed without a blocking open. Direct or re-export-laundered
+reflective/loader capabilities—including `importlib.import_module`,
+`globals`/`vars`, `sys.modules`, `__builtins__`, `__dict__`, and loader
+state—are outside the C5.2 closure. The final wheel includes the exact
+SourceLock PEP 639 license bytes under
+`.dist-info/licenses/external/<normalized-distribution>/<version>/`.
+
+Bootstrap v2 contains the exact C6.14+C5.2 technical rows, transformations, and
+internal/external license observations but no owner decision or authority. The
+owner must provide a separate explicit completion and run `rextio policy
+finalize` to create canonical manifest v2. Signing-request and publication runs
+then rederive that lineage and fresh evidence. All three `rextio build`
+lifecycle stages perform two actual isolated builds; the process-local
+`FullC6ProductionAuthority` is not serializable distribution authority. Atomic
+publication still requires an externally produced detached signature over
+`b"REXTIO-FULL-C6-ED25519-V1\0" + canonical_request_bytes`, a separately
+pinned 32-byte raw Ed25519 public key, and a canonical envelope containing the
+canonical Base64 form of the exact 64-byte raw signature. Signing the unprefixed
+request fails. The exact closed seven-field, compact, sorted UTF-8 envelope
+(with no trailing newline) is bounded to 16 KiB and is:
+
+```json
+{"algorithm":"ed25519","domain":"rextio.full-c6-detached-signature.v1","kind":"full-c6-detached-signature","manifest_sha256":"<request-bytes-sha256>","public_key_sha256":"<raw-public-key-sha256>","schema_version":1,"signature":"<base64-raw-64-byte-signature>"}
+```
+
+A successful atomic publication has seven files: the wheel, CycloneDX, SLSA
+provenance, evidence, signature envelope, sealed authorization, and the
+manifest that binds those six payloads. Rextio neither invents owner decisions
+nor accepts, creates, or retains a private signing key. A later external byte
+change does not retroactively erase the completed receipt; it creates a
+receipt/manifest mismatch that consumers must reject. Cargo lock/vendor pins
+establish owner-selected integrity, not registry or publisher authenticity.
+It excludes plugins, executable, rust-crate, native top level, embedding,
+Windows, recursive packages, dynamic calls, and general third-party-source
+translation. The CLI and JSON warn that dependency translation can create
+derivative-work obligations, especially under
+GNU/copyleft terms, and that the inventory/authorization gate is not legal
+advice.
+
 Fallback Python code may call native functions. If fallback Python code calls a
 native function inside a Python loop, Rextio emits `RXT073` because repeated
 Python/Rust boundary crossings may erase speedup. The suggestion points users
@@ -507,6 +689,74 @@ local time).
 - cloud build, SaaS dashboards, or GitHub app workflows
 - native code generation for target languages other than Rust
 - concrete third-party plugin transformations
+
+The Train C planning records shipped in 0.1.5 do not change these additional limits:
+
+- A `SourceModule` or `ModuleInitIR` report is descriptive evidence, not
+  permission to execute or translate that source.
+- Installed pure-Python packages are not recursively promoted, copied, or
+  vendored. C6.1 may verify a project SourceLock prebuild contract, C6.2 may
+  emit incomplete/unsigned host-extension wheel evidence, and C6.3 may require
+  that preview evidence for one bounded artifact set. C6.4 may inspect only the
+  generated extension's directly observed Mach-O (`otool -L`) or ELF
+  (`readelf -W -d`) linkage after exact native-to-wheel relative
+  identity/hash/size binding. It normalizes architecture and admits dependencies
+  only through a closed expected-runtime allowlist; it is not general native
+  dependency support. C6.8 may observe exact contained wheel candidates for
+  direct Mach-O loader-path/self-rpath and ELF ORIGIN RPATH/RUNPATH forms, while
+  system dependencies remain logical leaves. C6.9 recursively inspects only
+  those exact packaged members under strict graph, candidate, inspector,
+  deadline, output, and serialization bounds; cycles are recorded and system
+  names remain unhashed leaves. It does not prove actual loader
+  selection/environment, compute a complete transitive closure, bind system-library
+  bytes, observe `dlopen`, cover Windows or runtime-bearing plugins, or produce
+  signatures. C6.5-C6.15 reports these gaps through a closed,
+  always-blocked readiness assessment; it cannot authorize distribution. C6.6
+  observes only accepted project-owned function lowerings and binds hashes,
+  ranges, closed ids, and the shared generated `src/lib.rs` input. It does not
+  record raw source/AST dumps, cover top-level initialization, external package
+  source, executables, Rust crates, Nuitka, WASM, or runtime-bearing plugins,
+  and it does not make transformation provenance complete. C6.10 can securely
+  reread and replay only a nonempty, project-owned, plugin-free, module-level
+  direct-native PyO3 function closure; it excludes embedding, native top-level,
+  runtime shims, delegated fallback, Python boundary calls, and all external
+  source. Byte-identical `src/lib.rs` regeneration is complete only for that
+  fixed scope and does not make global transformation provenance complete.
+  C6.11 can bind only exact raw registry-license metadata to a strict
+  project-owner allow lock. It does not authenticate the claimed owner, parse
+  SPDX, inspect license/NOTICE files, evaluate obligations or compatibility,
+  provide legal approval, sign evidence, complete global license policy, or
+  authorize distribution. C6.12 can bind separate owner-declared license
+  strings to only the exact C6.10 project-source set and generated `src/lib.rs`
+  output. Its final admission reruns C6.10 with identical inputs and recollects
+  the lock, but it does not prove attestor identity, validate SPDX, inspect
+  license/NOTICE files, analyze obligations or compatibility, prove source
+  ownership or generated-output/derivative-work rights, provide legal
+  approval, sign evidence, complete global license policy, or authorize
+  distribution. Missing C6.13 adds only its scoped unavailable blocker;
+  compatibility snapshots may support conservative analysis but are not
+  evidence-eligible. The receipt covers only the C6.10 sibling-stub scope;
+  present stubs become `project-python-stub` materials, absent records do not.
+  Missing C6.12 adds only its scoped unavailable blocker;
+  malformed present evidence makes every readiness check `not-evaluated` with
+  only `readiness-assessment-unavailable`. Those preview limits remain intact.
+  The separate strict 2.21.0-2.24.0 Alpha defines bootstrap/finalization,
+  signature-request, reproducibility, and publication gates only for its frozen
+  one-package/direct-scalar-leaf CPython 3.11/PyO3/offline-Cargo scope. The
+  final local real-E2E at `f9eb5e6` certifies that complete installed-wheel
+  lifecycle on macOS arm64; subsequent byte-budget and support-lock/sandbox
+  hardening is unit-tested, while evidence for the current `HEAD` on macOS arm64
+  and Linux x86_64 requires manual host validation and is not CI-certified. Full-C6
+  authority outside macOS arm64/Linux x86_64, broader C5.2 linkage/codegen/
+  packaging, output license sets above 128 files or 64 MiB, general standards
+  SBOM coverage, and general redistribution remain future work.
+- Draft device-provider records have no discovery, selection, build/link hook,
+  generated helper injection, or runtime dispatch.
+- The CUDA Driver API inventory probe (Windows x64 and Linux x86_64/aarch64) is
+  not CUDA support. It does not create a context, allocate/transfer memory,
+  create a stream, load a module, launch a kernel, or test generated artifacts.
+  Every report has `support_claim: false`; see
+  [CUDA Driver API inventory validation](testing/cuda-driver-validation.md).
 
 Nuitka fallback packaging is experimental in 0.1.0. If requested and not
 available, Rextio reports a clear `RXT060` error and suggests CPython fallback.

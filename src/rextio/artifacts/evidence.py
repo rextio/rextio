@@ -1,0 +1,7526 @@
+"""Bounded C6.2-C6.15 artifact-evidence models and sidecar helpers.
+
+This module is intentionally separate from :class:`ArtifactProvenance`, which
+remains planning metadata only. C6.2 emits preview-only, incomplete, unsigned
+supply-chain sidecars for ordinary successful host-extension+cpython wheels.
+C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
+Linux ELF only) under the same evidence-only authority. C6.8 adds optional
+one-hop static packaged path observations. C6.9 adds a strictly bounded,
+cycle-safe graph over recursively inspected packaged members and logical system
+leaves. C6.10 adds scoped source replay, C6.11 adds a scoped owner Cargo
+license-policy receipt, C6.12 adds an owner declaration for the exact
+C6.10 project-source/generated-Rust scope, C6.13 binds sibling-stub analysis
+inputs, C6.14 partitions the currently
+observed artifact universe into compact policy-coverage classes, and C6.15
+binds closed owner dispositions to that exact partition. None completes global
+transformation/license policy, signing, or distribution authorization.
+Evidence unavailability never changes ordinary build success.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import inspect
+import io
+import json
+import os
+import re
+import secrets
+import stat
+import sys
+import unicodedata
+import uuid
+import zipfile
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Callable, Mapping, Sequence
+from urllib.parse import urlparse
+
+from rextio.__about__ import __version__ as REXTIO_VERSION
+
+# Fixed bounds for the C6.2 preview path.
+MAX_EVIDENCE_COMPONENTS = 512
+MAX_EVIDENCE_STRING_CHARS = 512
+MAX_EVIDENCE_FILE_BYTES = 16 * 1024 * 1024
+MAX_SIDECAR_BYTES = 4 * 1024 * 1024
+MAX_JSON_DEPTH = 32
+MAX_INPUT_FILES = 256
+MAX_CARGO_PACKAGES = 512
+MAX_CARGO_EDGES = 2048
+MAX_CARGO_METADATA_BYTES = 8 * 1024 * 1024
+MAX_LIMITATION_COUNT = 32
+MAX_WHEEL_ENTRIES = 4096
+MAX_WHEEL_ENTRY_PATH_CHARS = 512
+MAX_WHEEL_ENTRY_UNCOMPRESSED = 8 * 1024 * 1024
+MAX_WHEEL_TOTAL_UNCOMPRESSED = 64 * 1024 * 1024
+MAX_RUNTIME_DEPS = 64
+MAX_RUNTIME_DEP_NAME_CHARS = 256
+MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES = 256 * 1024
+MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS = 256 * 1024
+MAX_RUNTIME_CLOSURE_NODES = 128
+MAX_RUNTIME_CLOSURE_EDGES = 512
+MAX_RUNTIME_CLOSURE_DEPTH = 8
+MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY = 64
+MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS = 2048
+MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS = 128
+MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES = 2 * 1024 * 1024
+MAX_RUNTIME_CLOSURE_INVENTORY_CHARS = 512 * 1024
+MAX_SOURCE_TRANSFORMATIONS = 512
+MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS = 32
+MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES = 128
+MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS = 512 * 1024
+MAX_SOURCE_TRANSFORMATION_VERIFICATION_CHARS = 512 * 1024
+MAX_SOURCE_POSITION = 10_000_000
+MAX_COMPONENT_LICENSE_RECORDS = MAX_CARGO_PACKAGES
+MAX_COMPONENT_LICENSE_OBSERVED_CHARS = MAX_EVIDENCE_STRING_CHARS
+MAX_COMPONENT_LICENSE_INVENTORY_CHARS = 512 * 1024
+MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
+MAX_CARGO_LICENSE_LOCK_BYTES = 256 * 1024
+MAX_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_CHARS = 256 * 1024
+MAX_ANALYSIS_INPUT_EVIDENCE_CHARS = 256 * 1024
+MAX_ARTIFACT_POLICY_COVERAGE_CHARS = 64 * 1024
+MAX_PROJECT_SOURCE_LICENSE_LOCK_BYTES = 256 * 1024
+MAX_ARTIFACT_CLASS_POLICY_LOCK_BYTES = 256 * 1024
+MAX_ARTIFACT_CLASS_POLICY_VERIFICATION_CHARS = 128 * 1024
+
+SOURCE_TRANSFORMATION_INVENTORY_KIND = "source-transformation-inventory"
+SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION = 1
+SOURCE_TRANSFORMATION_INVENTORY_SCOPE = "accepted-project-native-functions"
+SOURCE_TRANSFORMATION_GENERATOR_BACKENDS: frozenset[str] = frozenset({"rextio-core-rust-pyo3-v1"})
+SOURCE_TRANSFORMATION_VERIFICATION_KIND = "source-transformation-verification"
+SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION = 1
+SOURCE_TRANSFORMATION_VERIFICATION_SCOPE = "project-functions-pyo3-plugin-free-v1"
+COMPONENT_LICENSE_INVENTORY_KIND = "component-license-inventory"
+COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION = 1
+COMPONENT_LICENSE_INVENTORY_SCOPE = "reachable-cargo-packages"
+COMPONENT_LICENSE_POLICY_VERIFICATION_KIND = "component-license-policy-verification"
+COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION = 1
+COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE = "reachable-registry-cargo-license-metadata-v1"
+CARGO_LICENSE_POLICY_LOCK_FILENAME = "rextio.cargo-license.lock.json"
+CARGO_LICENSE_POLICY_LOCK_KIND = "rextio.cargo-license-policy-lock"
+CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION = "1"
+CARGO_LICENSE_POLICY = "project-owner-exact-license-metadata-v1"
+CARGO_LICENSE_POLICY_LOCK_ROLE = "cargo-license-policy-lock"
+CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT = "REXTIO_CARGO_LICENSE_POLICY_ACK_V1"
+CARGO_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
+    "local-build",
+    "package",
+    "redistribution",
+)
+PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND = "project-source-license-policy-verification"
+PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION = 1
+PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE = (
+    "project-functions-pyo3-plugin-free-source-license-v1"
+)
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME = "rextio.source-license.lock.json"
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND = "rextio.project-source-license-policy-lock"
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION = "1"
+PROJECT_SOURCE_LICENSE_POLICY = "project-owner-exact-source-license-declaration-v1"
+PROJECT_SOURCE_LICENSE_POLICY_LOCK_ROLE = "project-source-license-policy-lock"
+PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT = "REXTIO_PROJECT_SOURCE_LICENSE_POLICY_ACK_V1"
+PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
+    "local-build",
+    "package",
+    "redistribution",
+)
+ANALYSIS_INPUT_VERIFICATION_KIND = "analysis-input-verification"
+ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION = 1
+ANALYSIS_INPUT_VERIFICATION_SCOPE = "c6.10-project-source-sibling-stubs-v1"
+ANALYSIS_INPUT_SET_VERSION = 1
+SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION = 1
+SUPPORTED_SIGNATURE_PROJECTION_VERSION = 1
+ARTIFACT_POLICY_COVERAGE_INVENTORY_KIND = "artifact-policy-coverage-inventory"
+ARTIFACT_POLICY_COVERAGE_INVENTORY_SCHEMA_VERSION = 1
+ARTIFACT_POLICY_COVERAGE_IDENTITY_SCHEME = "rextio-artifact-component-v1"
+ARTIFACT_POLICY_IDENTITY_STATES = frozenset(
+    {"byte-bound", "declared-checksum-bound", "logical-only"}
+)
+ARTIFACT_LICENSE_POLICY_STATES = frozenset(
+    {
+        "scoped-owner-declaration-bound",
+        "scoped-cargo-owner-receipt-bound",
+        "unassessed",
+    }
+)
+ARTIFACT_TRANSFORMATION_PROVENANCE_STATES = frozenset(
+    {
+        "scoped-replay-input-bound",
+        "scoped-replay-output-verified",
+        "scoped-analysis-input-projection-bound",
+        "unassessed",
+        "not-applicable",
+    }
+)
+ARTIFACT_POLICY_COVERAGE_CLASS_IDS: tuple[str, ...] = (
+    "file-input:project-python-source",
+    "file-input:present-project-python-stub",
+    "file-input:generated-python-input",
+    "file-input:generated-rust-lib",
+    "file-input:generated-rust-build-input",
+    "file-input:generated-cargo-lock",
+    "cargo-component:registry-package",
+    "cargo-component:path-root-package",
+    "wheel-entry:packaged-native-runtime-member",
+    "native-runtime:logical-system-leaf",
+    "file-input:policy-lock",
+    "wheel-output:subject",
+    "wheel-entry:other",
+)
+_ARTIFACT_POLICY_CLASS_SEMANTICS: dict[str, tuple[str, str, str]] = {
+    "file-input:project-python-source": (
+        "byte-bound",
+        "scoped-owner-declaration-bound",
+        "scoped-replay-input-bound",
+    ),
+    "file-input:present-project-python-stub": (
+        "byte-bound",
+        "unassessed",
+        "scoped-analysis-input-projection-bound",
+    ),
+    "file-input:generated-python-input": (
+        "byte-bound",
+        "unassessed",
+        "unassessed",
+    ),
+    "file-input:generated-rust-lib": (
+        "byte-bound",
+        "scoped-owner-declaration-bound",
+        "scoped-replay-output-verified",
+    ),
+    "file-input:generated-rust-build-input": (
+        "byte-bound",
+        "unassessed",
+        "unassessed",
+    ),
+    "file-input:generated-cargo-lock": (
+        "byte-bound",
+        "unassessed",
+        "unassessed",
+    ),
+    "cargo-component:registry-package": (
+        "declared-checksum-bound",
+        "scoped-cargo-owner-receipt-bound",
+        "not-applicable",
+    ),
+    "cargo-component:path-root-package": (
+        "logical-only",
+        "unassessed",
+        "not-applicable",
+    ),
+    "wheel-entry:packaged-native-runtime-member": (
+        "byte-bound",
+        "unassessed",
+        "not-applicable",
+    ),
+    "native-runtime:logical-system-leaf": (
+        "logical-only",
+        "unassessed",
+        "not-applicable",
+    ),
+    "file-input:policy-lock": (
+        "byte-bound",
+        "unassessed",
+        "unassessed",
+    ),
+    "wheel-output:subject": ("byte-bound", "unassessed", "unassessed"),
+    "wheel-entry:other": ("byte-bound", "unassessed", "unassessed"),
+}
+_UNKNOWN_CARGO_LICENSE_VALUES = frozenset(
+    {
+        "unknown",
+        "unknown license",
+        "none",
+        "n/a",
+        "na",
+        "null",
+        "undefined",
+        "unspecified",
+        "noassertion",
+    }
+)
+_UNKNOWN_CARGO_LICENSE_TOKENS = frozenset(
+    {"unknown", "none", "na", "null", "undefined", "unspecified", "noassertion"}
+)
+NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND = "native-runtime-path-resolution-inventory"
+NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION = 1
+NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE = "direct-native-dependencies"
+NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND = "native-runtime-transitive-closure-inventory"
+NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION = 1
+NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE = "bounded-static-packaged-native-runtime-graph"
+
+_HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_DEPENDENCY_BASENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}$")
+_RUNTIME_ROOT_BASENAME = re.compile(r"^_[A-Za-z0-9][A-Za-z0-9._+-]{0,253}$")
+_SAFE_LOGICAL_SEGMENT = re.compile(r"^[A-Za-z0-9._@+%-]+$")
+_TRANSFORMATION_DOTTED_ID = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_TRANSFORMATION_PLUGIN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_OWNER_POLICY_ATTESTOR = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9 .,_+-]*[A-Za-z0-9])?$")
+_WHEEL_VERSION_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._]*)-(?P<version>[A-Za-z0-9][A-Za-z0-9._+]*)-"
+)
+
+# Honest, non-overclaiming limitation markers.
+DEFAULT_LIMITATIONS: tuple[str, ...] = (
+    "preview-only",
+    "composition-incomplete",
+    "unsigned",
+    "not-reproducible-claim",
+    "not-hermetic-claim",
+    "not-completeness-claim",
+    "not-external-source-authorization",
+    "direct-native-linkage-only",
+    "one-hop-static-native-path-resolution-only",
+    "bounded-static-native-runtime-graph-only",
+    "no-loader-environment-selection-claim",
+    "no-transitive-dylib-closure",
+    "no-runtime-dlopen-inventory",
+    "no-recursive-package-inventory",
+    "evidence-only-authority",
+)
+
+# Fixed sanitized unavailability reasons (never echo attacker-controlled text).
+REASON_NATIVE_NOT_BUILT = "native-extension-not-built"
+REASON_SOURCE_SNAPSHOT_MISMATCH = "source-snapshot-mismatch"
+REASON_SOURCE_UNREADABLE = "source-input-unreadable"
+REASON_INPUT_COUNT_EXCEEDED = "input-count-exceeded"
+REASON_CARGO_LOCK_MISSING = "cargo-lock-missing"
+REASON_CARGO_METADATA_FAILED = "cargo-metadata-failed"
+REASON_CARGO_OUTPUT_EXCEEDED = "cargo-metadata-output-exceeded"
+REASON_CARGO_GRAPH_INVALID = "cargo-resolve-graph-invalid"
+REASON_WHEEL_INVENTORY_INVALID = "wheel-inventory-invalid"
+REASON_SIDECAR_WRITE_FAILED = "sidecar-write-failed"
+REASON_EVIDENCE_INTERNAL = "evidence-internal-error"
+REASON_SNAPSHOT_MISSING = "input-snapshot-missing"
+REASON_WHEEL_MUTATED = "wheel-bytes-mutated"
+REASON_RUNTIME_PLATFORM_UNSUPPORTED = "native-runtime-platform-unsupported"
+REASON_RUNTIME_INSPECTOR_MISSING = "native-runtime-inspector-missing"
+REASON_RUNTIME_INSPECTOR_FAILED = "native-runtime-inspector-failed"
+REASON_RUNTIME_INSPECTOR_TIMEOUT = "native-runtime-inspector-timeout"
+REASON_RUNTIME_OUTPUT_EXCEEDED = "native-runtime-output-exceeded"
+REASON_RUNTIME_MALFORMED = "native-runtime-inventory-malformed"
+REASON_RUNTIME_UNSAFE_PATH = "native-runtime-unsafe-dependency-path"
+REASON_RUNTIME_DEP_COUNT_EXCEEDED = "native-runtime-dependency-count-exceeded"
+REASON_RUNTIME_BINARY_MISSING = "native-extension-binary-missing"
+REASON_RUNTIME_BINARY_MISMATCH = "native-extension-binary-mismatch"
+REASON_RUNTIME_WHEEL_MEMBER_MISMATCH = "native-wheel-member-mismatch"
+REASON_RUNTIME_ARCHITECTURE_MISMATCH = "native-runtime-architecture-mismatch"
+REASON_RUNTIME_UNEXPECTED_DEPENDENCY = "native-runtime-unexpected-dependency"
+
+# Closed allowlist for ``ArtifactEvidence.reason`` when status is unavailable.
+UNAVAILABLE_REASONS: frozenset[str] = frozenset(
+    {
+        REASON_NATIVE_NOT_BUILT,
+        REASON_SOURCE_SNAPSHOT_MISMATCH,
+        REASON_SOURCE_UNREADABLE,
+        REASON_INPUT_COUNT_EXCEEDED,
+        REASON_CARGO_LOCK_MISSING,
+        REASON_CARGO_METADATA_FAILED,
+        REASON_CARGO_OUTPUT_EXCEEDED,
+        REASON_CARGO_GRAPH_INVALID,
+        REASON_WHEEL_INVENTORY_INVALID,
+        REASON_SIDECAR_WRITE_FAILED,
+        REASON_EVIDENCE_INTERNAL,
+        REASON_SNAPSHOT_MISSING,
+        REASON_WHEEL_MUTATED,
+        REASON_RUNTIME_PLATFORM_UNSUPPORTED,
+        REASON_RUNTIME_INSPECTOR_MISSING,
+        REASON_RUNTIME_INSPECTOR_FAILED,
+        REASON_RUNTIME_INSPECTOR_TIMEOUT,
+        REASON_RUNTIME_OUTPUT_EXCEEDED,
+        REASON_RUNTIME_MALFORMED,
+        REASON_RUNTIME_UNSAFE_PATH,
+        REASON_RUNTIME_DEP_COUNT_EXCEEDED,
+        REASON_RUNTIME_BINARY_MISSING,
+        REASON_RUNTIME_BINARY_MISMATCH,
+        REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+        REASON_RUNTIME_ARCHITECTURE_MISMATCH,
+        REASON_RUNTIME_UNEXPECTED_DEPENDENCY,
+    }
+)
+
+ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT = "best-effort"
+ARTIFACT_EVIDENCE_POLICY_REQUIRED = "required"
+ARTIFACT_EVIDENCE_SCOPE = "host-extension-wheel-cpython-v1"
+ARTIFACT_EVIDENCE_REQUIRED_STATUS = "preview-ready"
+ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE = "artifact-set-out-of-scope"
+ARTIFACT_EVIDENCE_GATE_UNAVAILABLE = "evidence-unavailable"
+ARTIFACT_CLASS_POLICY_VERIFICATION_KIND = "artifact-class-policy-verification"
+ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION = 1
+ARTIFACT_CLASS_POLICY_LOCK_FILENAME = "rextio.artifact-policy.lock.json"
+ARTIFACT_CLASS_POLICY_LOCK_KIND = "rextio.artifact-class-policy-lock"
+ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION = "1"
+ARTIFACT_CLASS_POLICY = "project-owner-exact-artifact-class-policy-v1"
+ARTIFACT_CLASS_POLICY_LOCK_ROLE = "artifact-class-policy-lock"
+ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT = "REXTIO_ARTIFACT_CLASS_POLICY_ACK_V1"
+ARTIFACT_CLASS_POLICY_ACTION_SCOPES: tuple[str, ...] = (
+    "local-build",
+    "package",
+    "redistribution",
+)
+ARTIFACT_CLASS_LICENSE_DISPOSITIONS = frozenset(
+    {
+        "prerequisite-receipt-bound",
+        "owner-declared-allow",
+        "not-applicable-logical-system-leaf",
+        "not-observed",
+    }
+)
+ARTIFACT_CLASS_TRANSFORMATION_DISPOSITIONS = frozenset(
+    {
+        "prerequisite-receipt-bound",
+        "owner-declared-unverified",
+        "not-applicable",
+        "not-observed",
+    }
+)
+
+# Deterministic UUID namespace for CycloneDX serialNumber (RFC 4122 UUIDv5).
+_CDX_UUID_NAMESPACE = uuid.UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+
+
+class ArtifactEvidenceError(RuntimeError):
+    """A bounded, sanitized failure while producing artifact evidence."""
+
+    def __init__(self, message: str, *, reason: str = REASON_EVIDENCE_INTERNAL) -> None:
+        self.reason = reason
+        super().__init__(_sanitize_error_message(message))
+
+
+@dataclass(frozen=True)
+class ArtifactEvidenceGate:
+    """Immutable report for the opt-in C6.3 required evidence policy."""
+
+    mode: str
+    status: str
+    scope: str = ARTIFACT_EVIDENCE_SCOPE
+    required_status: str = ARTIFACT_EVIDENCE_REQUIRED_STATUS
+    observed_status: str | None = None
+    reason: str | None = None
+    evidence_reason: str | None = None
+    distribution_authorized: bool = False
+    complete: bool = False
+    signed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.mode != ARTIFACT_EVIDENCE_POLICY_REQUIRED:
+            raise ValueError("artifact evidence gate mode must be required")
+        if self.status not in {"satisfied", "blocked"}:
+            raise ValueError("artifact evidence gate status must be satisfied or blocked")
+        if self.scope != ARTIFACT_EVIDENCE_SCOPE:
+            raise ValueError("artifact evidence gate scope is invalid")
+        if self.required_status != ARTIFACT_EVIDENCE_REQUIRED_STATUS:
+            raise ValueError("artifact evidence gate required_status is invalid")
+        if self.reason not in {
+            None,
+            ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE,
+            ARTIFACT_EVIDENCE_GATE_UNAVAILABLE,
+        }:
+            raise ValueError("artifact evidence gate reason is invalid")
+        if self.status == "satisfied":
+            if self.observed_status != ARTIFACT_EVIDENCE_REQUIRED_STATUS:
+                raise ValueError("satisfied gate requires preview-ready evidence")
+            if self.reason is not None or self.evidence_reason is not None:
+                raise ValueError("satisfied gate must not carry failure reasons")
+        elif self.reason is None:
+            raise ValueError("blocked gate requires a reason")
+        if self.reason == ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE:
+            if self.observed_status is not None or self.evidence_reason is not None:
+                raise ValueError("out-of-scope gate must not claim observed evidence")
+        if self.reason == ARTIFACT_EVIDENCE_GATE_UNAVAILABLE:
+            if (
+                self.observed_status != "unavailable"
+                or self.evidence_reason not in UNAVAILABLE_REASONS
+            ):
+                raise ValueError("unavailable gate requires a fixed evidence reason")
+        object.__setattr__(self, "distribution_authorized", False)
+        object.__setattr__(self, "complete", False)
+        object.__setattr__(self, "signed", False)
+
+    @classmethod
+    def out_of_scope(cls) -> ArtifactEvidenceGate:
+        """Return the stable pre-build scope rejection report."""
+        return cls(
+            mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+            status="blocked",
+            reason=ARTIFACT_EVIDENCE_GATE_OUT_OF_SCOPE,
+        )
+
+    @classmethod
+    def from_evidence(cls, evidence: ArtifactEvidence) -> ArtifactEvidenceGate:
+        """Evaluate one C6.2 evidence record without widening its authority."""
+        if evidence.status == ARTIFACT_EVIDENCE_REQUIRED_STATUS:
+            return cls(
+                mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+                status="satisfied",
+                observed_status=evidence.status,
+            )
+        return cls(
+            mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+            status="blocked",
+            observed_status=evidence.status,
+            reason=ARTIFACT_EVIDENCE_GATE_UNAVAILABLE,
+            evidence_reason=evidence.reason,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the fixed, deterministic tooling-contract shape."""
+        return {
+            "mode": self.mode,
+            "status": self.status,
+            "scope": self.scope,
+            "required_status": self.required_status,
+            "observed_status": self.observed_status,
+            "reason": self.reason,
+            "evidence_reason": self.evidence_reason,
+            "distribution_authorized": False,
+            "complete": False,
+            "signed": False,
+        }
+
+
+@dataclass(frozen=True)
+class EvidenceFileRef:
+    """One hashed file referenced by logical (project-relative) path only."""
+
+    logical_path: str
+    sha256: str
+    size: int
+    role: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.logical_path) is not str
+            or type(self.sha256) is not str
+            or type(self.size) is not int
+            or type(self.role) is not str
+        ):
+            raise TypeError("evidence file reference fields have invalid types")
+        validate_logical_reference(self.logical_path)
+        if not _HEX_SHA256.fullmatch(self.sha256):
+            raise ValueError("evidence file sha256 must be 64 lowercase hex characters")
+        if isinstance(self.size, bool) or self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
+            raise ValueError("evidence file size is outside the allowed range")
+        if not self.role.strip() or len(self.role) > MAX_EVIDENCE_STRING_CHARS:
+            raise ValueError("evidence file role is invalid")
+        object.__setattr__(self, "role", self.role.strip())
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "logical_path": self.logical_path,
+            "sha256": self.sha256,
+            "size": self.size,
+            "role": self.role,
+        }
+
+
+@dataclass(frozen=True)
+class WheelEntryRef:
+    """One deterministic wheel ZIP member (no extraction of payload bytes)."""
+
+    name: str
+    sha256: str
+    compressed_size: int
+    uncompressed_size: int
+
+    def __post_init__(self) -> None:
+        # Enforce the same canonical ZIP name rules used at inventory time.
+        try:
+            canonical = canonicalize_zip_entry_name(self.name)
+        except ArtifactEvidenceError as exc:
+            raise ValueError(str(exc)) from exc
+        if canonical != self.name:
+            raise ValueError("wheel entry name is noncanonical")
+        if not _HEX_SHA256.fullmatch(self.sha256):
+            raise ValueError("wheel entry sha256 must be 64 lowercase hex characters")
+        if self.compressed_size < 0 or self.uncompressed_size < 0:
+            raise ValueError("wheel entry size is invalid")
+        if self.uncompressed_size > MAX_WHEEL_ENTRY_UNCOMPRESSED:
+            raise ValueError("wheel entry uncompressed size exceeds the bound")
+        if self.name.endswith("/") and self.uncompressed_size != 0:
+            raise ValueError("directory ZIP entries must have zero uncompressed size")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "name": self.name,
+            "sha256": self.sha256,
+            "compressed_size": self.compressed_size,
+            "uncompressed_size": self.uncompressed_size,
+        }
+
+
+@dataclass(frozen=True)
+class CargoPackageRef:
+    """One sanitized reachable Cargo package from metadata + Cargo.lock.
+
+    Registry sources are retained only for exact lock checksum binding and are
+    never serialized as raw URIs. Reports expose SHA-256 fingerprints only.
+    """
+
+    name: str
+    version: str
+    source: str | None
+    checksum: str | None
+    kind: str
+    features: tuple[str, ...] = ()
+    license: str | None = None
+    package_id: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _bounded_identifier(self.name, "package name"))
+        object.__setattr__(self, "version", _bounded_identifier(self.version, "package version"))
+        if self.source is not None:
+            # Internal canonical registry URI only — never serialized raw.
+            object.__setattr__(self, "source", _bounded_string(self.source, "package source"))
+        if self.checksum is not None and not _HEX_SHA256.fullmatch(self.checksum):
+            raise ValueError("cargo package checksum must be 64 lowercase hex characters")
+        object.__setattr__(self, "kind", _bounded_identifier(self.kind, "package kind"))
+        if type(self.features) is not tuple:
+            raise TypeError("cargo package features must be a tuple")
+        if len(self.features) > MAX_EVIDENCE_COMPONENTS:
+            raise ValueError("cargo package feature count exceeds the bound")
+        features = tuple(_bounded_identifier(item, "feature") for item in self.features)
+        object.__setattr__(self, "features", tuple(sorted(set(features))))
+        if self.license is not None:
+            if type(self.license) is not str:
+                raise TypeError("license must be a string or null")
+            if len(self.license) > MAX_COMPONENT_LICENSE_OBSERVED_CHARS:
+                raise ValueError("license exceeds the allowed length")
+            # Cargo metadata license strings are observation-only. Preserve
+            # nonblank values byte-for-byte at the Python string boundary;
+            # stripping is used only to classify all-whitespace as missing.
+            if not self.license.strip():
+                object.__setattr__(self, "license", None)
+            elif any(ord(character) < 32 for character in self.license):
+                raise ValueError("license contains control characters")
+        if self.package_id:
+            object.__setattr__(self, "package_id", _bounded_string(self.package_id, "package id"))
+
+    def source_fingerprint(self) -> str | None:
+        """Return SHA-256 of the canonical registry source, or None for path-root."""
+        if self.source is None:
+            return None
+        return sha256_hex(self.source.encode("utf-8"))
+
+    def purl(self) -> str:
+        """Return a bounded package URL (never a raw registry URI with secrets)."""
+        if self.kind == "registry":
+            return f"pkg:cargo/{self.name}@{self.version}"
+        return f"pkg:cargo/{self.name}@{self.version}?kind={self.kind}"
+
+    def bom_ref(self) -> str:
+        """Collision-resistant CycloneDX bom-ref for this package."""
+        fingerprint = self.source_fingerprint() or ""
+        digest = sha256_hex(
+            f"{self.kind}|{self.name}|{self.version}|{fingerprint}|{self.checksum or ''}".encode(
+                "utf-8"
+            )
+        )
+        return f"urn:rextio:cargo:{digest[:32]}"
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation.
+
+        Never includes raw registry URIs — only a SHA-256 source fingerprint.
+        """
+        return {
+            "name": self.name,
+            "version": self.version,
+            "source_fingerprint": self.source_fingerprint(),
+            "checksum": self.checksum,
+            "kind": self.kind,
+            "features": list(self.features),
+            "license": self.license,
+            "purl": self.purl(),
+            "bom_ref": self.bom_ref(),
+        }
+
+    def __repr__(self) -> str:
+        # Hide internal registry source URI from repr (never log credentials/paths).
+        return (
+            f"CargoPackageRef(name={self.name!r}, version={self.version!r}, "
+            f"kind={self.kind!r}, source_fingerprint={self.source_fingerprint()!r}, "
+            f"checksum={self.checksum!r})"
+        )
+
+
+@dataclass(frozen=True)
+class CargoDepEdge:
+    """One directed dependency edge keyed by unique package bom-refs."""
+
+    dependent_ref: str
+    dependency_ref: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "dependent_ref", _bounded_identifier(self.dependent_ref, "dependent_ref")
+        )
+        object.__setattr__(
+            self, "dependency_ref", _bounded_identifier(self.dependency_ref, "dependency_ref")
+        )
+        if self.dependent_ref == self.dependency_ref:
+            raise ValueError("cargo dependency edges must not be self-referential")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "dependent_ref": self.dependent_ref,
+            "dependency_ref": self.dependency_ref,
+        }
+
+
+@dataclass(frozen=True)
+class NativeRuntimeDependency:
+    """One sanitized direct dynamic dependency name (basename or install-name)."""
+
+    name: str
+    origin: str = "unresolved"  # system | unresolved | wheel-candidate
+
+    def __post_init__(self) -> None:
+        text = self.name.strip()
+        if not text or len(text) > MAX_RUNTIME_DEP_NAME_CHARS:
+            raise ValueError("native runtime dependency name is invalid")
+        if any(ord(ch) < 32 for ch in text):
+            raise ValueError("native runtime dependency name contains control characters")
+        if "/" in text or "\\" in text or "\0" in text:
+            raise ValueError("native runtime dependency name is unsafe")
+        # Absolute private paths are never admitted.
+        if text.startswith("/") or (len(text) >= 2 and text[1] == ":"):
+            raise ValueError("native runtime dependency name must not be absolute")
+        if ".." in PurePosixPath(text).parts:
+            raise ValueError("native runtime dependency name must not escape")
+        object.__setattr__(self, "name", text)
+        object.__setattr__(
+            self, "origin", _bounded_identifier(self.origin, "runtime dependency origin")
+        )
+        if self.origin not in {"system", "unresolved", "wheel-candidate"}:
+            raise ValueError("native runtime dependency origin is invalid")
+
+    def bom_ref(self) -> str:
+        """Return a stable sanitized identity for this observed dependency."""
+        identity = hashlib.sha256(f"{self.origin}|{self.name}".encode("utf-8")).hexdigest()
+        return f"urn:rextio:native-dep:{identity[:32]}"
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {"name": self.name, "origin": self.origin, "bom_ref": self.bom_ref()}
+
+
+@dataclass(frozen=True)
+class NativeRuntimeInventory:
+    """Bounded direct native linkage inventory for one host-extension binary."""
+
+    format: str  # mach-o | elf
+    architecture: str
+    inspector: str  # otool | readelf (tool name only)
+    subject_basename: str
+    subject_sha256: str
+    subject_size: int
+    wheel_member: str
+    wheel_member_sha256: str
+    wheel_member_size: int
+    dependencies: tuple[NativeRuntimeDependency, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "format", _bounded_identifier(self.format, "runtime format"))
+        if self.format not in {"mach-o", "elf"}:
+            raise ValueError("native runtime format must be mach-o or elf")
+        object.__setattr__(
+            self,
+            "architecture",
+            _bounded_identifier(self.architecture, "runtime architecture"),
+        )
+        if self.architecture not in {
+            "aarch64",
+            "arm",
+            "powerpc",
+            "powerpc64",
+            "riscv64",
+            "s390x",
+            "x86",
+            "x86_64",
+        }:
+            raise ValueError("native runtime architecture is unsupported")
+        object.__setattr__(
+            self, "inspector", _bounded_identifier(self.inspector, "runtime inspector")
+        )
+        if self.inspector not in {"otool", "readelf"}:
+            raise ValueError("native runtime inspector must be otool or readelf")
+        if (self.format, self.inspector) not in {
+            ("mach-o", "otool"),
+            ("elf", "readelf"),
+        }:
+            raise ValueError("native runtime format and inspector must match")
+        object.__setattr__(
+            self,
+            "subject_basename",
+            _bounded_identifier(self.subject_basename, "subject basename"),
+        )
+        if not _HEX_SHA256.fullmatch(self.subject_sha256):
+            raise ValueError("subject sha256 must be 64 lowercase hex characters")
+        if self.subject_size < 0 or self.subject_size > MAX_EVIDENCE_FILE_BYTES:
+            raise ValueError("subject size is outside the allowed range")
+        try:
+            canonical = canonicalize_zip_entry_name(self.wheel_member)
+        except ArtifactEvidenceError as exc:
+            raise ValueError(str(exc)) from exc
+        if canonical != self.wheel_member:
+            raise ValueError("wheel member name is noncanonical")
+        if PurePosixPath(self.wheel_member).name != self.subject_basename:
+            raise ValueError("subject basename must match the wheel member basename")
+        if not _HEX_SHA256.fullmatch(self.wheel_member_sha256):
+            raise ValueError("wheel member sha256 must be 64 lowercase hex characters")
+        if self.wheel_member_size < 0 or self.wheel_member_size > MAX_EVIDENCE_FILE_BYTES:
+            raise ValueError("wheel member size is outside the allowed range")
+        if self.subject_sha256 != self.wheel_member_sha256:
+            raise ValueError("subject and wheel member digests must match")
+        if self.subject_size != self.wheel_member_size:
+            raise ValueError("subject and wheel member sizes must match")
+        if len(self.dependencies) > MAX_RUNTIME_DEPS:
+            raise ValueError("too many native runtime dependencies")
+        names = [dep.name for dep in self.dependencies]
+        if len(names) != len(set(names)):
+            raise ValueError("native runtime dependency names must be unique")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "format": self.format,
+            "architecture": self.architecture,
+            "inspector": self.inspector,
+            "subject_basename": self.subject_basename,
+            "subject_sha256": self.subject_sha256,
+            "subject_size": self.subject_size,
+            "wheel_member": self.wheel_member,
+            "wheel_member_sha256": self.wheel_member_sha256,
+            "wheel_member_size": self.wheel_member_size,
+            "dependency_count": len(self.dependencies),
+            "dependencies": [dep.to_dict() for dep in self.dependencies],
+            "scope": "direct-only",
+            "transitive_closure": False,
+            "runtime_dlopen": False,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimePathResolutionRecord:
+    """One exact, observation-only resolution of a direct native dependency."""
+
+    dependency_bom_ref: str
+    dependency_name: str
+    dependency_origin: str
+    resolution: str
+    mechanism: str
+    wheel_member: str | None = None
+    sha256: str | None = None
+    size: int | None = None
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.dependency_bom_ref, "runtime resolution dependency bom-ref"),
+            (self.dependency_name, "runtime resolution dependency name"),
+            (self.dependency_origin, "runtime resolution dependency origin"),
+            (self.resolution, "runtime resolution result"),
+            (self.mechanism, "runtime resolution mechanism"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if _bounded_identifier(value, label) != value:
+                raise ValueError(f"{label} must be canonical")
+        if not re.fullmatch(r"urn:rextio:native-dep:[0-9a-f]{32}", self.dependency_bom_ref):
+            raise ValueError("runtime resolution dependency bom-ref is invalid")
+        if len(self.dependency_name) > MAX_RUNTIME_DEP_NAME_CHARS:
+            raise ValueError("runtime resolution dependency name exceeds the bound")
+        if self.dependency_origin not in {"system", "unresolved", "wheel-candidate"}:
+            raise ValueError("runtime resolution dependency origin is invalid")
+        allowed = {
+            ("wheel-member", "macho-loader-path"),
+            ("wheel-member", "macho-rpath"),
+            ("wheel-member", "elf-origin-rpath"),
+            ("system-logical", "macho-system"),
+            ("system-logical", "elf-system-name"),
+            ("unresolved", "none"),
+        }
+        if (self.resolution, self.mechanism) not in allowed:
+            raise ValueError("runtime resolution result/mechanism is invalid")
+        wheel_values = (self.wheel_member, self.sha256, self.size)
+        if self.resolution == "wheel-member":
+            if self.dependency_origin != "wheel-candidate":
+                raise ValueError("wheel-member resolution requires a wheel candidate")
+            if (
+                type(self.wheel_member) is not str
+                or type(self.sha256) is not str
+                or type(self.size) is not int
+            ):
+                raise TypeError("wheel-member resolution requires exact wheel fields")
+            try:
+                canonical = canonicalize_zip_entry_name(self.wheel_member)
+            except ArtifactEvidenceError as exc:
+                raise ValueError(str(exc)) from exc
+            if canonical != self.wheel_member or self.wheel_member.endswith("/"):
+                raise ValueError("runtime resolution wheel member is noncanonical")
+            if not _HEX_SHA256.fullmatch(self.sha256):
+                raise ValueError("runtime resolution wheel sha256 is invalid")
+            if self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
+                raise ValueError("runtime resolution wheel size is outside the bound")
+        elif any(value is not None for value in wheel_values):
+            raise ValueError("non-wheel runtime resolution must not carry wheel fields")
+
+    @property
+    def canonical_key(self) -> str:
+        """Return the exact direct-dependency identity ordering key."""
+        return self.dependency_bom_ref
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic direct path-resolution record."""
+        return {
+            "dependency_bom_ref": self.dependency_bom_ref,
+            "dependency_name": self.dependency_name,
+            "dependency_origin": self.dependency_origin,
+            "resolution": self.resolution,
+            "mechanism": self.mechanism,
+            "wheel_member": self.wheel_member,
+            "sha256": self.sha256,
+            "size": self.size,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimePathResolutionInventory:
+    """Exact one-hop static path observations for direct native dependencies."""
+
+    subject_wheel_member: str
+    subject_sha256: str
+    records: tuple[NativeRuntimePathResolutionRecord, ...]
+    kind: str = NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND
+    schema_version: int = NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION
+    scope: str = NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or (
+            self.kind != NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND
+        ):
+            raise ValueError("native runtime path-resolution inventory kind is invalid")
+        if type(self.schema_version) is not int or (
+            self.schema_version != NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION
+        ):
+            raise ValueError("native runtime path-resolution inventory schema is invalid")
+        if type(self.scope) is not str or (
+            self.scope != NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE
+        ):
+            raise ValueError("native runtime path-resolution inventory scope is invalid")
+        try:
+            canonical_subject = canonicalize_zip_entry_name(self.subject_wheel_member)
+        except ArtifactEvidenceError as exc:
+            raise ValueError(str(exc)) from exc
+        if canonical_subject != self.subject_wheel_member or self.subject_wheel_member.endswith(
+            "/"
+        ):
+            raise ValueError("native runtime path-resolution subject wheel member is noncanonical")
+        if not _HEX_SHA256.fullmatch(self.subject_sha256):
+            raise ValueError("native runtime path-resolution subject sha256 is invalid")
+        if type(self.records) is not tuple:
+            raise TypeError("native runtime path-resolution records must be a tuple")
+        if len(self.records) > MAX_RUNTIME_DEPS:
+            raise ValueError("native runtime path-resolution record count exceeds the bound")
+        if not all(type(record) is NativeRuntimePathResolutionRecord for record in self.records):
+            raise TypeError("native runtime path-resolution record model is invalid")
+        keys = tuple(record.canonical_key for record in self.records)
+        if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
+            raise ValueError("native runtime path-resolution records must be canonical and unique")
+        wheel_members = tuple(
+            record.wheel_member for record in self.records if record.wheel_member is not None
+        )
+        if len(wheel_members) != len(set(wheel_members)):
+            raise ValueError("native runtime path-resolution wheel bindings must be unique")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("native runtime path-resolution inventory must remain incomplete")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("native runtime path-resolution inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS:
+            raise ValueError("native runtime path-resolution inventory exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence shape."""
+        return {
+            "kind": NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND,
+            "schema_version": NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION,
+            "scope": NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "subject_wheel_member": self.subject_wheel_member,
+            "subject_sha256": self.subject_sha256,
+            "record_count": len(self.records),
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeTransitiveClosureNode:
+    """One canonical node in the bounded C6.9 static runtime graph."""
+
+    kind: str  # wheel-member | system-logical
+    format: str  # mach-o | elf
+    name: str
+    wheel_member: str | None = None
+    sha256: str | None = None
+    size: int | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in {
+            "wheel-member",
+            "system-logical",
+        }:
+            raise ValueError("native runtime closure node kind is invalid")
+        if type(self.format) is not str or self.format not in {"mach-o", "elf"}:
+            raise ValueError("native runtime closure node format is invalid")
+        if type(self.name) is not str:
+            raise TypeError("native runtime closure node name must be a string")
+        name = _bounded_identifier(self.name, "native runtime closure node name")
+        if self.kind == "system-logical":
+            name_is_safe = _RUNTIME_DEPENDENCY_BASENAME.fullmatch(name) is not None
+        else:
+            name_is_safe = bool(
+                _RUNTIME_DEPENDENCY_BASENAME.fullmatch(name)
+                or _RUNTIME_ROOT_BASENAME.fullmatch(name)
+            )
+        if len(name) > MAX_RUNTIME_DEP_NAME_CHARS or not name_is_safe:
+            raise ValueError("native runtime closure node name is unsafe")
+        object.__setattr__(self, "name", name)
+        byte_fields = (self.wheel_member, self.sha256, self.size)
+        if self.kind == "wheel-member":
+            if (
+                type(self.wheel_member) is not str
+                or type(self.sha256) is not str
+                or type(self.size) is not int
+            ):
+                raise TypeError("packaged runtime closure node requires exact bytes")
+            try:
+                canonical = canonicalize_zip_entry_name(self.wheel_member)
+            except ArtifactEvidenceError as exc:
+                raise ValueError(str(exc)) from exc
+            if canonical != self.wheel_member or self.wheel_member.endswith("/"):
+                raise ValueError("native runtime closure wheel member is noncanonical")
+            if PurePosixPath(self.wheel_member).name != self.name:
+                raise ValueError("native runtime closure node basename is inconsistent")
+            if not _HEX_SHA256.fullmatch(self.sha256):
+                raise ValueError("native runtime closure node sha256 is invalid")
+            if self.size < 0 or self.size > MAX_EVIDENCE_FILE_BYTES:
+                raise ValueError("native runtime closure node size is outside the bound")
+        elif any(value is not None for value in byte_fields):
+            raise ValueError("system runtime closure leaf must not carry byte identity")
+
+    @property
+    def node_ref(self) -> str:
+        """Return a deterministic packaged-content or logical-name identity."""
+        identity = hashlib.sha256(
+            "|".join(
+                (
+                    self.kind,
+                    self.format,
+                    self.name,
+                    self.wheel_member or "",
+                    self.sha256 or "",
+                    "" if self.size is None else str(self.size),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        return f"urn:rextio:native-runtime-node:{identity[:32]}"
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical serialized node."""
+        return {
+            "node_ref": self.node_ref,
+            "kind": self.kind,
+            "format": self.format,
+            "name": self.name,
+            "wheel_member": self.wheel_member,
+            "sha256": self.sha256,
+            "size": self.size,
+            "terminal": self.kind == "system-logical",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeTransitiveClosureEdge:
+    """One statically observed dependency edge between canonical nodes."""
+
+    source_ref: str
+    target_ref: str
+    dependency_name: str
+    mechanism: str
+
+    def __post_init__(self) -> None:
+        node_ref_pattern = r"urn:rextio:native-runtime-node:[0-9a-f]{32}"
+        if type(self.source_ref) is not str or not re.fullmatch(node_ref_pattern, self.source_ref):
+            raise ValueError("native runtime closure source ref is invalid")
+        if type(self.target_ref) is not str or not re.fullmatch(node_ref_pattern, self.target_ref):
+            raise ValueError("native runtime closure target ref is invalid")
+        if type(self.dependency_name) is not str:
+            raise TypeError("native runtime closure dependency name must be a string")
+        dependency_name = _bounded_identifier(
+            self.dependency_name, "native runtime closure dependency name"
+        )
+        if (
+            len(dependency_name) > MAX_RUNTIME_DEP_NAME_CHARS
+            or _RUNTIME_DEPENDENCY_BASENAME.fullmatch(dependency_name) is None
+        ):
+            raise ValueError("native runtime closure dependency name is unsafe")
+        object.__setattr__(self, "dependency_name", dependency_name)
+        if type(self.mechanism) is not str or self.mechanism not in {
+            "macho-loader-path",
+            "macho-rpath",
+            "macho-system",
+            "elf-origin-rpath",
+            "elf-system-name",
+        }:
+            raise ValueError("native runtime closure edge mechanism is invalid")
+
+    @property
+    def canonical_key(self) -> tuple[str, str, str, str]:
+        """Return the total deterministic edge order."""
+        return (
+            self.source_ref,
+            self.dependency_name,
+            self.target_ref,
+            self.mechanism,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        """Return the canonical serialized edge."""
+        return {
+            "source_ref": self.source_ref,
+            "target_ref": self.target_ref,
+            "dependency_name": self.dependency_name,
+            "mechanism": self.mechanism,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeTransitiveClosureInventory:
+    """Strictly bounded, cycle-safe static graph; never a completeness claim."""
+
+    format: str
+    architecture: str
+    subject_wheel_member: str
+    subject_sha256: str
+    subject_size: int
+    root_node_ref: str
+    nodes: tuple[NativeRuntimeTransitiveClosureNode, ...]
+    edges: tuple[NativeRuntimeTransitiveClosureEdge, ...]
+    kind: str = NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND
+    schema_version: int = NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION
+    scope: str = NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if self.kind != NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND:
+            raise ValueError("native runtime closure inventory kind is invalid")
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION
+        ):
+            raise ValueError("native runtime closure inventory schema is invalid")
+        if self.scope != NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE:
+            raise ValueError("native runtime closure inventory scope is invalid")
+        if self.format not in {"mach-o", "elf"}:
+            raise ValueError("native runtime closure inventory format is invalid")
+        if self.architecture not in {
+            "aarch64",
+            "arm",
+            "powerpc",
+            "powerpc64",
+            "riscv64",
+            "s390x",
+            "x86",
+            "x86_64",
+        }:
+            raise ValueError("native runtime closure architecture is invalid")
+        try:
+            canonical_subject = canonicalize_zip_entry_name(self.subject_wheel_member)
+        except ArtifactEvidenceError as exc:
+            raise ValueError(str(exc)) from exc
+        if canonical_subject != self.subject_wheel_member or self.subject_wheel_member.endswith(
+            "/"
+        ):
+            raise ValueError("native runtime closure subject is noncanonical")
+        if not _HEX_SHA256.fullmatch(self.subject_sha256):
+            raise ValueError("native runtime closure subject sha256 is invalid")
+        if (
+            type(self.subject_size) is not int
+            or self.subject_size < 0
+            or self.subject_size > MAX_EVIDENCE_FILE_BYTES
+        ):
+            raise ValueError("native runtime closure subject size is outside the bound")
+        if type(self.nodes) is not tuple or not all(
+            type(node) is NativeRuntimeTransitiveClosureNode for node in self.nodes
+        ):
+            raise TypeError("native runtime closure nodes must use the closed model")
+        if type(self.edges) is not tuple or not all(
+            type(edge) is NativeRuntimeTransitiveClosureEdge for edge in self.edges
+        ):
+            raise TypeError("native runtime closure edges must use the closed model")
+        if not self.nodes or len(self.nodes) > MAX_RUNTIME_CLOSURE_NODES:
+            raise ValueError("native runtime closure node count exceeds the bound")
+        if len(self.edges) > MAX_RUNTIME_CLOSURE_EDGES:
+            raise ValueError("native runtime closure edge count exceeds the bound")
+        node_refs = tuple(node.node_ref for node in self.nodes)
+        if node_refs != tuple(sorted(node_refs)) or len(node_refs) != len(set(node_refs)):
+            raise ValueError("native runtime closure nodes must be canonical and unique")
+        edge_keys = tuple(edge.canonical_key for edge in self.edges)
+        if edge_keys != tuple(sorted(edge_keys)) or len(edge_keys) != len(set(edge_keys)):
+            raise ValueError("native runtime closure edges must be canonical and unique")
+        dependency_keys = tuple((edge.source_ref, edge.dependency_name) for edge in self.edges)
+        if len(dependency_keys) != len(set(dependency_keys)):
+            raise ValueError("native runtime closure dependency resolutions are ambiguous")
+        nodes_by_ref = {node.node_ref: node for node in self.nodes}
+        root = nodes_by_ref.get(self.root_node_ref)
+        if root is None or root.kind != "wheel-member":
+            raise ValueError("native runtime closure root node is invalid")
+        if (
+            root.format != self.format
+            or root.wheel_member != self.subject_wheel_member
+            or root.sha256 != self.subject_sha256
+            or root.size != self.subject_size
+            or _RUNTIME_ROOT_BASENAME.fullmatch(root.name) is None
+        ):
+            raise ValueError("native runtime closure root binding is inconsistent")
+        adjacency: dict[str, list[str]] = {reference: [] for reference in node_refs}
+        for edge in self.edges:
+            source = nodes_by_ref.get(edge.source_ref)
+            target = nodes_by_ref.get(edge.target_ref)
+            if source is None or target is None:
+                raise ValueError("native runtime closure edge endpoint is unknown")
+            if source.kind != "wheel-member":
+                raise ValueError("native runtime closure system leaves cannot have edges")
+            if (
+                source.node_ref != self.root_node_ref
+                and _RUNTIME_DEPENDENCY_BASENAME.fullmatch(source.name) is None
+            ):
+                raise ValueError("native runtime closure dependency node name is invalid")
+            if target.name != edge.dependency_name:
+                raise ValueError("native runtime closure edge target name is inconsistent")
+            if source.format != self.format or target.format != self.format:
+                raise ValueError("native runtime closure node format is inconsistent")
+            if self.format == "mach-o":
+                allowed_mechanisms = {
+                    "macho-loader-path",
+                    "macho-rpath",
+                    "macho-system",
+                }
+            else:
+                allowed_mechanisms = {"elf-origin-rpath", "elf-system-name"}
+            if edge.mechanism not in allowed_mechanisms:
+                raise ValueError("native runtime closure edge format is inconsistent")
+            system_mechanism = edge.mechanism in {
+                "macho-system",
+                "elf-system-name",
+            }
+            if system_mechanism != (target.kind == "system-logical"):
+                raise ValueError("native runtime closure edge resolution kind is invalid")
+            adjacency[edge.source_ref].append(edge.target_ref)
+        depths = {self.root_node_ref: 0}
+        pending = [self.root_node_ref]
+        while pending:
+            current = pending.pop(0)
+            for target_ref in sorted(adjacency[current]):
+                candidate_depth = depths[current] + 1
+                if target_ref not in depths or candidate_depth < depths[target_ref]:
+                    depths[target_ref] = candidate_depth
+                    pending.append(target_ref)
+        if set(depths) != set(node_refs):
+            raise ValueError("native runtime closure graph contains unreachable nodes")
+        if max(depths.values()) > MAX_RUNTIME_CLOSURE_DEPTH:
+            raise ValueError("native runtime closure depth exceeds the bound")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("native runtime closure inventory must remain incomplete")
+        if self.authority != "observation-only":
+            raise ValueError("native runtime closure inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_RUNTIME_CLOSURE_INVENTORY_CHARS:
+            raise ValueError("native runtime closure inventory exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence graph."""
+        adjacency: dict[str, tuple[str, ...]] = {
+            node.node_ref: tuple(
+                edge.target_ref for edge in self.edges if edge.source_ref == node.node_ref
+            )
+            for node in self.nodes
+        }
+        depths = {self.root_node_ref: 0}
+        pending = [self.root_node_ref]
+        while pending:
+            current = pending.pop(0)
+            for target_ref in sorted(adjacency[current]):
+                candidate_depth = depths[current] + 1
+                if target_ref not in depths or candidate_depth < depths[target_ref]:
+                    depths[target_ref] = candidate_depth
+                    pending.append(target_ref)
+        return {
+            "kind": NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND,
+            "schema_version": NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION,
+            "scope": NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "bounded_graph_observed": True,
+            "transitive_closure_complete": False,
+            "actual_loader_selection": False,
+            "runtime_dlopen": False,
+            "format": self.format,
+            "architecture": self.architecture,
+            "subject_wheel_member": self.subject_wheel_member,
+            "subject_sha256": self.subject_sha256,
+            "subject_size": self.subject_size,
+            "root_node_ref": self.root_node_ref,
+            "node_count": len(self.nodes),
+            "edge_count": len(self.edges),
+            "max_depth_observed": max(depths.values()),
+            "limits": {
+                "nodes": MAX_RUNTIME_CLOSURE_NODES,
+                "edges": MAX_RUNTIME_CLOSURE_EDGES,
+                "depth": MAX_RUNTIME_CLOSURE_DEPTH,
+                "candidates_per_dependency": (MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY),
+                "candidate_attempts": MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS,
+                "inspector_invocations": MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS,
+                "inspector_output_bytes": MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES,
+                "serialized_chars": MAX_RUNTIME_CLOSURE_INVENTORY_CHARS,
+            },
+            "nodes": [node.to_dict() for node in self.nodes],
+            "edges": [edge.to_dict() for edge in self.edges],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTransformationRange:
+    """One reliable half-open function source range.
+
+    Lines are one-based and columns are zero-based UTF-8 byte offsets, matching
+    tooling-contract 2.x.  The fixed integer bound prevents hostile model
+    mutation from creating unbounded serialized values.
+    """
+
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.start_line,
+            self.start_column,
+            self.end_line,
+            self.end_column,
+        )
+        if any(type(value) is not int for value in values):
+            raise TypeError("source transformation positions must be integers")
+        if not (1 <= self.start_line <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation start line is invalid")
+        if not (1 <= self.end_line <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation end line is invalid")
+        if not (0 <= self.start_column <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation start column is invalid")
+        if not (0 <= self.end_column <= MAX_SOURCE_POSITION):
+            raise ValueError("source transformation end column is invalid")
+        if (self.end_line, self.end_column) <= (
+            self.start_line,
+            self.start_column,
+        ):
+            raise ValueError("source transformation range must be non-empty")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical tooling-contract range shape."""
+        return {
+            "start": {"line": self.start_line, "column": self.start_column},
+            "end": {"line": self.end_line, "column": self.end_column},
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTransformationRecord:
+    """One bounded source-to-generated-Rust observation.
+
+    The semantic fingerprint is a SHA-256 of the analyzer's attribute-free AST
+    identity.  Neither source text nor an AST dump is retained or serialized.
+    """
+
+    source_path: str
+    source_sha256: str
+    function_module: str
+    function_qualname: str
+    source_range: SourceTransformationRange
+    semantic_ast_sha256: str
+    generated_rust: EvidenceFileRef
+    generator_backend: str
+    plugin_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_logical_reference(self.source_path)
+        if not _HEX_SHA256.fullmatch(self.source_sha256):
+            raise ValueError("source transformation source sha256 is invalid")
+        object.__setattr__(
+            self,
+            "function_module",
+            _bounded_identifier(self.function_module, "function module"),
+        )
+        if not _TRANSFORMATION_DOTTED_ID.fullmatch(self.function_module):
+            raise ValueError("source transformation function module is invalid")
+        object.__setattr__(
+            self,
+            "function_qualname",
+            _bounded_identifier(self.function_qualname, "function qualname"),
+        )
+        if not _TRANSFORMATION_DOTTED_ID.fullmatch(self.function_qualname):
+            raise ValueError("source transformation function qualname is invalid")
+        if not self.function_qualname.startswith(f"{self.function_module}."):
+            raise ValueError("source transformation qualname is not module-bound")
+        if type(self.source_range) is not SourceTransformationRange:
+            raise TypeError("source transformation range model is invalid")
+        if not _HEX_SHA256.fullmatch(self.semantic_ast_sha256):
+            raise ValueError("source transformation semantic AST sha256 is invalid")
+        if type(self.generated_rust) is not EvidenceFileRef:
+            raise TypeError("source transformation generated Rust binding is invalid")
+        if self.generated_rust.role != "generated-rust-input":
+            raise ValueError("source transformation output role is invalid")
+        if PurePosixPath(self.generated_rust.logical_path).parts[-2:] != (
+            "src",
+            "lib.rs",
+        ):
+            raise ValueError("source transformation output must bind Rust src/lib.rs")
+        object.__setattr__(
+            self,
+            "generator_backend",
+            _bounded_identifier(self.generator_backend, "generator backend"),
+        )
+        if self.generator_backend not in SOURCE_TRANSFORMATION_GENERATOR_BACKENDS:
+            raise ValueError("source transformation generator/backend is unsupported")
+        if type(self.plugin_ids) is not tuple:
+            raise TypeError("source transformation plugin ids must be a tuple")
+        if len(self.plugin_ids) > MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS:
+            raise ValueError("source transformation plugin id count exceeds the bound")
+        plugin_ids = tuple(
+            _bounded_identifier(plugin_id, "plugin id") for plugin_id in self.plugin_ids
+        )
+        if any(not _TRANSFORMATION_PLUGIN_ID.fullmatch(plugin_id) for plugin_id in plugin_ids):
+            raise ValueError("source transformation plugin id is invalid")
+        if plugin_ids != tuple(sorted(set(plugin_ids))):
+            raise ValueError("source transformation plugin ids must be sorted and unique")
+        object.__setattr__(self, "plugin_ids", plugin_ids)
+
+    @property
+    def canonical_key(self) -> tuple[object, ...]:
+        """Return the closed deterministic inventory order key."""
+        return (
+            self.source_path,
+            self.function_module,
+            self.function_qualname,
+            self.source_range.start_line,
+            self.source_range.start_column,
+            self.source_range.end_line,
+            self.source_range.end_column,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic, path-bounded observation shape."""
+        return {
+            "source_path": self.source_path,
+            "source_sha256": self.source_sha256,
+            "function_module": self.function_module,
+            "function_qualname": self.function_qualname,
+            "source_range": self.source_range.to_dict(),
+            "semantic_ast_sha256": self.semantic_ast_sha256,
+            "generated_rust": self.generated_rust.to_dict(),
+            "generator_backend": self.generator_backend,
+            "plugin_ids": list(self.plugin_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTransformationInventory:
+    """Immutable closed inventory of accepted project function lowerings."""
+
+    records: tuple[SourceTransformationRecord, ...]
+    kind: str = SOURCE_TRANSFORMATION_INVENTORY_KIND
+    schema_version: int = SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION
+    scope: str = SOURCE_TRANSFORMATION_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if self.kind != SOURCE_TRANSFORMATION_INVENTORY_KIND:
+            raise ValueError("source transformation inventory kind is invalid")
+        if type(self.schema_version) is not int:
+            raise TypeError("source transformation inventory schema must be an integer")
+        if self.schema_version != SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION:
+            raise ValueError("source transformation inventory schema is invalid")
+        if self.scope != SOURCE_TRANSFORMATION_INVENTORY_SCOPE:
+            raise ValueError("source transformation inventory scope is invalid")
+        if type(self.records) is not tuple:
+            raise TypeError("source transformation records must be a tuple")
+        if len(self.records) > MAX_SOURCE_TRANSFORMATIONS:
+            raise ValueError("source transformation record count exceeds the bound")
+        if not all(type(record) is SourceTransformationRecord for record in self.records):
+            raise TypeError("source transformation inventory record model is invalid")
+        keys = tuple(record.canonical_key for record in self.records)
+        if keys != tuple(sorted(keys)):
+            raise ValueError("source transformation records must use canonical order")
+        if len(keys) != len(set(keys)):
+            raise ValueError("source transformation records must be unique")
+        identities = tuple(
+            (record.function_module, record.function_qualname) for record in self.records
+        )
+        if len(identities) != len(set(identities)):
+            raise ValueError("source transformation function identities must be unique")
+        source_ranges = tuple(
+            (
+                record.source_path,
+                record.source_range.start_line,
+                record.source_range.start_column,
+                record.source_range.end_line,
+                record.source_range.end_column,
+            )
+            for record in self.records
+        )
+        if len(source_ranges) != len(set(source_ranges)):
+            raise ValueError("source transformation source ranges must be unambiguous")
+        generated_bindings = tuple(record.generated_rust for record in self.records)
+        if len(set(generated_bindings)) > 1:
+            raise ValueError("source transformation Rust binding must be unambiguous")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("source transformation inventory must remain incomplete")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("source transformation inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS:
+            raise ValueError("source transformation inventory exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence shape."""
+        return {
+            "kind": SOURCE_TRANSFORMATION_INVENTORY_KIND,
+            "schema_version": SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION,
+            "scope": SOURCE_TRANSFORMATION_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "record_count": len(self.records),
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SourceTransformationVerification:
+    """One bounded replay verification of a complete accepted PyO3 closure."""
+
+    source_transformation_inventory_sha256: str
+    source_input_set_sha256: str
+    module_ir_sha256: str
+    function_qualnames: tuple[str, ...]
+    source_inputs: tuple[EvidenceFileRef, ...]
+    generated_rust: EvidenceFileRef
+    regenerated_rust_sha256: str
+    regenerated_rust_size: int
+    generator_backend: str
+    kind: str = SOURCE_TRANSFORMATION_VERIFICATION_KIND
+    schema_version: int = SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION
+    scope: str = SOURCE_TRANSFORMATION_VERIFICATION_SCOPE
+    complete_for_scope: bool = True
+    global_provenance_complete: bool = False
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if self.kind != SOURCE_TRANSFORMATION_VERIFICATION_KIND:
+            raise ValueError("source transformation verification kind is invalid")
+        if type(self.schema_version) is not int:
+            raise TypeError("source transformation verification schema must be an integer")
+        if self.schema_version != SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("source transformation verification schema is invalid")
+        if self.scope != SOURCE_TRANSFORMATION_VERIFICATION_SCOPE:
+            raise ValueError("source transformation verification scope is invalid")
+        if not _HEX_SHA256.fullmatch(self.source_transformation_inventory_sha256):
+            raise ValueError("source transformation inventory digest is invalid")
+        if not _HEX_SHA256.fullmatch(self.source_input_set_sha256):
+            raise ValueError("source transformation input-set digest is invalid")
+        if not _HEX_SHA256.fullmatch(self.module_ir_sha256):
+            raise ValueError("source transformation ModuleIR digest is invalid")
+        if type(self.function_qualnames) is not tuple:
+            raise TypeError("verified function qualnames must be a tuple")
+        if not self.function_qualnames or len(self.function_qualnames) > MAX_SOURCE_TRANSFORMATIONS:
+            raise ValueError("verified function count is outside the bound")
+        qualnames = tuple(
+            _bounded_identifier(qualname, "verified function qualname")
+            for qualname in self.function_qualnames
+        )
+        if any(not _TRANSFORMATION_DOTTED_ID.fullmatch(qualname) for qualname in qualnames):
+            raise ValueError("verified function qualname is invalid")
+        if qualnames != tuple(sorted(set(qualnames))):
+            raise ValueError("verified function qualnames must be sorted and unique")
+        object.__setattr__(self, "function_qualnames", qualnames)
+        if type(self.source_inputs) is not tuple:
+            raise TypeError("verified source inputs must be a tuple")
+        if not self.source_inputs or len(self.source_inputs) > MAX_INPUT_FILES:
+            raise ValueError("verified source input count is outside the bound")
+        if not all(type(item) is EvidenceFileRef for item in self.source_inputs):
+            raise TypeError("verified source input model is invalid")
+        if any(item.role != "project-python-source" for item in self.source_inputs):
+            raise ValueError("verified source input role is invalid")
+        source_paths = tuple(item.logical_path for item in self.source_inputs)
+        if source_paths != tuple(sorted(source_paths)) or len(source_paths) != len(
+            set(source_paths)
+        ):
+            raise ValueError("verified source inputs must be canonical and unique")
+        expected_input_set_sha256 = sha256_hex(
+            canonical_json_bytes([item.to_dict() for item in self.source_inputs])
+        )
+        if self.source_input_set_sha256 != expected_input_set_sha256:
+            raise ValueError("verified source input-set digest is inconsistent")
+        if type(self.generated_rust) is not EvidenceFileRef:
+            raise TypeError("verified generated Rust binding is invalid")
+        if self.generated_rust.role != "generated-rust-input" or PurePosixPath(
+            self.generated_rust.logical_path
+        ).parts[-2:] != ("src", "lib.rs"):
+            raise ValueError("verified generated Rust output must bind src/lib.rs")
+        if not _HEX_SHA256.fullmatch(self.regenerated_rust_sha256):
+            raise ValueError("regenerated Rust digest is invalid")
+        if (
+            type(self.regenerated_rust_size) is not int
+            or self.regenerated_rust_size < 0
+            or self.regenerated_rust_size > MAX_EVIDENCE_FILE_BYTES
+        ):
+            raise ValueError("regenerated Rust size is invalid")
+        if (
+            self.regenerated_rust_sha256 != self.generated_rust.sha256
+            or self.regenerated_rust_size != self.generated_rust.size
+        ):
+            raise ValueError("regenerated Rust does not bind the captured output")
+        object.__setattr__(
+            self,
+            "generator_backend",
+            _bounded_identifier(self.generator_backend, "verification generator backend"),
+        )
+        if self.generator_backend not in SOURCE_TRANSFORMATION_GENERATOR_BACKENDS:
+            raise ValueError("verification generator backend is unsupported")
+        if type(self.complete_for_scope) is not bool or not self.complete_for_scope:
+            raise ValueError("source transformation verification scope is incomplete")
+        if type(self.global_provenance_complete) is not bool or self.global_provenance_complete:
+            raise ValueError("source transformation global provenance must remain incomplete")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("source transformation verification must remain incomplete")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("source transformation verification authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_SOURCE_TRANSFORMATION_VERIFICATION_CHARS:
+            raise ValueError("source transformation verification exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped replay-verification shape."""
+        return {
+            "kind": SOURCE_TRANSFORMATION_VERIFICATION_KIND,
+            "schema_version": SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION,
+            "scope": SOURCE_TRANSFORMATION_VERIFICATION_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "complete_for_scope": True,
+            "global_provenance_complete": False,
+            "scoped_verification": True,
+            "plugin_free": True,
+            "full_accepted_function_closure": True,
+            "source_transformation_inventory_sha256": (self.source_transformation_inventory_sha256),
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "module_ir_sha256": self.module_ir_sha256,
+            "function_count": len(self.function_qualnames),
+            "function_qualnames": list(self.function_qualnames),
+            "source_input_count": len(self.source_inputs),
+            "source_inputs": [item.to_dict() for item in self.source_inputs],
+            "generated_rust": self.generated_rust.to_dict(),
+            "regenerated_rust_sha256": self.regenerated_rust_sha256,
+            "regenerated_rust_size": self.regenerated_rust_size,
+            "generator_backend": self.generator_backend,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisInputRecord:
+    """One immutable C6.13 sibling-stub observation for a C6.10 source."""
+
+    source_path: str
+    stub_path: str
+    state: str
+    stub: EvidenceFileRef | None = None
+    supported_signature_projection_version: int | None = None
+    supported_signature_projection_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.source_path) is not str or type(self.stub_path) is not str:
+            raise TypeError("analysis input paths must be strings")
+        validate_logical_reference(self.source_path)
+        validate_logical_reference(self.stub_path)
+        if not self.source_path.endswith(".py") or not self.stub_path.endswith(".pyi"):
+            raise ValueError("analysis input paths have invalid suffixes")
+        if self.stub_path != self.source_path[:-3] + ".pyi":
+            raise ValueError("analysis input stub path is not derived from source path")
+        if type(self.state) is not str or self.state not in {"absent", "present"}:
+            raise ValueError("analysis input state is invalid")
+        if self.state == "absent":
+            if any(
+                value is not None
+                for value in (
+                    self.stub,
+                    self.supported_signature_projection_version,
+                    self.supported_signature_projection_sha256,
+                )
+            ):
+                raise ValueError("absent analysis inputs cannot contain evidence")
+            return
+        if type(self.stub) is not EvidenceFileRef:
+            raise ValueError("present analysis inputs require a project stub reference")
+        try:
+            rebuilt_stub = EvidenceFileRef(
+                self.stub.logical_path,
+                self.stub.sha256,
+                self.stub.size,
+                self.stub.role,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("present analysis input stub reference is invalid") from exc
+        if rebuilt_stub != self.stub or rebuilt_stub.role != "project-python-stub":
+            raise ValueError("present analysis input stub reference is invalid")
+        if self.stub.logical_path != self.stub_path:
+            raise ValueError("analysis input stub reference path differs")
+        projection_values = (
+            self.supported_signature_projection_version,
+            self.supported_signature_projection_sha256,
+        )
+        if projection_values[0] is None or projection_values[1] is None:
+            raise ValueError("present analysis inputs require projection metadata")
+        if type(projection_values[0]) is not int or isinstance(projection_values[0], bool):
+            raise TypeError("analysis input projection version must be an integer")
+        if projection_values[0] != SUPPORTED_SIGNATURE_PROJECTION_VERSION:
+            raise ValueError("analysis input projection version is invalid")
+        if type(projection_values[1]) is not str or not _HEX_SHA256.fullmatch(projection_values[1]):
+            raise ValueError("analysis input projection digest is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return metadata only; never serialize stub bytes or filesystem paths."""
+        return {
+            "source_path": self.source_path,
+            "stub_path": self.stub_path,
+            "state": self.state,
+            "stub": self.stub.to_dict() if self.stub is not None else None,
+            "supported_signature_projection_version": self.supported_signature_projection_version,
+            "supported_signature_projection_sha256": self.supported_signature_projection_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisInputVerification:
+    """C6.13 evidence bound to one exact C6.10 source transformation receipt."""
+
+    source_transformation_verification_sha256: str
+    source_input_set_sha256: str
+    source_paths: tuple[str, ...]
+    records: tuple[AnalysisInputRecord, ...]
+    analysis_input_set_sha256: str
+    supported_signature_projection_set_sha256: str
+    kind: str = ANALYSIS_INPUT_VERIFICATION_KIND
+    schema_version: int = ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION
+    scope: str = ANALYSIS_INPUT_VERIFICATION_SCOPE
+    analysis_input_set_version: int = ANALYSIS_INPUT_SET_VERSION
+    supported_signature_projection_set_version: int = SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION
+    authority: str = "observation-only"
+    complete_for_scope: bool = True
+    global_build_input_closure_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.kind) is not str
+            or self.kind != ANALYSIS_INPUT_VERIFICATION_KIND
+            or type(self.schema_version) is not int
+            or isinstance(self.schema_version, bool)
+            or self.schema_version != ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION
+        ):
+            raise ValueError("analysis input verification identity is invalid")
+        if type(self.scope) is not str or self.scope != ANALYSIS_INPUT_VERIFICATION_SCOPE:
+            raise ValueError("analysis input verification scope is invalid")
+        for value in (
+            self.source_transformation_verification_sha256,
+            self.source_input_set_sha256,
+            self.analysis_input_set_sha256,
+            self.supported_signature_projection_set_sha256,
+        ):
+            if type(value) is not str or not _HEX_SHA256.fullmatch(value):
+                raise ValueError("analysis input evidence digest is invalid")
+        if (
+            type(self.analysis_input_set_version) is not int
+            or isinstance(self.analysis_input_set_version, bool)
+            or self.analysis_input_set_version != ANALYSIS_INPUT_SET_VERSION
+            or type(self.supported_signature_projection_set_version) is not int
+            or isinstance(self.supported_signature_projection_set_version, bool)
+            or self.supported_signature_projection_set_version
+            != SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION
+        ):
+            raise ValueError("analysis input evidence digest version is invalid")
+        if (
+            type(self.source_paths) is not tuple
+            or not self.source_paths
+            or len(self.source_paths) > MAX_INPUT_FILES
+            or any(type(path) is not str for path in self.source_paths)
+        ):
+            raise ValueError("analysis input source coverage is invalid")
+        if (
+            type(self.records) is not tuple
+            or len(self.records) != len(self.source_paths)
+            or len(self.records) > MAX_INPUT_FILES
+        ):
+            raise ValueError("analysis input record coverage is invalid")
+        _reject_analysis_input_path_aliases(self.source_paths, "source")
+        if tuple(self.source_paths) != tuple(sorted(self.source_paths)) or len(
+            set(self.source_paths)
+        ) != len(self.source_paths):
+            raise ValueError("analysis input source paths are not canonical")
+        if any(type(record) is not AnalysisInputRecord for record in self.records):
+            raise TypeError("analysis input records are invalid")
+        _reject_analysis_input_path_aliases(
+            tuple(record.stub_path for record in self.records), "stub"
+        )
+        if tuple(record.source_path for record in self.records) != self.source_paths:
+            raise ValueError("analysis input records do not cover the source paths")
+        if type(self.authority) is not str or self.authority != "observation-only":
+            raise ValueError("analysis input verification authority is invalid")
+        for claim, expected in (
+            (self.complete_for_scope, True),
+            (self.global_build_input_closure_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        ):
+            if type(claim) is not bool or claim is not expected:
+                raise ValueError("analysis input verification safety claim is invalid")
+        expected_inputs = analysis_input_records_digest(
+            self.records, self.analysis_input_set_version
+        )
+        if expected_inputs != self.analysis_input_set_sha256:
+            raise ValueError("analysis input-set digest is inconsistent")
+        expected_projection = analysis_input_projections_digest(
+            self.records, self.supported_signature_projection_set_version
+        )
+        if expected_projection != self.supported_signature_projection_set_sha256:
+            raise ValueError("supported signature projection digest is inconsistent")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_ANALYSIS_INPUT_EVIDENCE_CHARS:
+            raise ValueError("analysis input evidence exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return deterministic metadata without raw bytes or absolute paths."""
+        return {
+            "kind": self.kind,
+            "schema_version": self.schema_version,
+            "scope": self.scope,
+            "authority": self.authority,
+            "complete_for_scope": self.complete_for_scope,
+            "global_build_input_closure_complete": self.global_build_input_closure_complete,
+            "complete": self.complete,
+            "signed": self.signed,
+            "distribution_authorized": self.distribution_authorized,
+            "source_transformation_verification_sha256": self.source_transformation_verification_sha256,
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "source_paths": list(self.source_paths),
+            "records": [record.to_dict() for record in self.records],
+            "analysis_input_set_version": self.analysis_input_set_version,
+            "analysis_input_set_sha256": self.analysis_input_set_sha256,
+            "supported_signature_projection_set_version": self.supported_signature_projection_set_version,
+            "supported_signature_projection_set_sha256": self.supported_signature_projection_set_sha256,
+        }
+
+
+def analysis_input_records_digest(records: tuple[AnalysisInputRecord, ...], version: int) -> str:
+    """Hash the fixed-version canonical record envelope."""
+    if (
+        type(version) is not int
+        or isinstance(version, bool)
+        or version != ANALYSIS_INPUT_SET_VERSION
+    ):
+        raise ValueError("analysis input record digest version is invalid")
+    return sha256_hex(
+        canonical_json_bytes(
+            {"version": version, "records": [record.to_dict() for record in records]}
+        )
+    )
+
+
+def analysis_input_projections_digest(
+    records: tuple[AnalysisInputRecord, ...], version: int
+) -> str:
+    """Hash the fixed-version canonical projection envelope."""
+    if (
+        type(version) is not int
+        or isinstance(version, bool)
+        or version != SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION
+    ):
+        raise ValueError("analysis input projection digest version is invalid")
+    projections = [
+        {
+            "source_path": record.source_path,
+            "stub_path": record.stub_path,
+            "state": record.state,
+            "version": record.supported_signature_projection_version,
+            "sha256": record.supported_signature_projection_sha256,
+        }
+        for record in records
+    ]
+    return sha256_hex(canonical_json_bytes({"version": version, "projections": projections}))
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPolicyCoverageClass:
+    """Compact coverage summary for one disjoint observed-component class."""
+
+    class_id: str
+    observed_count: int
+    canonical_identity_set_sha256: str
+    identity_state: str
+    license_policy_state: str
+    transformation_provenance_state: str
+    license_policy_receipt_kind: str | None = None
+    license_policy_receipt_sha256: str | None = None
+    transformation_provenance_receipt_kind: str | None = None
+    transformation_provenance_receipt_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.class_id) is not str or self.class_id not in (
+            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+        ):
+            raise ValueError("artifact policy coverage class is invalid")
+        if (
+            type(self.observed_count) is not int
+            or isinstance(self.observed_count, bool)
+            or self.observed_count < 0
+            or self.observed_count
+            > MAX_INPUT_FILES
+            + MAX_CARGO_PACKAGES
+            + MAX_RUNTIME_CLOSURE_NODES
+            + MAX_WHEEL_ENTRIES
+            + 3
+        ):
+            raise ValueError("artifact policy coverage count is invalid")
+        if type(self.canonical_identity_set_sha256) is not str or not _HEX_SHA256.fullmatch(
+            self.canonical_identity_set_sha256
+        ):
+            raise ValueError("artifact policy coverage set digest is invalid")
+        if (
+            type(self.identity_state) is not str
+            or self.identity_state not in ARTIFACT_POLICY_IDENTITY_STATES
+        ):
+            raise ValueError("artifact policy coverage identity state is invalid")
+        if (
+            type(self.license_policy_state) is not str
+            or self.license_policy_state not in ARTIFACT_LICENSE_POLICY_STATES
+        ):
+            raise ValueError("artifact license policy state is invalid")
+        if (
+            type(self.transformation_provenance_state) is not str
+            or self.transformation_provenance_state not in ARTIFACT_TRANSFORMATION_PROVENANCE_STATES
+        ):
+            raise ValueError("artifact transformation provenance state is invalid")
+        if (
+            self.identity_state,
+            self.license_policy_state,
+            self.transformation_provenance_state,
+        ) != _ARTIFACT_POLICY_CLASS_SEMANTICS[self.class_id]:
+            raise ValueError("artifact policy coverage class semantics are invalid")
+        self._validate_license_dimension(
+            state=self.license_policy_state,
+            receipt_kind=self.license_policy_receipt_kind,
+            receipt_sha256=self.license_policy_receipt_sha256,
+        )
+        self._validate_transformation_dimension(
+            state=self.transformation_provenance_state,
+            receipt_kind=self.transformation_provenance_receipt_kind,
+            receipt_sha256=self.transformation_provenance_receipt_sha256,
+        )
+
+    @staticmethod
+    def _validate_license_dimension(
+        *,
+        state: str,
+        receipt_kind: str | None,
+        receipt_sha256: str | None,
+    ) -> None:
+        expected_kind = {
+            "scoped-owner-declaration-bound": (PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND),
+            "scoped-cargo-owner-receipt-bound": (COMPONENT_LICENSE_POLICY_VERIFICATION_KIND),
+        }.get(state)
+        if expected_kind is not None:
+            if receipt_kind != expected_kind:
+                raise ValueError("covered license policy receipt kind is invalid")
+            if type(receipt_sha256) is not str or not _HEX_SHA256.fullmatch(receipt_sha256):
+                raise ValueError("covered license policy requires a receipt digest")
+            return
+        if receipt_kind is not None or receipt_sha256 is not None:
+            raise ValueError("unassessed license policy cannot claim a receipt")
+
+    @staticmethod
+    def _validate_transformation_dimension(
+        *,
+        state: str,
+        receipt_kind: str | None,
+        receipt_sha256: str | None,
+    ) -> None:
+        expected_kind = {
+            "scoped-replay-input-bound": SOURCE_TRANSFORMATION_VERIFICATION_KIND,
+            "scoped-replay-output-verified": SOURCE_TRANSFORMATION_VERIFICATION_KIND,
+            "scoped-analysis-input-projection-bound": (ANALYSIS_INPUT_VERIFICATION_KIND),
+        }.get(state)
+        if expected_kind is not None:
+            if receipt_kind != expected_kind:
+                raise ValueError("covered transformation provenance receipt kind is invalid")
+            if type(receipt_sha256) is not str or not _HEX_SHA256.fullmatch(receipt_sha256):
+                raise ValueError("covered transformation provenance requires a receipt digest")
+            return
+        if receipt_kind is not None or receipt_sha256 is not None:
+            raise ValueError("unassessed transformation provenance cannot claim a receipt")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return one deterministic compact row without raw component identities."""
+        return {
+            "class_id": self.class_id,
+            "observed_count": self.observed_count,
+            "canonical_identity_set_sha256": self.canonical_identity_set_sha256,
+            "identity_state": self.identity_state,
+            "license_policy_state": self.license_policy_state,
+            "license_policy_receipt_kind": self.license_policy_receipt_kind,
+            "license_policy_receipt_sha256": self.license_policy_receipt_sha256,
+            "transformation_provenance_state": (self.transformation_provenance_state),
+            "transformation_provenance_receipt_kind": (self.transformation_provenance_receipt_kind),
+            "transformation_provenance_receipt_sha256": (
+                self.transformation_provenance_receipt_sha256
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactPolicyCoverageInventory:
+    """C6.14 partition of exact components already observed by prior evidence."""
+
+    classes: tuple[ArtifactPolicyCoverageClass, ...]
+    observed_component_count: int
+    canonical_partition_sha256: str
+    kind: str = ARTIFACT_POLICY_COVERAGE_INVENTORY_KIND
+    schema_version: int = ARTIFACT_POLICY_COVERAGE_INVENTORY_SCHEMA_VERSION
+    scope: str = ARTIFACT_EVIDENCE_SCOPE
+    identity_scheme: str = ARTIFACT_POLICY_COVERAGE_IDENTITY_SCHEME
+    authority: str = "observation-only"
+    scope_complete: bool = False
+    global_license_policy_complete: bool = False
+    global_transformation_provenance_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.kind != ARTIFACT_POLICY_COVERAGE_INVENTORY_KIND
+            or type(self.schema_version) is not int
+            or isinstance(self.schema_version, bool)
+            or self.schema_version != ARTIFACT_POLICY_COVERAGE_INVENTORY_SCHEMA_VERSION
+            or self.scope != ARTIFACT_EVIDENCE_SCOPE
+            or self.identity_scheme != ARTIFACT_POLICY_COVERAGE_IDENTITY_SCHEME
+            or self.authority != "observation-only"
+        ):
+            raise ValueError("artifact policy coverage identity is invalid")
+        if (
+            type(self.classes) is not tuple
+            or len(self.classes) != len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS)
+            or any(type(item) is not ArtifactPolicyCoverageClass for item in self.classes)
+        ):
+            raise TypeError("artifact policy coverage classes must be a tuple")
+        rebuilt_classes = tuple(
+            _reconstruct_artifact_policy_coverage_class(item) for item in self.classes
+        )
+        if rebuilt_classes != self.classes:
+            raise ValueError("artifact policy coverage classes are noncanonical")
+        if tuple(item.class_id for item in rebuilt_classes) != (ARTIFACT_POLICY_COVERAGE_CLASS_IDS):
+            raise ValueError("artifact policy coverage classes are not canonical")
+        object.__setattr__(self, "classes", rebuilt_classes)
+        expected_count = sum(item.observed_count for item in rebuilt_classes)
+        if (
+            type(self.observed_component_count) is not int
+            or isinstance(self.observed_component_count, bool)
+            or self.observed_component_count != expected_count
+        ):
+            raise ValueError("artifact policy coverage observed count is inconsistent")
+        if type(self.canonical_partition_sha256) is not str or not _HEX_SHA256.fullmatch(
+            self.canonical_partition_sha256
+        ):
+            raise ValueError("artifact policy coverage partition digest is invalid")
+        expected_partition_sha256 = artifact_policy_partition_digest(self.classes)
+        if self.canonical_partition_sha256 != expected_partition_sha256:
+            raise ValueError("artifact policy coverage partition digest is inconsistent")
+        safety_claims = (
+            self.scope_complete,
+            self.global_license_policy_complete,
+            self.global_transformation_provenance_complete,
+            self.complete,
+            self.signed,
+            self.distribution_authorized,
+        )
+        if any(type(value) is not bool or value for value in safety_claims):
+            raise ValueError("artifact policy coverage safety claim is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_ARTIFACT_POLICY_COVERAGE_CHARS:
+            raise ValueError("artifact policy coverage inventory exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic, incomplete and non-authorizing inventory."""
+        return {
+            "kind": self.kind,
+            "schema_version": self.schema_version,
+            "scope": self.scope,
+            "identity_scheme": self.identity_scheme,
+            "authority": self.authority,
+            "scope_complete": False,
+            "global_license_policy_complete": False,
+            "global_transformation_provenance_complete": False,
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "class_count": len(self.classes),
+            "observed_component_count": self.observed_component_count,
+            "canonical_partition_sha256": self.canonical_partition_sha256,
+            "classes": [item.to_dict() for item in self.classes],
+        }
+
+
+def artifact_policy_coverage_inventory_digest(
+    value: ArtifactPolicyCoverageInventory,
+) -> str:
+    """Hash one deeply reconstructed C6.14 semantic inventory."""
+    rebuilt = _reconstruct_artifact_policy_coverage_inventory(value)
+    return sha256_hex(canonical_json_bytes(rebuilt.to_dict()))
+
+
+def artifact_class_policy_dispositions(
+    coverage: ArtifactPolicyCoverageClass,
+) -> tuple[str, str]:
+    """Return the sole closed C6.15 disposition pair for one C6.14 row."""
+    coverage = _reconstruct_artifact_policy_coverage_class(coverage)
+    if coverage.license_policy_state != "unassessed":
+        license_disposition = "prerequisite-receipt-bound"
+    elif coverage.observed_count == 0:
+        license_disposition = "not-observed"
+    elif coverage.class_id == "native-runtime:logical-system-leaf":
+        license_disposition = "not-applicable-logical-system-leaf"
+    else:
+        license_disposition = "owner-declared-allow"
+
+    if coverage.transformation_provenance_state.startswith("scoped-"):
+        transformation_disposition = "prerequisite-receipt-bound"
+    elif coverage.transformation_provenance_state == "not-applicable":
+        transformation_disposition = "not-applicable"
+    elif coverage.observed_count == 0:
+        transformation_disposition = "not-observed"
+    else:
+        transformation_disposition = "owner-declared-unverified"
+    return license_disposition, transformation_disposition
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactClassPolicyDeclaration:
+    """Closed owner disposition for one exact C6.14 artifact class."""
+
+    coverage: ArtifactPolicyCoverageClass
+    license_policy_disposition: str
+    transformation_provenance_disposition: str
+
+    def __post_init__(self) -> None:
+        rebuilt = _reconstruct_artifact_policy_coverage_class(self.coverage)
+        if rebuilt != self.coverage:
+            raise ValueError("artifact class policy coverage row is noncanonical")
+        object.__setattr__(self, "coverage", rebuilt)
+        if (
+            type(self.license_policy_disposition) is not str
+            or self.license_policy_disposition not in ARTIFACT_CLASS_LICENSE_DISPOSITIONS
+        ):
+            raise ValueError("artifact class license disposition is invalid")
+        if (
+            type(self.transformation_provenance_disposition) is not str
+            or self.transformation_provenance_disposition
+            not in ARTIFACT_CLASS_TRANSFORMATION_DISPOSITIONS
+        ):
+            raise ValueError("artifact class transformation disposition is invalid")
+        if (
+            self.license_policy_disposition,
+            self.transformation_provenance_disposition,
+        ) != artifact_class_policy_dispositions(rebuilt):
+            raise ValueError("artifact class policy disposition weakens prerequisite coverage")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the fixed policy-lock row without raw component identities."""
+        return {
+            "coverage": self.coverage.to_dict(),
+            "license_policy_disposition": self.license_policy_disposition,
+            "transformation_provenance_disposition": (
+                self.transformation_provenance_disposition
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactClassPolicyVerification:
+    """One bounded owner policy receipt for the exact C6.14 class partition.
+
+    The receipt records closed per-class dispositions only. It does not verify
+    attestor identity, SPDX expressions, license obligations or files,
+    ownership/rights, technical transformation provenance, signatures, or
+    distribution authority.
+    """
+
+    artifact_policy_coverage_inventory_sha256: str
+    canonical_partition_sha256: str
+    classes: tuple[ArtifactClassPolicyDeclaration, ...]
+    lock_file: EvidenceFileRef
+    policy_snapshot_sha256: str
+    attestor: str
+    attestor_kind: str
+    attestor_relationship: str
+    kind: str = ARTIFACT_CLASS_POLICY_VERIFICATION_KIND
+    schema_version: int = ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION
+    scope: str = ARTIFACT_EVIDENCE_SCOPE
+    policy: str = ARTIFACT_CLASS_POLICY
+    decision: str = "allow"
+    action_scopes: tuple[str, ...] = ARTIFACT_CLASS_POLICY_ACTION_SCOPES
+    acknowledgement: str = ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT
+    owner_attestation_bound: bool = True
+    attestor_identity_verified: bool = False
+    declarations_only: bool = True
+    spdx_verified: bool = False
+    license_files_verified: bool = False
+    notice_files_verified: bool = False
+    obligations_verified: bool = False
+    license_compatibility_verified: bool = False
+    source_ownership_verified: bool = False
+    derivative_work_rights_verified: bool = False
+    legal_approval_verified: bool = False
+    technical_provenance_verified: bool = False
+    complete_for_observed_classes: bool = True
+    scope_complete: bool = False
+    global_license_policy_complete: bool = False
+    global_transformation_provenance_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.kind, "artifact class policy verification kind"),
+            (self.scope, "artifact class policy verification scope"),
+            (self.policy, "artifact class policy identifier"),
+            (self.decision, "artifact class policy decision"),
+            (self.acknowledgement, "artifact class policy acknowledgement"),
+            (self.authority, "artifact class policy authority"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+        if (
+            self.kind != ARTIFACT_CLASS_POLICY_VERIFICATION_KIND
+            or type(self.schema_version) is not int
+            or isinstance(self.schema_version, bool)
+            or self.schema_version != ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION
+            or self.scope != ARTIFACT_EVIDENCE_SCOPE
+            or self.policy != ARTIFACT_CLASS_POLICY
+            or self.authority != "observation-only"
+        ):
+            raise ValueError("artifact class policy verification identity is invalid")
+        for value, label in (
+            (
+                self.artifact_policy_coverage_inventory_sha256,
+                "artifact class policy coverage digest",
+            ),
+            (self.canonical_partition_sha256, "artifact class policy partition digest"),
+            (self.policy_snapshot_sha256, "artifact class policy snapshot digest"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if not _HEX_SHA256.fullmatch(value):
+                raise ValueError(f"{label} is invalid")
+        if type(self.classes) is not tuple or len(self.classes) != len(
+            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+        ):
+            raise TypeError("artifact class policy declarations must be the fixed tuple")
+        rebuilt_classes = tuple(
+            ArtifactClassPolicyDeclaration(
+                coverage=_reconstruct_artifact_policy_coverage_class(item.coverage),
+                license_policy_disposition=item.license_policy_disposition,
+                transformation_provenance_disposition=(
+                    item.transformation_provenance_disposition
+                ),
+            )
+            for item in self.classes
+            if type(item) is ArtifactClassPolicyDeclaration
+        )
+        if len(rebuilt_classes) != len(self.classes) or rebuilt_classes != self.classes:
+            raise ValueError("artifact class policy declarations are noncanonical")
+        if tuple(item.coverage.class_id for item in rebuilt_classes) != (
+            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+        ):
+            raise ValueError("artifact class policy declarations are not canonically ordered")
+        object.__setattr__(self, "classes", rebuilt_classes)
+        if type(self.lock_file) is not EvidenceFileRef:
+            raise TypeError("artifact class policy lock reference is invalid")
+        if (
+            self.lock_file.logical_path != ARTIFACT_CLASS_POLICY_LOCK_FILENAME
+            or self.lock_file.role != ARTIFACT_CLASS_POLICY_LOCK_ROLE
+            or self.lock_file.size <= 0
+            or self.lock_file.size > MAX_ARTIFACT_CLASS_POLICY_LOCK_BYTES
+        ):
+            raise ValueError("artifact class policy lock binding is invalid")
+        if type(self.attestor) is not str:
+            raise TypeError("artifact class policy attestor must be a string")
+        attestor = _bounded_identifier(self.attestor, "artifact class policy attestor")
+        if attestor != self.attestor or _OWNER_POLICY_ATTESTOR.fullmatch(attestor) is None:
+            raise ValueError("artifact class policy attestor is invalid")
+        if type(self.attestor_kind) is not str or self.attestor_kind not in {
+            "human",
+            "organization",
+        }:
+            raise ValueError("artifact class policy attestor kind is invalid")
+        expected_relationship = {
+            "human": "human-owner",
+            "organization": "organization-owner",
+        }[self.attestor_kind]
+        if (
+            type(self.attestor_relationship) is not str
+            or self.attestor_relationship != expected_relationship
+        ):
+            raise ValueError("artifact class policy attestor relationship is invalid")
+        if self.decision != "allow":
+            raise ValueError("artifact class policy decision must be allow")
+        if (
+            type(self.action_scopes) is not tuple
+            or self.action_scopes != ARTIFACT_CLASS_POLICY_ACTION_SCOPES
+        ):
+            raise ValueError("artifact class policy action scopes are invalid")
+        if self.acknowledgement != ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT:
+            raise ValueError("artifact class policy acknowledgement is invalid")
+        fixed_booleans = (
+            (self.owner_attestation_bound, True),
+            (self.attestor_identity_verified, False),
+            (self.declarations_only, True),
+            (self.spdx_verified, False),
+            (self.license_files_verified, False),
+            (self.notice_files_verified, False),
+            (self.obligations_verified, False),
+            (self.license_compatibility_verified, False),
+            (self.source_ownership_verified, False),
+            (self.derivative_work_rights_verified, False),
+            (self.legal_approval_verified, False),
+            (self.technical_provenance_verified, False),
+            (self.complete_for_observed_classes, True),
+            (self.scope_complete, False),
+            (self.global_license_policy_complete, False),
+            (self.global_transformation_provenance_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        )
+        if any(
+            type(value) is not bool or value is not expected
+            for value, expected in fixed_booleans
+        ):
+            raise ValueError("artifact class policy safety claim is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_ARTIFACT_CLASS_POLICY_VERIFICATION_CHARS:
+            raise ValueError("artifact class policy verification exceeds the bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped, non-authorizing policy receipt."""
+        return {
+            "kind": ARTIFACT_CLASS_POLICY_VERIFICATION_KIND,
+            "schema_version": ARTIFACT_CLASS_POLICY_VERIFICATION_SCHEMA_VERSION,
+            "scope": ARTIFACT_EVIDENCE_SCOPE,
+            "policy": ARTIFACT_CLASS_POLICY,
+            "authority": "observation-only",
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "complete_for_observed_classes": True,
+            "scope_complete": False,
+            "global_license_policy_complete": False,
+            "global_transformation_provenance_complete": False,
+            "declarations_only": True,
+            "spdx_verified": False,
+            "license_files_verified": False,
+            "notice_files_verified": False,
+            "obligations_verified": False,
+            "license_compatibility_verified": False,
+            "source_ownership_verified": False,
+            "derivative_work_rights_verified": False,
+            "legal_approval_verified": False,
+            "technical_provenance_verified": False,
+            "owner_attestation_bound": True,
+            "attestor_identity_verified": False,
+            "artifact_policy_coverage_inventory_sha256": (
+                self.artifact_policy_coverage_inventory_sha256
+            ),
+            "canonical_partition_sha256": self.canonical_partition_sha256,
+            "class_count": len(self.classes),
+            "classes": [item.to_dict() for item in self.classes],
+            "lock_file": self.lock_file.to_dict(),
+            "policy_snapshot_sha256": self.policy_snapshot_sha256,
+            "attestor": self.attestor,
+            "attestor_kind": self.attestor_kind,
+            "attestor_relationship": self.attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(ARTIFACT_CLASS_POLICY_ACTION_SCOPES),
+            "acknowledgement": ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT,
+        }
+
+
+def artifact_policy_identity_set_digest(class_id: str, identities: Sequence[str]) -> str:
+    """Hash one sorted unique set of opaque, domain-qualified identities."""
+    if class_id not in ARTIFACT_POLICY_COVERAGE_CLASS_IDS:
+        raise ValueError("artifact policy coverage identity class is invalid")
+    if type(identities) not in {tuple, list}:
+        raise TypeError("artifact policy coverage identities must be bounded")
+    if len(identities) > (
+        MAX_INPUT_FILES + MAX_CARGO_PACKAGES + MAX_RUNTIME_CLOSURE_NODES + MAX_WHEEL_ENTRIES + 3
+    ):
+        raise ValueError("artifact policy coverage identity count exceeds the bound")
+    canonical = tuple(identities)
+    prefix = f"urn:rextio:artifact-component:{class_id}:"
+    if any(
+        type(identity) is not str
+        or len(identity) > MAX_EVIDENCE_STRING_CHARS
+        or not identity.startswith(prefix)
+        or not _HEX_SHA256.fullmatch(identity.removeprefix(prefix))
+        for identity in canonical
+    ):
+        raise ValueError("artifact policy coverage identity is invalid")
+    if canonical != tuple(sorted(set(canonical))):
+        raise ValueError("artifact policy coverage identities are not canonical")
+    return sha256_hex(
+        canonical_json_bytes(
+            {
+                "identity_scheme": ARTIFACT_POLICY_COVERAGE_IDENTITY_SCHEME,
+                "class_id": class_id,
+                "identities": list(canonical),
+            }
+        )
+    )
+
+
+def artifact_policy_partition_digest(
+    classes: Sequence[ArtifactPolicyCoverageClass],
+) -> str:
+    """Hash the canonical class/count/set-digest partition envelope."""
+    if type(classes) not in {tuple, list}:
+        raise TypeError("artifact policy coverage partition must be bounded")
+    if len(classes) != len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS):
+        raise ValueError("artifact policy coverage partition is incomplete")
+    if tuple(item.class_id for item in classes) != ARTIFACT_POLICY_COVERAGE_CLASS_IDS:
+        raise ValueError("artifact policy coverage partition is not canonical")
+    return sha256_hex(
+        canonical_json_bytes(
+            {
+                "identity_scheme": ARTIFACT_POLICY_COVERAGE_IDENTITY_SCHEME,
+                "classes": [
+                    {
+                        **item.to_dict(),
+                    }
+                    for item in classes
+                ],
+            }
+        )
+    )
+
+
+def _reconstruct_artifact_policy_coverage_class(
+    value: ArtifactPolicyCoverageClass,
+) -> ArtifactPolicyCoverageClass:
+    """Deeply rebuild one compact C6.14 row before trusting its claims."""
+    if type(value) is not ArtifactPolicyCoverageClass:
+        raise TypeError("artifact policy coverage class model is invalid")
+    return ArtifactPolicyCoverageClass(
+        class_id=value.class_id,
+        observed_count=value.observed_count,
+        canonical_identity_set_sha256=value.canonical_identity_set_sha256,
+        identity_state=value.identity_state,
+        license_policy_state=value.license_policy_state,
+        transformation_provenance_state=value.transformation_provenance_state,
+        license_policy_receipt_kind=value.license_policy_receipt_kind,
+        license_policy_receipt_sha256=value.license_policy_receipt_sha256,
+        transformation_provenance_receipt_kind=(value.transformation_provenance_receipt_kind),
+        transformation_provenance_receipt_sha256=(value.transformation_provenance_receipt_sha256),
+    )
+
+
+def _reconstruct_artifact_policy_coverage_inventory(
+    value: ArtifactPolicyCoverageInventory,
+) -> ArtifactPolicyCoverageInventory:
+    """Deeply rebuild one complete C6.14 inventory before hashing/binding it."""
+    if type(value) is not ArtifactPolicyCoverageInventory:
+        raise TypeError("artifact policy coverage inventory model is invalid")
+    if type(value.classes) is not tuple or len(value.classes) != len(
+        ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+    ):
+        raise TypeError("artifact policy coverage classes must be the fixed tuple")
+    rebuilt = ArtifactPolicyCoverageInventory(
+        classes=tuple(
+            _reconstruct_artifact_policy_coverage_class(item) for item in value.classes
+        ),
+        observed_component_count=value.observed_component_count,
+        canonical_partition_sha256=value.canonical_partition_sha256,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        identity_scheme=value.identity_scheme,
+        authority=value.authority,
+        scope_complete=value.scope_complete,
+        global_license_policy_complete=value.global_license_policy_complete,
+        global_transformation_provenance_complete=(
+            value.global_transformation_provenance_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+    )
+    if rebuilt != value:
+        raise ValueError("artifact policy coverage inventory is noncanonical")
+    return rebuilt
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentLicenseRecord:
+    """One unvalidated Cargo metadata license-string observation."""
+
+    bom_ref: str
+    name: str
+    version: str
+    kind: str
+    license_observed: str | None
+    license_observation: str
+
+    def __post_init__(self) -> None:
+        if type(self.license_observation) is not str:
+            raise TypeError("component license observation must be a string")
+        for value, label in (
+            (self.bom_ref, "component license bom_ref"),
+            (self.name, "component license name"),
+            (self.version, "component license version"),
+            (self.kind, "component license kind"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if _bounded_identifier(value, label) != value:
+                raise ValueError(f"{label} must be canonical")
+        if self.kind not in {"path-root", "registry"}:
+            raise ValueError("component license kind is invalid")
+        if self.license_observed is None:
+            if self.license_observation != "missing":
+                raise ValueError("missing component license observation is inconsistent")
+        else:
+            if type(self.license_observed) is not str:
+                raise TypeError("observed component license must be a string or null")
+            if not self.license_observed.strip():
+                raise ValueError("observed component license must not be blank")
+            if len(self.license_observed) > MAX_COMPONENT_LICENSE_OBSERVED_CHARS:
+                raise ValueError("observed component license exceeds the character bound")
+            if any(ord(character) < 32 for character in self.license_observed):
+                raise ValueError("observed component license contains control characters")
+            if self.license_observation != "declared-unvalidated":
+                raise ValueError("declared component license observation is inconsistent")
+
+    @property
+    def canonical_key(self) -> str:
+        """Return the exact Cargo component identity ordering key."""
+        return self.bom_ref
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic observation-only record shape."""
+        return {
+            "bom_ref": self.bom_ref,
+            "name": self.name,
+            "version": self.version,
+            "kind": self.kind,
+            "license_observed": self.license_observed,
+            "license_observation": self.license_observation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentLicenseInventory:
+    """Exact bounded license-string inventory for every reachable Cargo package."""
+
+    records: tuple[ComponentLicenseRecord, ...]
+    kind: str = COMPONENT_LICENSE_INVENTORY_KIND
+    schema_version: int = COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION
+    scope: str = COMPONENT_LICENSE_INVENTORY_SCOPE
+    complete: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str:
+            raise TypeError("component license inventory kind must be a string")
+        if self.kind != COMPONENT_LICENSE_INVENTORY_KIND:
+            raise ValueError("component license inventory kind is invalid")
+        if type(self.schema_version) is not int:
+            raise TypeError("component license inventory schema must be an integer")
+        if self.schema_version != COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION:
+            raise ValueError("component license inventory schema is invalid")
+        if type(self.scope) is not str:
+            raise TypeError("component license inventory scope must be a string")
+        if self.scope != COMPONENT_LICENSE_INVENTORY_SCOPE:
+            raise ValueError("component license inventory scope is invalid")
+        if type(self.records) is not tuple:
+            raise TypeError("component license records must be a tuple")
+        if len(self.records) > MAX_COMPONENT_LICENSE_RECORDS:
+            raise ValueError("component license record count exceeds the bound")
+        if not self.records:
+            raise ValueError("component license inventory requires the Cargo path root")
+        if not all(type(record) is ComponentLicenseRecord for record in self.records):
+            raise TypeError("component license inventory record model is invalid")
+        keys = tuple(record.canonical_key for record in self.records)
+        if keys != tuple(sorted(keys)):
+            raise ValueError("component license records must use canonical bom_ref order")
+        if len(keys) != len(set(keys)):
+            raise ValueError("component license records must be unique")
+        if sum(record.kind == "path-root" for record in self.records) != 1:
+            raise ValueError("component license inventory requires exactly one Cargo path root")
+        if type(self.complete) is not bool or self.complete:
+            raise ValueError("component license inventory must remain incomplete")
+        if type(self.authority) is not str:
+            raise TypeError("component license inventory authority must be a string")
+        if self.authority != "observation-only":
+            raise ValueError("component license inventory authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_COMPONENT_LICENSE_INVENTORY_CHARS:
+            raise ValueError("component license inventory exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic additive artifact-evidence shape."""
+        return {
+            "kind": COMPONENT_LICENSE_INVENTORY_KIND,
+            "schema_version": COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION,
+            "scope": COMPONENT_LICENSE_INVENTORY_SCOPE,
+            "authority": "observation-only",
+            "complete": False,
+            "record_count": len(self.records),
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentLicensePolicyVerification:
+    """One owner-attested policy receipt for exact Cargo registry metadata.
+
+    This receipt verifies only that a project-owned lock allowed the exact raw
+    C6.7 registry records. It neither authenticates the claimed owner nor
+    validates SPDX syntax, license files, legal compatibility, or obligations.
+    """
+
+    component_license_inventory_sha256: str
+    lock_file: EvidenceFileRef
+    policy_snapshot_sha256: str
+    registry_component_bom_refs: tuple[str, ...]
+    attestor: str
+    attestor_kind: str
+    attestor_relationship: str
+    kind: str = COMPONENT_LICENSE_POLICY_VERIFICATION_KIND
+    schema_version: int = COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION
+    scope: str = COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE
+    policy: str = CARGO_LICENSE_POLICY
+    decision: str = "allow"
+    action_scopes: tuple[str, ...] = CARGO_LICENSE_POLICY_ACTION_SCOPES
+    acknowledgement: str = CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT
+    owner_attestation_bound: bool = True
+    attestor_identity_verified: bool = False
+    metadata_only: bool = True
+    generated_root_excluded: bool = True
+    license_files_verified: bool = False
+    legal_approval_verified: bool = False
+    complete_for_scope: bool = True
+    global_license_policy_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.kind, "component license policy verification kind"),
+            (self.scope, "component license policy verification scope"),
+            (self.policy, "component license policy identifier"),
+            (self.decision, "component license policy decision"),
+            (self.acknowledgement, "component license policy acknowledgement"),
+            (self.authority, "component license policy authority"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+        if type(self.schema_version) is not int:
+            raise TypeError("component license policy verification schema must be an integer")
+        if self.kind != COMPONENT_LICENSE_POLICY_VERIFICATION_KIND:
+            raise ValueError("component license policy verification kind is invalid")
+        if self.schema_version != COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("component license policy verification schema is invalid")
+        if self.scope != COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE:
+            raise ValueError("component license policy verification scope is invalid")
+        if self.policy != CARGO_LICENSE_POLICY:
+            raise ValueError("component license policy identifier is invalid")
+        if type(self.component_license_inventory_sha256) is not str:
+            raise TypeError("component license policy inventory digest must be a string")
+        if not _HEX_SHA256.fullmatch(self.component_license_inventory_sha256):
+            raise ValueError("component license policy inventory digest is invalid")
+        if type(self.policy_snapshot_sha256) is not str:
+            raise TypeError("component license policy snapshot digest must be a string")
+        if not _HEX_SHA256.fullmatch(self.policy_snapshot_sha256):
+            raise ValueError("component license policy snapshot digest is invalid")
+        if type(self.lock_file) is not EvidenceFileRef:
+            raise TypeError("component license policy lock reference is invalid")
+        if (
+            self.lock_file.logical_path != CARGO_LICENSE_POLICY_LOCK_FILENAME
+            or self.lock_file.role != CARGO_LICENSE_POLICY_LOCK_ROLE
+            or self.lock_file.size <= 0
+            or self.lock_file.size > MAX_CARGO_LICENSE_LOCK_BYTES
+        ):
+            raise ValueError("component license policy lock binding is invalid")
+        if type(self.registry_component_bom_refs) is not tuple:
+            raise TypeError("component license policy component refs must be a tuple")
+        if (
+            not self.registry_component_bom_refs
+            or len(self.registry_component_bom_refs) > MAX_COMPONENT_LICENSE_RECORDS
+        ):
+            raise ValueError("component license policy component count is invalid")
+        refs = tuple(
+            _bounded_identifier(reference, "component license policy bom_ref")
+            for reference in self.registry_component_bom_refs
+        )
+        if refs != tuple(sorted(set(refs))):
+            raise ValueError("component license policy component refs must be sorted and unique")
+        object.__setattr__(self, "registry_component_bom_refs", refs)
+        if type(self.attestor) is not str:
+            raise TypeError("component license policy attestor must be a string")
+        attestor = _bounded_identifier(self.attestor, "component license policy attestor")
+        if attestor != self.attestor or _OWNER_POLICY_ATTESTOR.fullmatch(attestor) is None:
+            raise ValueError("component license policy attestor is invalid")
+        if type(self.attestor_kind) is not str:
+            raise TypeError("component license policy attestor kind must be a string")
+        if self.attestor_kind not in {"human", "organization"}:
+            raise ValueError("component license policy attestor kind is invalid")
+        if type(self.attestor_relationship) is not str:
+            raise TypeError("component license policy owner relationship must be a string")
+        expected_relationships = {
+            "human": "human-owner",
+            "organization": "organization-owner",
+        }
+        if self.attestor_relationship != expected_relationships[self.attestor_kind]:
+            raise ValueError("component license policy owner relationship is invalid")
+        if self.decision != "allow":
+            raise ValueError("component license policy decision must be allow")
+        if type(self.action_scopes) is not tuple:
+            raise TypeError("component license policy action scopes must be a tuple")
+        if self.action_scopes != CARGO_LICENSE_POLICY_ACTION_SCOPES:
+            raise ValueError("component license policy action scopes are invalid")
+        if self.acknowledgement != CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT:
+            raise ValueError("component license policy acknowledgement is invalid")
+        fixed_booleans = (
+            (self.owner_attestation_bound, True),
+            (self.attestor_identity_verified, False),
+            (self.metadata_only, True),
+            (self.generated_root_excluded, True),
+            (self.license_files_verified, False),
+            (self.legal_approval_verified, False),
+            (self.complete_for_scope, True),
+            (self.global_license_policy_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        )
+        if any(
+            type(value) is not bool or value is not expected for value, expected in fixed_booleans
+        ):
+            raise ValueError("component license policy safety claim is invalid")
+        if self.authority != "observation-only":
+            raise ValueError("component license policy authority is invalid")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS:
+            raise ValueError("component license policy verification exceeds the character bound")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped owner-policy receipt."""
+        return {
+            "kind": COMPONENT_LICENSE_POLICY_VERIFICATION_KIND,
+            "schema_version": COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION,
+            "scope": COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+            "policy": CARGO_LICENSE_POLICY,
+            "authority": "observation-only",
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "complete_for_scope": True,
+            "global_license_policy_complete": False,
+            "metadata_only": True,
+            "generated_root_excluded": True,
+            "license_files_verified": False,
+            "legal_approval_verified": False,
+            "owner_attestation_bound": True,
+            "attestor_identity_verified": False,
+            "component_license_inventory_sha256": (self.component_license_inventory_sha256),
+            "lock_file": self.lock_file.to_dict(),
+            "policy_snapshot_sha256": self.policy_snapshot_sha256,
+            "registry_component_count": len(self.registry_component_bom_refs),
+            "registry_component_bom_refs": list(self.registry_component_bom_refs),
+            "attestor": self.attestor,
+            "attestor_kind": self.attestor_kind,
+            "attestor_relationship": self.attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(CARGO_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSourceLicensePolicyVerification:
+    """One owner declaration for the exact C6.10 project/source-output scope.
+
+    The receipt binds declarations to a complete plugin-free C6.10 replay
+    receipt, but does not establish ownership, SPDX validity, legal approval,
+    derivative-work rights, signing, or distribution authority.
+    """
+
+    source_transformation_verification_sha256: str
+    source_input_set_sha256: str
+    source_inputs: tuple[EvidenceFileRef, ...]
+    generated_rust: EvidenceFileRef
+    lock_file: EvidenceFileRef
+    policy_snapshot_sha256: str
+    project_source_license_declared: str
+    generated_rust_license_declared: str
+    attestor: str
+    attestor_kind: str
+    attestor_relationship: str
+    kind: str = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND
+    schema_version: int = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION
+    scope: str = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE
+    policy: str = PROJECT_SOURCE_LICENSE_POLICY
+    decision: str = "allow"
+    action_scopes: tuple[str, ...] = PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES
+    acknowledgement: str = PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT
+    owner_attestation_bound: bool = True
+    attestor_identity_verified: bool = False
+    license_declarations_only: bool = True
+    source_ownership_verified: bool = False
+    generated_output_rights_verified: bool = False
+    derivative_work_rights_verified: bool = False
+    spdx_verified: bool = False
+    license_files_verified: bool = False
+    notice_files_verified: bool = False
+    obligations_verified: bool = False
+    license_compatibility_verified: bool = False
+    legal_approval_verified: bool = False
+    complete_for_scope: bool = True
+    global_license_policy_complete: bool = False
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+    authority: str = "observation-only"
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.kind, "project source license policy verification kind"),
+            (self.scope, "project source license policy verification scope"),
+            (self.policy, "project source license policy identifier"),
+            (self.decision, "project source license policy decision"),
+            (self.acknowledgement, "project source license policy acknowledgement"),
+            (self.authority, "project source license policy authority"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+        if type(self.schema_version) is not int:
+            raise TypeError("project source license policy schema must be an integer")
+        if self.kind != PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND:
+            raise ValueError("project source license policy verification kind is invalid")
+        if self.schema_version != PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION:
+            raise ValueError("project source license policy schema is invalid")
+        if self.scope != PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE:
+            raise ValueError("project source license policy scope is invalid")
+        if self.policy != PROJECT_SOURCE_LICENSE_POLICY:
+            raise ValueError("project source license policy identifier is invalid")
+        for value, label in (
+            (
+                self.source_transformation_verification_sha256,
+                "source transformation verification digest",
+            ),
+            (self.source_input_set_sha256, "project source input-set digest"),
+            (self.policy_snapshot_sha256, "project source policy snapshot digest"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if not _HEX_SHA256.fullmatch(value):
+                raise ValueError(f"{label} is invalid")
+        if type(self.source_inputs) is not tuple:
+            raise TypeError("project source license policy inputs must be a tuple")
+        if not self.source_inputs or len(self.source_inputs) > MAX_INPUT_FILES:
+            raise ValueError("project source license policy input count is invalid")
+        if not all(type(item) is EvidenceFileRef for item in self.source_inputs):
+            raise TypeError("project source license policy input model is invalid")
+        if any(item.role != "project-python-source" for item in self.source_inputs):
+            raise ValueError("project source license policy input role is invalid")
+        source_paths = tuple(item.logical_path for item in self.source_inputs)
+        if source_paths != tuple(sorted(set(source_paths))):
+            raise ValueError("project source license policy inputs must be canonical and unique")
+        expected_input_set_sha256 = sha256_hex(
+            canonical_json_bytes([item.to_dict() for item in self.source_inputs])
+        )
+        if self.source_input_set_sha256 != expected_input_set_sha256:
+            raise ValueError("project source license policy input-set digest differs")
+        if type(self.generated_rust) is not EvidenceFileRef:
+            raise TypeError("project source license policy Rust binding is invalid")
+        if self.generated_rust.role != "generated-rust-input" or PurePosixPath(
+            self.generated_rust.logical_path
+        ).parts[-2:] != ("src", "lib.rs"):
+            raise ValueError("project source license policy must bind Rust src/lib.rs")
+        if type(self.lock_file) is not EvidenceFileRef:
+            raise TypeError("project source license policy lock reference is invalid")
+        if (
+            self.lock_file.logical_path != PROJECT_SOURCE_LICENSE_POLICY_LOCK_FILENAME
+            or self.lock_file.role != PROJECT_SOURCE_LICENSE_POLICY_LOCK_ROLE
+            or self.lock_file.size <= 0
+            or self.lock_file.size > MAX_PROJECT_SOURCE_LICENSE_LOCK_BYTES
+        ):
+            raise ValueError("project source license policy lock binding is invalid")
+        for value, label in (
+            (self.project_source_license_declared, "project source license declaration"),
+            (self.generated_rust_license_declared, "generated Rust license declaration"),
+        ):
+            if type(value) is not str:
+                raise TypeError(f"{label} must be a string")
+            if (
+                value != value.strip()
+                or not value
+                or len(value) > MAX_COMPONENT_LICENSE_OBSERVED_CHARS
+                or any(ord(character) < 32 for character in value)
+                or license_declaration_is_unknown(value)
+            ):
+                raise ValueError(f"{label} is invalid or unknown")
+        if type(self.attestor) is not str:
+            raise TypeError("project source license policy attestor must be a string")
+        attestor = _bounded_identifier(self.attestor, "project source license policy attestor")
+        if attestor != self.attestor or _OWNER_POLICY_ATTESTOR.fullmatch(attestor) is None:
+            raise ValueError("project source license policy attestor is invalid")
+        if type(self.attestor_kind) is not str:
+            raise TypeError("project source license policy attestor kind must be a string")
+        if self.attestor_kind not in {"human", "organization"}:
+            raise ValueError("project source license policy attestor kind is invalid")
+        if type(self.attestor_relationship) is not str:
+            raise TypeError("project source license policy relationship must be a string")
+        expected_relationships = {
+            "human": "human-owner",
+            "organization": "organization-owner",
+        }
+        if self.attestor_relationship != expected_relationships[self.attestor_kind]:
+            raise ValueError("project source license policy relationship is invalid")
+        if self.decision != "allow":
+            raise ValueError("project source license policy decision must be allow")
+        if type(self.action_scopes) is not tuple:
+            raise TypeError("project source license policy action scopes must be a tuple")
+        if self.action_scopes != PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES:
+            raise ValueError("project source license policy action scopes are invalid")
+        if self.acknowledgement != PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT:
+            raise ValueError("project source license policy acknowledgement is invalid")
+        fixed_booleans = (
+            (self.owner_attestation_bound, True),
+            (self.attestor_identity_verified, False),
+            (self.license_declarations_only, True),
+            (self.source_ownership_verified, False),
+            (self.generated_output_rights_verified, False),
+            (self.derivative_work_rights_verified, False),
+            (self.spdx_verified, False),
+            (self.license_files_verified, False),
+            (self.notice_files_verified, False),
+            (self.obligations_verified, False),
+            (self.license_compatibility_verified, False),
+            (self.legal_approval_verified, False),
+            (self.complete_for_scope, True),
+            (self.global_license_policy_complete, False),
+            (self.complete, False),
+            (self.signed, False),
+            (self.distribution_authorized, False),
+        )
+        if any(
+            type(value) is not bool or value is not expected for value, expected in fixed_booleans
+        ):
+            raise ValueError("project source license policy safety claim is invalid")
+        if self.authority != "observation-only":
+            raise ValueError("project source license policy authority is invalid")
+        expected_policy_digest = sha256_hex(canonical_json_bytes(self.policy_document()))
+        if self.policy_snapshot_sha256 != expected_policy_digest:
+            raise ValueError("project source license policy snapshot digest differs")
+        serialized = json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if len(serialized) > MAX_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_CHARS:
+            raise ValueError(
+                "project source license policy verification exceeds the character bound"
+            )
+
+    def policy_document(self) -> dict[str, object]:
+        """Return the exact semantic project-owner lock document."""
+        return {
+            "schema_version": PROJECT_SOURCE_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+            "kind": PROJECT_SOURCE_LICENSE_POLICY_LOCK_KIND,
+            "scope": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
+            "policy": PROJECT_SOURCE_LICENSE_POLICY,
+            "source_transformation_verification_sha256": (
+                self.source_transformation_verification_sha256
+            ),
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "project_sources": [item.to_dict() for item in self.source_inputs],
+            "generated_rust": self.generated_rust.to_dict(),
+            "license_declarations": {
+                "project_sources": self.project_source_license_declared,
+                "generated_rust": self.generated_rust_license_declared,
+            },
+            "attestation": {
+                "attestor": self.attestor,
+                "attestor_kind": self.attestor_kind,
+                "attestor_relationship": self.attestor_relationship,
+                "decision": self.decision,
+                "action_scopes": list(self.action_scopes),
+                "acknowledgement": self.acknowledgement,
+            },
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic scoped owner-declaration receipt."""
+        return {
+            "kind": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND,
+            "schema_version": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION,
+            "scope": PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_SCOPE,
+            "policy": PROJECT_SOURCE_LICENSE_POLICY,
+            "authority": "observation-only",
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "complete_for_scope": True,
+            "global_license_policy_complete": False,
+            "owner_attestation_bound": True,
+            "attestor_identity_verified": False,
+            "license_declarations_only": True,
+            "source_ownership_verified": False,
+            "generated_output_rights_verified": False,
+            "derivative_work_rights_verified": False,
+            "spdx_verified": False,
+            "license_files_verified": False,
+            "notice_files_verified": False,
+            "obligations_verified": False,
+            "license_compatibility_verified": False,
+            "legal_approval_verified": False,
+            "source_transformation_verification_sha256": (
+                self.source_transformation_verification_sha256
+            ),
+            "source_input_set_sha256": self.source_input_set_sha256,
+            "source_input_count": len(self.source_inputs),
+            "source_inputs": [item.to_dict() for item in self.source_inputs],
+            "generated_rust": self.generated_rust.to_dict(),
+            "lock_file": self.lock_file.to_dict(),
+            "policy_snapshot_sha256": self.policy_snapshot_sha256,
+            "project_source_license_declared": self.project_source_license_declared,
+            "generated_rust_license_declared": self.generated_rust_license_declared,
+            "attestor": self.attestor,
+            "attestor_kind": self.attestor_kind,
+            "attestor_relationship": self.attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES),
+            "acknowledgement": PROJECT_SOURCE_LICENSE_POLICY_ACKNOWLEDGEMENT,
+        }
+
+
+@dataclass(frozen=True)
+class SidecarArtifact:
+    """One finalized sidecar written next to the wheel."""
+
+    format: str
+    logical_path: str
+    sha256: str
+    size: int
+    extra: dict[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "format", _bounded_identifier(self.format, "sidecar format"))
+        validate_logical_reference(self.logical_path)
+        if not _HEX_SHA256.fullmatch(self.sha256):
+            raise ValueError("sidecar sha256 must be 64 lowercase hex characters")
+        if self.size < 0 or self.size > MAX_SIDECAR_BYTES:
+            raise ValueError("sidecar size is outside the allowed range")
+        object.__setattr__(self, "extra", dict(self.extra))
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        data: dict[str, object] = {
+            "format": self.format,
+            "logical_path": self.logical_path,
+            "sha256": self.sha256,
+            "size": self.size,
+        }
+        for key in sorted(self.extra):
+            data[key] = self.extra[key]
+        return data
+
+
+@dataclass(frozen=True)
+class ArtifactEvidence:
+    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.15 preview."""
+
+    kind: str
+    status: str  # preview-ready | unavailable
+    authority: str = "evidence-only"
+    signature_status: str = "unsigned"
+    composition: str = "incomplete"
+    reason: str | None = None
+    target_triple: str | None = None
+    subject: EvidenceFileRef | None = None
+    sbom: SidecarArtifact | None = None
+    provenance: SidecarArtifact | None = None
+    inputs: tuple[EvidenceFileRef, ...] = ()
+    wheel_entries: tuple[WheelEntryRef, ...] = ()
+    cargo_packages: tuple[CargoPackageRef, ...] = ()
+    cargo_dependencies: tuple[CargoDepEdge, ...] = ()
+    native_runtime_inventory: NativeRuntimeInventory | None = None
+    native_runtime_path_resolution: NativeRuntimePathResolutionInventory | None = None
+    native_runtime_transitive_closure: NativeRuntimeTransitiveClosureInventory | None = None
+    source_transformation_inventory: SourceTransformationInventory | None = None
+    source_transformation_verification: SourceTransformationVerification | None = None
+    analysis_input_verification: AnalysisInputVerification | None = field(
+        default=None, kw_only=True
+    )
+    artifact_policy_coverage_inventory: ArtifactPolicyCoverageInventory | None = field(
+        default=None, kw_only=True
+    )
+    artifact_class_policy_verification: ArtifactClassPolicyVerification | None = field(
+        default=None, kw_only=True
+    )
+    component_license_inventory: ComponentLicenseInventory | None = None
+    component_license_policy_verification: ComponentLicensePolicyVerification | None = None
+    project_source_license_policy_verification: ProjectSourceLicensePolicyVerification | None = None
+    limitations: tuple[str, ...] = DEFAULT_LIMITATIONS
+    preview: bool = True
+    complete: bool = False
+    signed: bool = False
+    distribution_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", _bounded_identifier(self.kind, "evidence kind"))
+        if self.status not in {"preview-ready", "unavailable"}:
+            raise ValueError("evidence status must be preview-ready or unavailable")
+        object.__setattr__(self, "authority", "evidence-only")
+        object.__setattr__(self, "signature_status", "unsigned")
+        object.__setattr__(self, "composition", "incomplete")
+        object.__setattr__(self, "preview", True)
+        object.__setattr__(self, "complete", False)
+        object.__setattr__(self, "signed", False)
+        object.__setattr__(self, "distribution_authorized", False)
+        if self.status == "unavailable":
+            if not self.reason:
+                raise ValueError("unavailable evidence requires a fixed reason")
+            reason = _bounded_identifier(self.reason, "reason")
+            if reason not in UNAVAILABLE_REASONS:
+                raise ValueError("unavailable evidence reason is not in the allowlist")
+            object.__setattr__(self, "reason", reason)
+            # Unavailable records must not claim sidecars or input inventories.
+            if self.subject is not None or self.sbom is not None or self.provenance is not None:
+                raise ValueError("unavailable evidence must not carry subject or sidecars")
+            if (
+                self.inputs
+                or self.wheel_entries
+                or self.cargo_packages
+                or self.cargo_dependencies
+                or self.native_runtime_inventory is not None
+                or self.native_runtime_path_resolution is not None
+                or self.native_runtime_transitive_closure is not None
+                or self.source_transformation_inventory is not None
+                or self.source_transformation_verification is not None
+                or self.analysis_input_verification is not None
+                or self.artifact_policy_coverage_inventory is not None
+                or self.artifact_class_policy_verification is not None
+                or self.component_license_inventory is not None
+                or self.component_license_policy_verification is not None
+                or self.project_source_license_policy_verification is not None
+            ):
+                raise ValueError("unavailable evidence must not carry inventory fields")
+        else:
+            if self.reason is not None:
+                raise ValueError("preview-ready evidence must not carry a reason")
+            if self.subject is None or self.sbom is None or self.provenance is None:
+                raise ValueError("preview-ready evidence requires subject and sidecars")
+            if self.target_triple is None:
+                raise ValueError("preview-ready evidence requires target_triple")
+            if self.native_runtime_inventory is None:
+                raise ValueError("preview-ready evidence requires native_runtime_inventory")
+            runtime_matches = [
+                entry
+                for entry in self.wheel_entries
+                if entry.name == self.native_runtime_inventory.wheel_member
+            ]
+            if len(runtime_matches) != 1:
+                raise ValueError("preview-ready runtime wheel member must occur exactly once")
+            runtime_entry = runtime_matches[0]
+            if (
+                runtime_entry.sha256 != self.native_runtime_inventory.wheel_member_sha256
+                or runtime_entry.uncompressed_size
+                != self.native_runtime_inventory.wheel_member_size
+            ):
+                raise ValueError("preview-ready runtime wheel member hash/size must match")
+            if self.native_runtime_path_resolution is not None:
+                resolution = self.native_runtime_path_resolution
+                if type(resolution) is not NativeRuntimePathResolutionInventory:
+                    raise TypeError("native runtime path-resolution model is invalid")
+                if (
+                    resolution.subject_wheel_member != self.native_runtime_inventory.wheel_member
+                    or resolution.subject_sha256 != self.native_runtime_inventory.subject_sha256
+                ):
+                    raise ValueError(
+                        "native runtime path-resolution subject must exactly bind runtime inventory"
+                    )
+                expected_dependencies = {
+                    dependency.bom_ref(): dependency
+                    for dependency in self.native_runtime_inventory.dependencies
+                }
+                if len(resolution.records) != len(expected_dependencies):
+                    raise ValueError(
+                        "native runtime path-resolution must bind every direct dependency"
+                    )
+                for resolution_record in resolution.records:
+                    dependency = expected_dependencies.get(resolution_record.dependency_bom_ref)
+                    if dependency is None or (
+                        resolution_record.dependency_name != dependency.name
+                        or resolution_record.dependency_origin != dependency.origin
+                    ):
+                        raise ValueError(
+                            "native runtime path-resolution dependency binding is invalid"
+                        )
+                    if self.native_runtime_inventory.format == "mach-o":
+                        if dependency.origin == "system":
+                            expected_shapes = {("system-logical", "macho-system")}
+                        elif dependency.origin == "wheel-candidate":
+                            expected_shapes = {
+                                ("wheel-member", "macho-loader-path"),
+                                ("wheel-member", "macho-rpath"),
+                            }
+                        else:
+                            expected_shapes = set()
+                    else:
+                        if dependency.origin == "unresolved":
+                            expected_shapes = {("system-logical", "elf-system-name")}
+                        elif dependency.origin == "wheel-candidate":
+                            expected_shapes = {("wheel-member", "elf-origin-rpath")}
+                        else:
+                            expected_shapes = set()
+                    if (
+                        resolution_record.resolution,
+                        resolution_record.mechanism,
+                    ) not in expected_shapes:
+                        raise ValueError(
+                            "native runtime path-resolution format/origin shape is invalid"
+                        )
+                    if resolution_record.resolution == "wheel-member":
+                        wheel_member = resolution_record.wheel_member
+                        if (
+                            wheel_member is None
+                            or PurePosixPath(wheel_member).name != resolution_record.dependency_name
+                        ):
+                            raise ValueError(
+                                "native runtime path-resolution wheel basename "
+                                "must match the dependency name"
+                            )
+                        if wheel_member == self.native_runtime_inventory.wheel_member:
+                            raise ValueError(
+                                "native runtime path-resolution dependency must not "
+                                "bind the subject wheel member"
+                            )
+                        wheel_matches = tuple(
+                            entry
+                            for entry in self.wheel_entries
+                            if entry.name == wheel_member
+                            and entry.sha256 == resolution_record.sha256
+                            and entry.uncompressed_size == resolution_record.size
+                        )
+                        if len(wheel_matches) != 1:
+                            raise ValueError(
+                                "native runtime path-resolution wheel binding is invalid"
+                            )
+            if self.native_runtime_transitive_closure is not None:
+                if self.native_runtime_path_resolution is None:
+                    raise ValueError(
+                        "native runtime closure requires direct path-resolution evidence"
+                    )
+                _validate_runtime_closure_evidence_binding(
+                    closure=self.native_runtime_transitive_closure,
+                    runtime=self.native_runtime_inventory,
+                    path_resolution=self.native_runtime_path_resolution,
+                    wheel_entries=self.wheel_entries,
+                    target_triple=self.target_triple,
+                )
+            if self.source_transformation_inventory is not None:
+                if type(self.source_transformation_inventory) is not SourceTransformationInventory:
+                    raise TypeError("source transformation inventory model is invalid")
+                for transformation_record in self.source_transformation_inventory.records:
+                    source_matches = tuple(
+                        item
+                        for item in self.inputs
+                        if item.role == "project-python-source"
+                        and item.logical_path == transformation_record.source_path
+                        and item.sha256 == transformation_record.source_sha256
+                    )
+                    if len(source_matches) != 1:
+                        raise ValueError(
+                            "source transformation source binding must match one declared input"
+                        )
+                    generated_matches = tuple(
+                        item for item in self.inputs if item == transformation_record.generated_rust
+                    )
+                    if len(generated_matches) != 1:
+                        raise ValueError(
+                            "source transformation Rust binding must match one declared input"
+                        )
+            if self.source_transformation_verification is not None:
+                if self.source_transformation_inventory is None:
+                    raise ValueError("source transformation verification requires its inventory")
+                _validate_source_transformation_verification_binding(
+                    verification=self.source_transformation_verification,
+                    inventory=self.source_transformation_inventory,
+                    inputs=self.inputs,
+                )
+            if self.analysis_input_verification is not None:
+                if self.source_transformation_verification is None:
+                    raise ValueError(
+                        "analysis input verification requires source transformation verification"
+                    )
+                _validate_analysis_input_verification_binding(
+                    verification=self.analysis_input_verification,
+                    transformation_verification=self.source_transformation_verification,
+                    inputs=self.inputs,
+                )
+            if self.artifact_policy_coverage_inventory is not None:
+                runtime_path_resolution = self.native_runtime_path_resolution
+                runtime_closure = self.native_runtime_transitive_closure
+                transformation_inventory = self.source_transformation_inventory
+                transformation_verification = self.source_transformation_verification
+                analysis_verification = self.analysis_input_verification
+                license_inventory = self.component_license_inventory
+                license_policy_verification = self.component_license_policy_verification
+                source_license_policy_verification = self.project_source_license_policy_verification
+                if runtime_path_resolution is None:
+                    raise ValueError("artifact policy coverage requires runtime path resolution")
+                if runtime_closure is None:
+                    raise ValueError("artifact policy coverage requires runtime transitive closure")
+                if transformation_inventory is None:
+                    raise ValueError("artifact policy coverage requires transformation inventory")
+                if transformation_verification is None:
+                    raise ValueError(
+                        "artifact policy coverage requires transformation verification"
+                    )
+                if analysis_verification is None:
+                    raise ValueError(
+                        "artifact policy coverage requires analysis input verification"
+                    )
+                if license_inventory is None:
+                    raise ValueError(
+                        "artifact policy coverage requires component license inventory"
+                    )
+                if license_policy_verification is None:
+                    raise ValueError(
+                        "artifact policy coverage requires component license policy verification"
+                    )
+                if source_license_policy_verification is None:
+                    raise ValueError(
+                        "artifact policy coverage requires project source license policy verification"
+                    )
+                expected_policy_coverage = derive_artifact_policy_coverage_inventory(
+                    target_triple=self.target_triple,
+                    subject=self.subject,
+                    inputs=self.inputs,
+                    wheel_entries=self.wheel_entries,
+                    cargo_packages=self.cargo_packages,
+                    native_runtime_inventory=self.native_runtime_inventory,
+                    native_runtime_path_resolution=runtime_path_resolution,
+                    native_runtime_transitive_closure=runtime_closure,
+                    source_transformation_inventory=transformation_inventory,
+                    source_transformation_verification=transformation_verification,
+                    analysis_input_verification=analysis_verification,
+                    component_license_inventory=license_inventory,
+                    component_license_policy_verification=license_policy_verification,
+                    project_source_license_policy_verification=(source_license_policy_verification),
+                )
+                if self.artifact_policy_coverage_inventory != expected_policy_coverage:
+                    raise ValueError("artifact policy coverage inventory differs from evidence")
+            if self.artifact_class_policy_verification is not None:
+                if self.artifact_policy_coverage_inventory is None:
+                    raise ValueError(
+                        "artifact class policy verification requires C6.14 coverage"
+                    )
+                occupied_policy_paths = [item.logical_path for item in self.inputs]
+                if self.analysis_input_verification is not None:
+                    occupied_policy_paths.extend(
+                        record.stub.logical_path
+                        for record in self.analysis_input_verification.records
+                        if record.state == "present" and record.stub is not None
+                    )
+                if self.component_license_policy_verification is not None:
+                    occupied_policy_paths.append(
+                        self.component_license_policy_verification.lock_file.logical_path
+                    )
+                if self.project_source_license_policy_verification is not None:
+                    occupied_policy_paths.append(
+                        self.project_source_license_policy_verification.lock_file.logical_path
+                    )
+                lock_key = unicodedata.normalize(
+                    "NFC",
+                    self.artifact_class_policy_verification.lock_file.logical_path,
+                ).casefold()
+                if lock_key in {
+                    unicodedata.normalize("NFC", path).casefold()
+                    for path in occupied_policy_paths
+                }:
+                    raise ValueError(
+                        "artifact class policy lock aliases an existing evidence material"
+                    )
+                _validate_artifact_class_policy_verification_binding(
+                    verification=self.artifact_class_policy_verification,
+                    inventory=self.artifact_policy_coverage_inventory,
+                )
+            if self.project_source_license_policy_verification is not None:
+                if self.source_transformation_verification is None:
+                    raise ValueError(
+                        "project source license policy verification requires "
+                        "source transformation verification"
+                    )
+                _validate_project_source_license_policy_verification_binding(
+                    verification=self.project_source_license_policy_verification,
+                    transformation_verification=(self.source_transformation_verification),
+                )
+            if self.component_license_inventory is not None:
+                if type(self.component_license_inventory) is not ComponentLicenseInventory:
+                    raise TypeError("component license inventory model is invalid")
+                expected = tuple(
+                    ComponentLicenseRecord(
+                        bom_ref=package.bom_ref(),
+                        name=package.name,
+                        version=package.version,
+                        kind=package.kind,
+                        license_observed=package.license,
+                        license_observation=(
+                            "declared-unvalidated" if package.license is not None else "missing"
+                        ),
+                    )
+                    for package in sorted(
+                        self.cargo_packages,
+                        key=lambda package: package.bom_ref(),
+                    )
+                )
+                if self.component_license_inventory.records != expected:
+                    raise ValueError(
+                        "component license inventory must exactly bind every Cargo package"
+                    )
+            if self.component_license_policy_verification is not None:
+                if self.component_license_inventory is None:
+                    raise ValueError("component license policy verification requires its inventory")
+                _validate_component_license_policy_verification_binding(
+                    verification=self.component_license_policy_verification,
+                    inventory=self.component_license_inventory,
+                )
+        if self.target_triple is not None:
+            object.__setattr__(
+                self,
+                "target_triple",
+                _bounded_identifier(self.target_triple, "target triple"),
+            )
+        if len(self.inputs) > MAX_INPUT_FILES:
+            raise ValueError("too many evidence inputs")
+        if len(self.cargo_packages) > MAX_CARGO_PACKAGES:
+            raise ValueError("too many cargo packages")
+        if len(self.cargo_dependencies) > MAX_CARGO_EDGES:
+            raise ValueError("too many cargo dependency edges")
+        if len(self.wheel_entries) > MAX_WHEEL_ENTRIES:
+            raise ValueError("too many wheel entries")
+        # Reject duplicate normalized cargo bom-refs (collision / graph corruption).
+        bom_refs = [package.bom_ref() for package in self.cargo_packages]
+        if len(bom_refs) != len(set(bom_refs)):
+            raise ValueError("cargo package bom-refs must be unique")
+        _validate_cargo_dependency_graph(self.cargo_packages, self.cargo_dependencies)
+        limitations = tuple(_bounded_identifier(item, "limitation") for item in self.limitations)
+        if len(limitations) > MAX_LIMITATION_COUNT:
+            raise ValueError("too many limitations")
+        object.__setattr__(self, "limitations", limitations)
+
+    @classmethod
+    def unavailable(
+        cls,
+        *,
+        reason: str,
+        target_triple: str | None = None,
+    ) -> ArtifactEvidence:
+        """Return a sanitized unavailable evidence record."""
+        return cls(
+            kind="host-extension-wheel",
+            status="unavailable",
+            reason=reason,
+            target_triple=target_triple,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        data: dict[str, object] = {
+            "kind": self.kind,
+            "status": self.status,
+            "authority": "evidence-only",
+            "signature_status": "unsigned",
+            "composition": "incomplete",
+            "preview": True,
+            "complete": False,
+            "signed": False,
+            "distribution_authorized": False,
+            "limitations": list(self.limitations),
+        }
+        if self.reason is not None:
+            data["reason"] = self.reason
+        if self.target_triple is not None:
+            data["target_triple"] = self.target_triple
+        if self.status == "preview-ready":
+            # Invariants enforced in __post_init__; serialize without asserts.
+            if self.subject is not None and self.sbom is not None and self.provenance is not None:
+                data["subject"] = self.subject.to_dict()
+                data["sbom"] = self.sbom.to_dict()
+                data["provenance"] = self.provenance.to_dict()
+                data["inputs"] = [item.to_dict() for item in self.inputs]
+                data["wheel_entries"] = [item.to_dict() for item in self.wheel_entries]
+                data["cargo_packages"] = [item.to_dict() for item in self.cargo_packages]
+                data["cargo_dependencies"] = [item.to_dict() for item in self.cargo_dependencies]
+                if self.native_runtime_inventory is not None:
+                    data["native_runtime_inventory"] = self.native_runtime_inventory.to_dict()
+                if self.native_runtime_path_resolution is not None:
+                    data["native_runtime_path_resolution"] = (
+                        self.native_runtime_path_resolution.to_dict()
+                    )
+                if self.native_runtime_transitive_closure is not None:
+                    data["native_runtime_transitive_closure"] = (
+                        self.native_runtime_transitive_closure.to_dict()
+                    )
+                if self.source_transformation_inventory is not None:
+                    data["source_transformation_inventory"] = (
+                        self.source_transformation_inventory.to_dict()
+                    )
+                if self.source_transformation_verification is not None:
+                    data["source_transformation_verification"] = (
+                        self.source_transformation_verification.to_dict()
+                    )
+                if self.analysis_input_verification is not None:
+                    data["analysis_input_verification"] = self.analysis_input_verification.to_dict()
+                if self.artifact_policy_coverage_inventory is not None:
+                    data["artifact_policy_coverage_inventory"] = (
+                        self.artifact_policy_coverage_inventory.to_dict()
+                    )
+                if self.artifact_class_policy_verification is not None:
+                    data["artifact_class_policy_verification"] = (
+                        self.artifact_class_policy_verification.to_dict()
+                    )
+                if self.component_license_inventory is not None:
+                    data["component_license_inventory"] = self.component_license_inventory.to_dict()
+                if self.component_license_policy_verification is not None:
+                    data["component_license_policy_verification"] = (
+                        self.component_license_policy_verification.to_dict()
+                    )
+                if self.project_source_license_policy_verification is not None:
+                    data["project_source_license_policy_verification"] = (
+                        self.project_source_license_policy_verification.to_dict()
+                    )
+        return data
+
+
+def license_declaration_is_unknown(value: str) -> bool:
+    """Return whether a bounded license declaration contains an unknown sentinel."""
+    if type(value) is not str:
+        raise TypeError("license declaration must be a string")
+    collapsed = " ".join(value.split()).casefold()
+    if collapsed in _UNKNOWN_CARGO_LICENSE_VALUES:
+        return True
+    if re.search(r"(?<![a-z0-9])n\s*/\s*a(?![a-z0-9])", collapsed):
+        return True
+    tokens = re.findall(r"[a-z0-9]+", collapsed)
+    return any(token in _UNKNOWN_CARGO_LICENSE_TOKENS for token in tokens)
+
+
+def cargo_license_metadata_is_unknown(value: str) -> bool:
+    """Return whether one raw Cargo license value contains an unknown sentinel."""
+    return license_declaration_is_unknown(value)
+
+
+def _validate_component_license_policy_verification_binding(
+    *,
+    verification: ComponentLicensePolicyVerification,
+    inventory: ComponentLicenseInventory,
+) -> None:
+    """Bind one scoped owner receipt to the exact full C6.7 observation."""
+    if type(verification) is not ComponentLicensePolicyVerification:
+        raise TypeError("component license policy verification model is invalid")
+    if type(inventory) is not ComponentLicenseInventory:
+        raise TypeError("component license inventory model is invalid")
+    inventory_digest = sha256_hex(canonical_json_bytes(inventory.to_dict()))
+    if verification.component_license_inventory_sha256 != inventory_digest:
+        raise ValueError("component license policy inventory digest differs")
+    registry_records = tuple(record for record in inventory.records if record.kind == "registry")
+    if not registry_records:
+        raise ValueError("component license policy requires registry components")
+    if any(
+        record.license_observed is None
+        or record.license_observation != "declared-unvalidated"
+        or cargo_license_metadata_is_unknown(record.license_observed)
+        for record in registry_records
+    ):
+        raise ValueError("component license policy contains an unknown license")
+    expected_registry_refs = tuple(record.bom_ref for record in registry_records)
+    if verification.registry_component_bom_refs != expected_registry_refs:
+        raise ValueError("component license policy registry coverage differs")
+    policy_document = {
+        "schema_version": CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": CARGO_LICENSE_POLICY_LOCK_KIND,
+        "scope": COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE,
+        "policy": CARGO_LICENSE_POLICY,
+        "component_license_inventory_sha256": inventory_digest,
+        "registry_components": [record.to_dict() for record in registry_records],
+        "attestation": {
+            "attestor": verification.attestor,
+            "attestor_kind": verification.attestor_kind,
+            "attestor_relationship": verification.attestor_relationship,
+            "decision": verification.decision,
+            "action_scopes": list(verification.action_scopes),
+            "acknowledgement": verification.acknowledgement,
+        },
+    }
+    policy_digest = sha256_hex(canonical_json_bytes(policy_document))
+    if verification.policy_snapshot_sha256 != policy_digest:
+        raise ValueError("component license policy snapshot digest differs")
+
+
+def _validate_project_source_license_policy_verification_binding(
+    *,
+    verification: ProjectSourceLicensePolicyVerification,
+    transformation_verification: SourceTransformationVerification,
+) -> None:
+    """Bind one C6.12 receipt to the exact present C6.10 replay receipt."""
+    verification = _reconstruct_project_source_license_policy_verification(verification)
+    if type(transformation_verification) is not SourceTransformationVerification:
+        raise TypeError("project source license policy requires C6.10 verification")
+    transformation_digest = sha256_hex(canonical_json_bytes(transformation_verification.to_dict()))
+    if verification.source_transformation_verification_sha256 != transformation_digest:
+        raise ValueError("project source license policy C6.10 digest differs")
+    if (
+        verification.source_input_set_sha256 != transformation_verification.source_input_set_sha256
+        or verification.source_inputs != transformation_verification.source_inputs
+    ):
+        raise ValueError("project source license policy source binding differs")
+    if verification.generated_rust != transformation_verification.generated_rust:
+        raise ValueError("project source license policy Rust binding differs")
+
+
+def _artifact_class_policy_snapshot(
+    *,
+    coverage_digest: str,
+    canonical_partition_sha256: str,
+    classes: Sequence[ArtifactClassPolicyDeclaration],
+    attestor: str,
+    attestor_kind: str,
+    attestor_relationship: str,
+) -> dict[str, object]:
+    """Return the exact semantic C6.15 lock document used for its digest."""
+    return {
+        "schema_version": ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION,
+        "kind": ARTIFACT_CLASS_POLICY_LOCK_KIND,
+        "scope": ARTIFACT_EVIDENCE_SCOPE,
+        "policy": ARTIFACT_CLASS_POLICY,
+        "artifact_policy_coverage_inventory_sha256": coverage_digest,
+        "canonical_partition_sha256": canonical_partition_sha256,
+        "classes": [item.to_dict() for item in classes],
+        "attestation": {
+            "attestor": attestor,
+            "attestor_kind": attestor_kind,
+            "attestor_relationship": attestor_relationship,
+            "decision": "allow",
+            "action_scopes": list(ARTIFACT_CLASS_POLICY_ACTION_SCOPES),
+            "acknowledgement": ARTIFACT_CLASS_POLICY_ACKNOWLEDGEMENT,
+        },
+    }
+
+
+def _reconstruct_artifact_class_policy_verification(
+    value: ArtifactClassPolicyVerification,
+) -> ArtifactClassPolicyVerification:
+    """Deeply rebuild every C6.15 receipt field before trusting it."""
+    if type(value) is not ArtifactClassPolicyVerification:
+        raise TypeError("artifact class policy verification model is invalid")
+    if type(value.classes) is not tuple or type(value.action_scopes) is not tuple:
+        raise TypeError("artifact class policy verification collections must be tuples")
+    if len(value.classes) != len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS) or len(
+        value.action_scopes
+    ) > len(ARTIFACT_CLASS_POLICY_ACTION_SCOPES):
+        raise ValueError("artifact class policy verification collections exceed the bound")
+    rebuilt = ArtifactClassPolicyVerification(
+        artifact_policy_coverage_inventory_sha256=(
+            value.artifact_policy_coverage_inventory_sha256
+        ),
+        canonical_partition_sha256=value.canonical_partition_sha256,
+        classes=tuple(
+            ArtifactClassPolicyDeclaration(
+                coverage=_reconstruct_artifact_policy_coverage_class(item.coverage),
+                license_policy_disposition=item.license_policy_disposition,
+                transformation_provenance_disposition=(
+                    item.transformation_provenance_disposition
+                ),
+            )
+            for item in value.classes
+            if type(item) is ArtifactClassPolicyDeclaration
+        ),
+        lock_file=EvidenceFileRef(
+            logical_path=value.lock_file.logical_path,
+            sha256=value.lock_file.sha256,
+            size=value.lock_file.size,
+            role=value.lock_file.role,
+        ),
+        policy_snapshot_sha256=value.policy_snapshot_sha256,
+        attestor=value.attestor,
+        attestor_kind=value.attestor_kind,
+        attestor_relationship=value.attestor_relationship,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        policy=value.policy,
+        decision=value.decision,
+        action_scopes=tuple(value.action_scopes),
+        acknowledgement=value.acknowledgement,
+        owner_attestation_bound=value.owner_attestation_bound,
+        attestor_identity_verified=value.attestor_identity_verified,
+        declarations_only=value.declarations_only,
+        spdx_verified=value.spdx_verified,
+        license_files_verified=value.license_files_verified,
+        notice_files_verified=value.notice_files_verified,
+        obligations_verified=value.obligations_verified,
+        license_compatibility_verified=value.license_compatibility_verified,
+        source_ownership_verified=value.source_ownership_verified,
+        derivative_work_rights_verified=value.derivative_work_rights_verified,
+        legal_approval_verified=value.legal_approval_verified,
+        technical_provenance_verified=value.technical_provenance_verified,
+        complete_for_observed_classes=value.complete_for_observed_classes,
+        scope_complete=value.scope_complete,
+        global_license_policy_complete=value.global_license_policy_complete,
+        global_transformation_provenance_complete=(
+            value.global_transformation_provenance_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+        authority=value.authority,
+    )
+    if len(rebuilt.classes) != len(value.classes) or rebuilt != value:
+        raise ValueError("artifact class policy verification is noncanonical")
+    return rebuilt
+
+
+def _validate_artifact_class_policy_verification_binding(
+    *,
+    verification: ArtifactClassPolicyVerification,
+    inventory: ArtifactPolicyCoverageInventory,
+) -> None:
+    """Bind C6.15 to the exact complete C6.14 semantic partition."""
+    verification = _reconstruct_artifact_class_policy_verification(verification)
+    inventory = _reconstruct_artifact_policy_coverage_inventory(inventory)
+    coverage_digest = artifact_policy_coverage_inventory_digest(inventory)
+    if verification.artifact_policy_coverage_inventory_sha256 != coverage_digest:
+        raise ValueError("artifact class policy C6.14 digest differs")
+    if verification.canonical_partition_sha256 != inventory.canonical_partition_sha256:
+        raise ValueError("artifact class policy partition digest differs")
+    if tuple(item.coverage for item in verification.classes) != inventory.classes:
+        raise ValueError("artifact class policy class coverage differs")
+    snapshot = _artifact_class_policy_snapshot(
+        coverage_digest=coverage_digest,
+        canonical_partition_sha256=inventory.canonical_partition_sha256,
+        classes=verification.classes,
+        attestor=verification.attestor,
+        attestor_kind=verification.attestor_kind,
+        attestor_relationship=verification.attestor_relationship,
+    )
+    if verification.policy_snapshot_sha256 != sha256_hex(canonical_json_bytes(snapshot)):
+        raise ValueError("artifact class policy snapshot digest differs")
+
+
+def _reconstruct_project_source_license_policy_verification(
+    value: ProjectSourceLicensePolicyVerification,
+) -> ProjectSourceLicensePolicyVerification:
+    """Deeply rebuild one C6.12 receipt before trusting any serialized claim."""
+    if type(value) is not ProjectSourceLicensePolicyVerification:
+        raise TypeError("project source license policy verification model is invalid")
+    if type(value.source_inputs) is not tuple or type(value.action_scopes) is not tuple:
+        raise TypeError("project source license policy verification collections must be tuples")
+    if len(value.source_inputs) > MAX_INPUT_FILES or len(value.action_scopes) > len(
+        PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES
+    ):
+        raise ValueError("project source license policy verification collections exceed the bound")
+    rebuilt = ProjectSourceLicensePolicyVerification(
+        source_transformation_verification_sha256=(value.source_transformation_verification_sha256),
+        source_input_set_sha256=value.source_input_set_sha256,
+        source_inputs=tuple(
+            _reconstruct_project_source_license_file_ref(item) for item in value.source_inputs
+        ),
+        generated_rust=_reconstruct_project_source_license_file_ref(value.generated_rust),
+        lock_file=_reconstruct_project_source_license_file_ref(value.lock_file),
+        policy_snapshot_sha256=value.policy_snapshot_sha256,
+        project_source_license_declared=value.project_source_license_declared,
+        generated_rust_license_declared=value.generated_rust_license_declared,
+        attestor=value.attestor,
+        attestor_kind=value.attestor_kind,
+        attestor_relationship=value.attestor_relationship,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        policy=value.policy,
+        decision=value.decision,
+        action_scopes=tuple(value.action_scopes),
+        acknowledgement=value.acknowledgement,
+        owner_attestation_bound=value.owner_attestation_bound,
+        attestor_identity_verified=value.attestor_identity_verified,
+        license_declarations_only=value.license_declarations_only,
+        source_ownership_verified=value.source_ownership_verified,
+        generated_output_rights_verified=value.generated_output_rights_verified,
+        derivative_work_rights_verified=value.derivative_work_rights_verified,
+        spdx_verified=value.spdx_verified,
+        license_files_verified=value.license_files_verified,
+        notice_files_verified=value.notice_files_verified,
+        obligations_verified=value.obligations_verified,
+        license_compatibility_verified=value.license_compatibility_verified,
+        legal_approval_verified=value.legal_approval_verified,
+        complete_for_scope=value.complete_for_scope,
+        global_license_policy_complete=value.global_license_policy_complete,
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+        authority=value.authority,
+    )
+    if rebuilt != value:
+        raise ValueError("project source license policy receipt is noncanonical")
+    return rebuilt
+
+
+def _reconstruct_project_source_license_file_ref(
+    value: EvidenceFileRef,
+) -> EvidenceFileRef:
+    """Re-run one nested C6.12 file-reference model boundary."""
+    if type(value) is not EvidenceFileRef:
+        raise TypeError("project source license policy file binding is invalid")
+    rebuilt = EvidenceFileRef(
+        logical_path=value.logical_path,
+        sha256=value.sha256,
+        size=value.size,
+        role=value.role,
+    )
+    if rebuilt != value:
+        raise ValueError("project source license policy file binding is noncanonical")
+    return rebuilt
+
+
+def _validate_source_transformation_verification_binding(
+    *,
+    verification: SourceTransformationVerification,
+    inventory: SourceTransformationInventory,
+    inputs: tuple[EvidenceFileRef, ...],
+) -> None:
+    """Bind the scoped replay receipt to the exact C6.6/input observations."""
+    if type(verification) is not SourceTransformationVerification:
+        raise TypeError("source transformation verification model is invalid")
+    inventory_digest = sha256_hex(canonical_json_bytes(inventory.to_dict()))
+    if verification.source_transformation_inventory_sha256 != inventory_digest:
+        raise ValueError("source transformation verification inventory digest differs")
+    project_inputs = tuple(
+        sorted(
+            (item for item in inputs if item.role == "project-python-source"),
+            key=lambda item: item.logical_path,
+        )
+    )
+    if verification.source_inputs != project_inputs:
+        raise ValueError("source transformation verification input set differs")
+    source_input_set_digest = sha256_hex(
+        canonical_json_bytes([item.to_dict() for item in project_inputs])
+    )
+    if verification.source_input_set_sha256 != source_input_set_digest:
+        raise ValueError("source transformation verification input-set digest differs")
+    expected_qualnames = tuple(sorted(record.function_qualname for record in inventory.records))
+    if verification.function_qualnames != expected_qualnames:
+        raise ValueError("source transformation verification function coverage differs")
+    if any(record.plugin_ids for record in inventory.records):
+        raise ValueError("source transformation verification inventory is not plugin-free")
+    if any(
+        record.generator_backend != verification.generator_backend for record in inventory.records
+    ):
+        raise ValueError("source transformation verification backend differs")
+    if any(record.generated_rust != verification.generated_rust for record in inventory.records):
+        raise ValueError("source transformation verification Rust binding differs")
+    generated_matches = tuple(item for item in inputs if item == verification.generated_rust)
+    if len(generated_matches) != 1:
+        raise ValueError("source transformation verification Rust input is ambiguous")
+
+
+def _reconstruct_analysis_input_file_ref(value: EvidenceFileRef) -> EvidenceFileRef:
+    """Re-run the nested C6.13 file-reference model boundary."""
+    if type(value) is not EvidenceFileRef:
+        raise TypeError("analysis input stub reference is invalid")
+    rebuilt = EvidenceFileRef(
+        logical_path=value.logical_path,
+        sha256=value.sha256,
+        size=value.size,
+        role=value.role,
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input stub reference is noncanonical")
+    return rebuilt
+
+
+def _reconstruct_analysis_input_record(
+    value: AnalysisInputRecord,
+) -> AnalysisInputRecord:
+    """Deeply rebuild one C6.13 source/stub record before trusting it."""
+    if type(value) is not AnalysisInputRecord:
+        raise TypeError("analysis input record model is invalid")
+    rebuilt = AnalysisInputRecord(
+        source_path=value.source_path,
+        stub_path=value.stub_path,
+        state=value.state,
+        stub=(_reconstruct_analysis_input_file_ref(value.stub) if value.stub is not None else None),
+        supported_signature_projection_version=(value.supported_signature_projection_version),
+        supported_signature_projection_sha256=(value.supported_signature_projection_sha256),
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input record is noncanonical")
+    return rebuilt
+
+
+def _reconstruct_analysis_input_verification(
+    value: AnalysisInputVerification,
+) -> AnalysisInputVerification:
+    """Deeply rebuild the complete C6.13 receipt at the artifact boundary."""
+    if type(value) is not AnalysisInputVerification:
+        raise TypeError("analysis input verification model is invalid")
+    if type(value.source_paths) is not tuple or type(value.records) is not tuple:
+        raise TypeError("analysis input verification collections must be tuples")
+    if len(value.source_paths) > MAX_INPUT_FILES:
+        raise ValueError("analysis input verification record count exceeds the bound")
+    if len(value.records) > MAX_INPUT_FILES:
+        raise ValueError("analysis input verification record count exceeds the bound")
+    if len(value.source_paths) != len(value.records):
+        raise ValueError("analysis input verification coverage is inconsistent")
+    _reject_analysis_input_path_aliases(value.source_paths, "source")
+    _reject_analysis_input_path_aliases(tuple(record.stub_path for record in value.records), "stub")
+    rebuilt = AnalysisInputVerification(
+        source_transformation_verification_sha256=(value.source_transformation_verification_sha256),
+        source_input_set_sha256=value.source_input_set_sha256,
+        source_paths=tuple(value.source_paths),
+        records=tuple(_reconstruct_analysis_input_record(record) for record in value.records),
+        analysis_input_set_sha256=value.analysis_input_set_sha256,
+        supported_signature_projection_set_sha256=(value.supported_signature_projection_set_sha256),
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        analysis_input_set_version=value.analysis_input_set_version,
+        supported_signature_projection_set_version=(
+            value.supported_signature_projection_set_version
+        ),
+        authority=value.authority,
+        complete_for_scope=value.complete_for_scope,
+        global_build_input_closure_complete=(value.global_build_input_closure_complete),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+    )
+    if rebuilt != value:
+        raise ValueError("analysis input verification is noncanonical")
+    return rebuilt
+
+
+def _reject_analysis_input_path_aliases(paths: tuple[str, ...], label: str) -> None:
+    """Reject case- and normalization-insensitive aliases in C6.13 paths."""
+    aliases: set[str] = set()
+    for path in paths:
+        if type(path) is not str:
+            raise TypeError(f"analysis input {label} path is not a string")
+        key = unicodedata.normalize("NFC", path).casefold()
+        if key in aliases:
+            raise ValueError(f"analysis input {label} paths contain aliases")
+        aliases.add(key)
+
+
+def _validate_analysis_input_verification_binding(
+    *,
+    verification: AnalysisInputVerification,
+    transformation_verification: SourceTransformationVerification,
+    inputs: tuple[EvidenceFileRef, ...] | Sequence[EvidenceFileRef],
+) -> None:
+    """Bind C6.13 to the exact C6.10 receipt and project-source inputs."""
+    verification = _reconstruct_analysis_input_verification(verification)
+    if type(transformation_verification) is not SourceTransformationVerification:
+        raise TypeError("analysis input verification requires C6.10 verification")
+    transformation_digest = sha256_hex(canonical_json_bytes(transformation_verification.to_dict()))
+    if verification.source_transformation_verification_sha256 != transformation_digest:
+        raise ValueError("analysis input verification C6.10 digest differs")
+    source_inputs = tuple(
+        sorted(
+            (item for item in inputs if item.role == "project-python-source"),
+            key=lambda item: item.logical_path,
+        )
+    )
+    if transformation_verification.source_inputs != source_inputs:
+        raise ValueError("analysis input verification source inputs differ")
+    if verification.source_input_set_sha256 != transformation_verification.source_input_set_sha256:
+        raise ValueError("analysis input verification source input-set digest differs")
+    expected_source_paths = tuple(item.logical_path for item in source_inputs)
+    if verification.source_paths != expected_source_paths:
+        raise ValueError("analysis input verification source coverage differs")
+    if tuple(record.source_path for record in verification.records) != expected_source_paths:
+        raise ValueError("analysis input verification record coverage differs")
+
+
+def _coverage_file_ref(value: EvidenceFileRef) -> EvidenceFileRef:
+    if type(value) is not EvidenceFileRef:
+        raise TypeError("artifact policy coverage file reference is invalid")
+    return EvidenceFileRef(value.logical_path, value.sha256, value.size, value.role)
+
+
+def _reconstruct_policy_coverage_runtime(
+    runtime: NativeRuntimeInventory,
+    path_resolution: NativeRuntimePathResolutionInventory,
+    closure: NativeRuntimeTransitiveClosureInventory,
+) -> tuple[
+    NativeRuntimeInventory,
+    NativeRuntimePathResolutionInventory,
+    NativeRuntimeTransitiveClosureInventory,
+]:
+    """Deeply rebuild the C6.4/C6.8/C6.9 prerequisite chain."""
+    if type(runtime) is not NativeRuntimeInventory:
+        raise TypeError("artifact policy coverage runtime inventory is invalid")
+    if type(runtime.dependencies) is not tuple or len(runtime.dependencies) > MAX_RUNTIME_DEPS:
+        raise ValueError("artifact policy coverage runtime dependencies exceed the bound")
+    rebuilt_runtime = NativeRuntimeInventory(
+        format=runtime.format,
+        architecture=runtime.architecture,
+        inspector=runtime.inspector,
+        subject_basename=runtime.subject_basename,
+        subject_sha256=runtime.subject_sha256,
+        subject_size=runtime.subject_size,
+        wheel_member=runtime.wheel_member,
+        wheel_member_sha256=runtime.wheel_member_sha256,
+        wheel_member_size=runtime.wheel_member_size,
+        dependencies=tuple(
+            NativeRuntimeDependency(item.name, item.origin)
+            for item in runtime.dependencies
+            if type(item) is NativeRuntimeDependency
+        ),
+    )
+    if len(rebuilt_runtime.dependencies) != len(runtime.dependencies):
+        raise TypeError("artifact policy coverage runtime dependency is invalid")
+    if type(path_resolution) is not NativeRuntimePathResolutionInventory:
+        raise TypeError("artifact policy coverage runtime resolution is invalid")
+    if (
+        type(path_resolution.records) is not tuple
+        or len(path_resolution.records) > MAX_RUNTIME_DEPS
+    ):
+        raise ValueError("artifact policy coverage runtime resolutions exceed the bound")
+    rebuilt_resolution = NativeRuntimePathResolutionInventory(
+        subject_wheel_member=path_resolution.subject_wheel_member,
+        subject_sha256=path_resolution.subject_sha256,
+        records=tuple(
+            NativeRuntimePathResolutionRecord(
+                dependency_bom_ref=item.dependency_bom_ref,
+                dependency_name=item.dependency_name,
+                dependency_origin=item.dependency_origin,
+                resolution=item.resolution,
+                mechanism=item.mechanism,
+                wheel_member=item.wheel_member,
+                sha256=item.sha256,
+                size=item.size,
+            )
+            for item in path_resolution.records
+            if type(item) is NativeRuntimePathResolutionRecord
+        ),
+        kind=path_resolution.kind,
+        schema_version=path_resolution.schema_version,
+        scope=path_resolution.scope,
+        complete=path_resolution.complete,
+        authority=path_resolution.authority,
+    )
+    if len(rebuilt_resolution.records) != len(path_resolution.records):
+        raise TypeError("artifact policy coverage runtime resolution record is invalid")
+    if type(closure) is not NativeRuntimeTransitiveClosureInventory:
+        raise TypeError("artifact policy coverage runtime graph is invalid")
+    if (
+        type(closure.nodes) is not tuple
+        or type(closure.edges) is not tuple
+        or len(closure.nodes) > MAX_RUNTIME_CLOSURE_NODES
+        or len(closure.edges) > MAX_RUNTIME_CLOSURE_EDGES
+    ):
+        raise ValueError("artifact policy coverage runtime graph exceeds the bound")
+    rebuilt_closure = NativeRuntimeTransitiveClosureInventory(
+        format=closure.format,
+        architecture=closure.architecture,
+        subject_wheel_member=closure.subject_wheel_member,
+        subject_sha256=closure.subject_sha256,
+        subject_size=closure.subject_size,
+        root_node_ref=closure.root_node_ref,
+        nodes=tuple(
+            NativeRuntimeTransitiveClosureNode(
+                kind=item.kind,
+                format=item.format,
+                name=item.name,
+                wheel_member=item.wheel_member,
+                sha256=item.sha256,
+                size=item.size,
+            )
+            for item in closure.nodes
+            if type(item) is NativeRuntimeTransitiveClosureNode
+        ),
+        edges=tuple(
+            NativeRuntimeTransitiveClosureEdge(
+                source_ref=item.source_ref,
+                target_ref=item.target_ref,
+                dependency_name=item.dependency_name,
+                mechanism=item.mechanism,
+            )
+            for item in closure.edges
+            if type(item) is NativeRuntimeTransitiveClosureEdge
+        ),
+        kind=closure.kind,
+        schema_version=closure.schema_version,
+        scope=closure.scope,
+        complete=closure.complete,
+        authority=closure.authority,
+    )
+    if (
+        len(rebuilt_closure.nodes) != len(closure.nodes)
+        or len(rebuilt_closure.edges) != len(closure.edges)
+        or rebuilt_runtime != runtime
+        or rebuilt_resolution != path_resolution
+        or rebuilt_closure != closure
+    ):
+        raise ValueError("artifact policy coverage runtime chain is noncanonical")
+    return rebuilt_runtime, rebuilt_resolution, rebuilt_closure
+
+
+def _reconstruct_policy_coverage_source(
+    inventory: SourceTransformationInventory,
+    verification: SourceTransformationVerification,
+) -> tuple[SourceTransformationInventory, SourceTransformationVerification]:
+    """Deeply rebuild C6.6/C6.10, including every nested file/range."""
+    if type(inventory) is not SourceTransformationInventory:
+        raise TypeError("artifact policy coverage transformation inventory is invalid")
+    if type(inventory.records) is not tuple or len(inventory.records) > MAX_SOURCE_TRANSFORMATIONS:
+        raise ValueError("artifact policy coverage transformation inventory exceeds the bound")
+    if any(
+        type(item) is not SourceTransformationRecord
+        or type(item.plugin_ids) is not tuple
+        or len(item.plugin_ids) > MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS
+        for item in inventory.records
+    ):
+        raise ValueError("artifact policy coverage transformation plugins exceed the bound")
+    rebuilt_inventory = SourceTransformationInventory(
+        records=tuple(
+            SourceTransformationRecord(
+                source_path=item.source_path,
+                source_sha256=item.source_sha256,
+                function_module=item.function_module,
+                function_qualname=item.function_qualname,
+                source_range=SourceTransformationRange(
+                    item.source_range.start_line,
+                    item.source_range.start_column,
+                    item.source_range.end_line,
+                    item.source_range.end_column,
+                ),
+                semantic_ast_sha256=item.semantic_ast_sha256,
+                generated_rust=_coverage_file_ref(item.generated_rust),
+                generator_backend=item.generator_backend,
+                plugin_ids=tuple(item.plugin_ids),
+            )
+            for item in inventory.records
+            if type(item) is SourceTransformationRecord
+            and type(item.source_range) is SourceTransformationRange
+        ),
+        kind=inventory.kind,
+        schema_version=inventory.schema_version,
+        scope=inventory.scope,
+        complete=inventory.complete,
+        authority=inventory.authority,
+    )
+    if len(rebuilt_inventory.records) != len(inventory.records):
+        raise TypeError("artifact policy coverage transformation record is invalid")
+    if type(verification) is not SourceTransformationVerification:
+        raise TypeError("artifact policy coverage replay receipt is invalid")
+    if (
+        type(verification.function_qualnames) is not tuple
+        or type(verification.source_inputs) is not tuple
+        or len(verification.function_qualnames) > MAX_SOURCE_TRANSFORMATIONS
+        or len(verification.source_inputs) > MAX_INPUT_FILES
+    ):
+        raise ValueError("artifact policy coverage replay receipt exceeds the bound")
+    rebuilt_verification = SourceTransformationVerification(
+        source_transformation_inventory_sha256=(
+            verification.source_transformation_inventory_sha256
+        ),
+        source_input_set_sha256=verification.source_input_set_sha256,
+        module_ir_sha256=verification.module_ir_sha256,
+        function_qualnames=tuple(verification.function_qualnames),
+        source_inputs=tuple(_coverage_file_ref(item) for item in verification.source_inputs),
+        generated_rust=_coverage_file_ref(verification.generated_rust),
+        regenerated_rust_sha256=verification.regenerated_rust_sha256,
+        regenerated_rust_size=verification.regenerated_rust_size,
+        generator_backend=verification.generator_backend,
+        kind=verification.kind,
+        schema_version=verification.schema_version,
+        scope=verification.scope,
+        complete_for_scope=verification.complete_for_scope,
+        global_provenance_complete=verification.global_provenance_complete,
+        complete=verification.complete,
+        authority=verification.authority,
+    )
+    if rebuilt_inventory != inventory or rebuilt_verification != verification:
+        raise ValueError("artifact policy coverage transformation chain is noncanonical")
+    return rebuilt_inventory, rebuilt_verification
+
+
+def _reconstruct_policy_coverage_license(
+    inventory: ComponentLicenseInventory,
+    verification: ComponentLicensePolicyVerification,
+) -> tuple[ComponentLicenseInventory, ComponentLicensePolicyVerification]:
+    """Deeply rebuild the C6.7/C6.11 prerequisite chain."""
+    if type(inventory) is not ComponentLicenseInventory:
+        raise TypeError("artifact policy coverage license inventory is invalid")
+    if (
+        type(inventory.records) is not tuple
+        or len(inventory.records) > MAX_COMPONENT_LICENSE_RECORDS
+    ):
+        raise ValueError("artifact policy coverage license inventory exceeds the bound")
+    rebuilt_inventory = ComponentLicenseInventory(
+        records=tuple(
+            ComponentLicenseRecord(
+                bom_ref=item.bom_ref,
+                name=item.name,
+                version=item.version,
+                kind=item.kind,
+                license_observed=item.license_observed,
+                license_observation=item.license_observation,
+            )
+            for item in inventory.records
+            if type(item) is ComponentLicenseRecord
+        ),
+        kind=inventory.kind,
+        schema_version=inventory.schema_version,
+        scope=inventory.scope,
+        complete=inventory.complete,
+        authority=inventory.authority,
+    )
+    if len(rebuilt_inventory.records) != len(inventory.records):
+        raise TypeError("artifact policy coverage license record is invalid")
+    if type(verification) is not ComponentLicensePolicyVerification:
+        raise TypeError("artifact policy coverage Cargo policy receipt is invalid")
+    if (
+        type(verification.registry_component_bom_refs) is not tuple
+        or type(verification.action_scopes) is not tuple
+        or len(verification.registry_component_bom_refs) > MAX_COMPONENT_LICENSE_RECORDS
+        or len(verification.action_scopes) > len(CARGO_LICENSE_POLICY_ACTION_SCOPES)
+    ):
+        raise ValueError("artifact policy coverage Cargo policy receipt exceeds the bound")
+    rebuilt_verification = ComponentLicensePolicyVerification(
+        component_license_inventory_sha256=(verification.component_license_inventory_sha256),
+        lock_file=_coverage_file_ref(verification.lock_file),
+        policy_snapshot_sha256=verification.policy_snapshot_sha256,
+        registry_component_bom_refs=tuple(verification.registry_component_bom_refs),
+        attestor=verification.attestor,
+        attestor_kind=verification.attestor_kind,
+        attestor_relationship=verification.attestor_relationship,
+        kind=verification.kind,
+        schema_version=verification.schema_version,
+        scope=verification.scope,
+        policy=verification.policy,
+        decision=verification.decision,
+        action_scopes=tuple(verification.action_scopes),
+        acknowledgement=verification.acknowledgement,
+        owner_attestation_bound=verification.owner_attestation_bound,
+        attestor_identity_verified=verification.attestor_identity_verified,
+        metadata_only=verification.metadata_only,
+        generated_root_excluded=verification.generated_root_excluded,
+        license_files_verified=verification.license_files_verified,
+        legal_approval_verified=verification.legal_approval_verified,
+        complete_for_scope=verification.complete_for_scope,
+        global_license_policy_complete=(verification.global_license_policy_complete),
+        complete=verification.complete,
+        signed=verification.signed,
+        distribution_authorized=verification.distribution_authorized,
+        authority=verification.authority,
+    )
+    if rebuilt_inventory != inventory or rebuilt_verification != verification:
+        raise ValueError("artifact policy coverage license chain is noncanonical")
+    return rebuilt_inventory, rebuilt_verification
+
+
+def derive_artifact_policy_coverage_inventory(
+    *,
+    target_triple: str,
+    subject: EvidenceFileRef,
+    inputs: Sequence[EvidenceFileRef],
+    wheel_entries: Sequence[WheelEntryRef],
+    cargo_packages: Sequence[CargoPackageRef],
+    native_runtime_inventory: NativeRuntimeInventory,
+    native_runtime_path_resolution: NativeRuntimePathResolutionInventory,
+    native_runtime_transitive_closure: NativeRuntimeTransitiveClosureInventory,
+    source_transformation_inventory: SourceTransformationInventory,
+    source_transformation_verification: SourceTransformationVerification,
+    analysis_input_verification: AnalysisInputVerification,
+    component_license_inventory: ComponentLicenseInventory,
+    component_license_policy_verification: ComponentLicensePolicyVerification,
+    project_source_license_policy_verification: (ProjectSourceLicensePolicyVerification),
+) -> ArtifactPolicyCoverageInventory:
+    """Derive the exact compact C6.14 partition from prerequisite evidence.
+
+    This inventory classifies only components already observed by the bounded
+    C6.2-C6.13 evidence path. Evidence sidecars and C6.14 itself are excluded,
+    and no missing artifact or policy is inferred.
+    """
+    if type(subject) is not EvidenceFileRef or subject.role != "host-extension-wheel":
+        raise ValueError("artifact policy coverage requires the wheel subject")
+    rebuilt_subject = EvidenceFileRef(
+        logical_path=subject.logical_path,
+        sha256=subject.sha256,
+        size=subject.size,
+        role=subject.role,
+    )
+    if rebuilt_subject != subject:
+        raise ValueError("artifact policy coverage wheel subject is noncanonical")
+    if type(inputs) is not tuple or len(inputs) > MAX_INPUT_FILES:
+        raise ValueError("artifact policy coverage inputs exceed the bound")
+    if type(wheel_entries) is not tuple or len(wheel_entries) > MAX_WHEEL_ENTRIES:
+        raise ValueError("artifact policy coverage wheel entries exceed the bound")
+    if type(cargo_packages) is not tuple or len(cargo_packages) > MAX_CARGO_PACKAGES:
+        raise ValueError("artifact policy coverage Cargo packages exceed the bound")
+    immutable_inputs = tuple(inputs)
+    immutable_entries = tuple(wheel_entries)
+    immutable_packages = tuple(cargo_packages)
+    if any(type(item) is not EvidenceFileRef for item in immutable_inputs):
+        raise TypeError("artifact policy coverage inputs are invalid")
+    if any(type(item) is not WheelEntryRef for item in immutable_entries):
+        raise TypeError("artifact policy coverage wheel entries are invalid")
+    if any(type(item) is not CargoPackageRef for item in immutable_packages):
+        raise TypeError("artifact policy coverage Cargo packages are invalid")
+    if any(
+        type(item.features) is not tuple or len(item.features) > MAX_EVIDENCE_COMPONENTS
+        for item in immutable_packages
+    ):
+        raise ValueError("artifact policy coverage Cargo features exceed the bound")
+    rebuilt_inputs = tuple(
+        EvidenceFileRef(item.logical_path, item.sha256, item.size, item.role)
+        for item in immutable_inputs
+    )
+    rebuilt_entries = tuple(
+        WheelEntryRef(
+            item.name,
+            item.sha256,
+            item.compressed_size,
+            item.uncompressed_size,
+        )
+        for item in immutable_entries
+    )
+    rebuilt_packages = tuple(
+        CargoPackageRef(
+            name=item.name,
+            version=item.version,
+            source=item.source,
+            checksum=item.checksum,
+            kind=item.kind,
+            features=tuple(item.features),
+            license=item.license,
+            package_id=item.package_id,
+        )
+        for item in immutable_packages
+    )
+    if (
+        rebuilt_inputs != immutable_inputs
+        or rebuilt_entries != immutable_entries
+        or rebuilt_packages != immutable_packages
+    ):
+        raise ValueError("artifact policy coverage component model is noncanonical")
+    if type(native_runtime_inventory) is not NativeRuntimeInventory:
+        raise TypeError("artifact policy coverage runtime inventory is invalid")
+    if type(native_runtime_path_resolution) is not NativeRuntimePathResolutionInventory:
+        raise TypeError("artifact policy coverage runtime resolution is invalid")
+    if type(native_runtime_transitive_closure) is not NativeRuntimeTransitiveClosureInventory:
+        raise TypeError("artifact policy coverage runtime graph is invalid")
+    if type(source_transformation_inventory) is not SourceTransformationInventory:
+        raise TypeError("artifact policy coverage transformation inventory is invalid")
+    if type(source_transformation_verification) is not SourceTransformationVerification:
+        raise TypeError("artifact policy coverage replay receipt is invalid")
+    if type(analysis_input_verification) is not AnalysisInputVerification:
+        raise TypeError("artifact policy coverage analysis-input receipt is invalid")
+    if type(component_license_inventory) is not ComponentLicenseInventory:
+        raise TypeError("artifact policy coverage license inventory is invalid")
+    if type(component_license_policy_verification) is not ComponentLicensePolicyVerification:
+        raise TypeError("artifact policy coverage Cargo policy receipt is invalid")
+    if (
+        type(project_source_license_policy_verification)
+        is not ProjectSourceLicensePolicyVerification
+    ):
+        raise TypeError("artifact policy coverage source policy receipt is invalid")
+
+    (
+        native_runtime_inventory,
+        native_runtime_path_resolution,
+        native_runtime_transitive_closure,
+    ) = _reconstruct_policy_coverage_runtime(
+        native_runtime_inventory,
+        native_runtime_path_resolution,
+        native_runtime_transitive_closure,
+    )
+    (
+        source_transformation_inventory,
+        source_transformation_verification,
+    ) = _reconstruct_policy_coverage_source(
+        source_transformation_inventory,
+        source_transformation_verification,
+    )
+    (
+        component_license_inventory,
+        component_license_policy_verification,
+    ) = _reconstruct_policy_coverage_license(
+        component_license_inventory,
+        component_license_policy_verification,
+    )
+    rebuilt_analysis = _reconstruct_analysis_input_verification(analysis_input_verification)
+    if rebuilt_analysis != analysis_input_verification:
+        raise ValueError("artifact policy coverage analysis input is noncanonical")
+    analysis_input_verification = rebuilt_analysis
+    rebuilt_source_policy = _reconstruct_project_source_license_policy_verification(
+        project_source_license_policy_verification
+    )
+    if rebuilt_source_policy != project_source_license_policy_verification:
+        raise ValueError("artifact policy coverage source policy is noncanonical")
+    project_source_license_policy_verification = rebuilt_source_policy
+
+    _validate_source_transformation_verification_binding(
+        verification=source_transformation_verification,
+        inventory=source_transformation_inventory,
+        inputs=immutable_inputs,
+    )
+    _validate_analysis_input_verification_binding(
+        verification=analysis_input_verification,
+        transformation_verification=source_transformation_verification,
+        inputs=immutable_inputs,
+    )
+    _validate_component_license_policy_verification_binding(
+        verification=component_license_policy_verification,
+        inventory=component_license_inventory,
+    )
+    _validate_project_source_license_policy_verification_binding(
+        verification=project_source_license_policy_verification,
+        transformation_verification=source_transformation_verification,
+    )
+    _validate_runtime_closure_evidence_binding(
+        closure=native_runtime_transitive_closure,
+        runtime=native_runtime_inventory,
+        path_resolution=native_runtime_path_resolution,
+        wheel_entries=immutable_entries,
+        target_triple=target_triple,
+    )
+    expected_license_records = tuple(
+        ComponentLicenseRecord(
+            bom_ref=package.bom_ref(),
+            name=package.name,
+            version=package.version,
+            kind=package.kind,
+            license_observed=package.license,
+            license_observation=(
+                "declared-unvalidated" if package.license is not None else "missing"
+            ),
+        )
+        for package in sorted(immutable_packages, key=lambda item: item.bom_ref())
+    )
+    if component_license_inventory.records != expected_license_records:
+        raise ValueError("artifact policy coverage Cargo license inventory differs")
+
+    classes: dict[str, list[str]] = {
+        class_id: [] for class_id in ARTIFACT_POLICY_COVERAGE_CLASS_IDS
+    }
+
+    def add_identity(class_id: str, value: object) -> None:
+        digest = sha256_hex(canonical_json_bytes(value))
+        classes[class_id].append(f"urn:rextio:artifact-component:{class_id}:{digest}")
+
+    file_paths: set[str] = set()
+    file_path_aliases: set[str] = set()
+    generated_rust_lib_count = 0
+    for item in immutable_inputs:
+        path_alias = unicodedata.normalize("NFC", item.logical_path).casefold()
+        if item.logical_path in file_paths or path_alias in file_path_aliases:
+            raise ValueError("artifact policy coverage file inputs overlap")
+        file_paths.add(item.logical_path)
+        file_path_aliases.add(path_alias)
+        if item.role == "project-python-source":
+            class_id = "file-input:project-python-source"
+        elif item.role == "generated-python-input":
+            class_id = "file-input:generated-python-input"
+        elif item.role == "generated-rust-input":
+            if PurePosixPath(item.logical_path).parts[-2:] == ("src", "lib.rs"):
+                class_id = "file-input:generated-rust-lib"
+                generated_rust_lib_count += 1
+            else:
+                class_id = "file-input:generated-rust-build-input"
+        elif item.role == "generated-cargo-lock":
+            class_id = "file-input:generated-cargo-lock"
+        else:
+            raise ValueError("artifact policy coverage input role is unsupported")
+        add_identity(class_id, item.to_dict())
+    if generated_rust_lib_count != 1:
+        raise ValueError("artifact policy coverage requires one generated src/lib.rs")
+
+    for record in analysis_input_verification.records:
+        if record.state != "present":
+            continue
+        if record.stub is None:  # pragma: no cover - AnalysisInputRecord invariant
+            raise ValueError("artifact policy coverage present stub is missing")
+        path_alias = unicodedata.normalize("NFC", record.stub.logical_path).casefold()
+        if record.stub.logical_path in file_paths or path_alias in file_path_aliases:
+            raise ValueError("artifact policy coverage stub overlaps another input")
+        file_paths.add(record.stub.logical_path)
+        file_path_aliases.add(path_alias)
+        add_identity("file-input:present-project-python-stub", record.stub.to_dict())
+
+    for lock_file in (
+        component_license_policy_verification.lock_file,
+        project_source_license_policy_verification.lock_file,
+    ):
+        path_alias = unicodedata.normalize("NFC", lock_file.logical_path).casefold()
+        if lock_file.logical_path in file_paths or path_alias in file_path_aliases:
+            raise ValueError("artifact policy coverage policy lock overlaps an input")
+        file_paths.add(lock_file.logical_path)
+        file_path_aliases.add(path_alias)
+        add_identity("file-input:policy-lock", lock_file.to_dict())
+
+    cargo_refs: set[str] = set()
+    path_roots = 0
+    for package in immutable_packages:
+        reference = package.bom_ref()
+        if reference in cargo_refs:
+            raise ValueError("artifact policy coverage Cargo identities overlap")
+        cargo_refs.add(reference)
+        if package.kind == "registry":
+            if package.source is None or package.checksum is None:
+                raise ValueError("artifact policy coverage registry identity is incomplete")
+            class_id = "cargo-component:registry-package"
+        elif package.kind == "path-root":
+            if package.source is not None or package.checksum is not None:
+                raise ValueError("artifact policy coverage path-root identity is invalid")
+            class_id = "cargo-component:path-root-package"
+            path_roots += 1
+        else:
+            raise ValueError("artifact policy coverage Cargo kind is unsupported")
+        add_identity(class_id, package.to_dict())
+    if path_roots != 1:
+        raise ValueError("artifact policy coverage requires one Cargo path root")
+
+    entries_by_name: dict[str, WheelEntryRef] = {}
+    entry_aliases: set[str] = set()
+    for entry in immutable_entries:
+        entry_alias = unicodedata.normalize("NFC", entry.name).casefold()
+        if entry.name in entries_by_name or entry_alias in entry_aliases:
+            raise ValueError("artifact policy coverage wheel entries overlap")
+        entries_by_name[entry.name] = entry
+        entry_aliases.add(entry_alias)
+    packaged_members: set[str] = set()
+
+    def add_packaged_member(name: str, sha256: str, size: int) -> None:
+        entry = entries_by_name.get(name)
+        if entry is None or entry.sha256 != sha256 or entry.uncompressed_size != size:
+            raise ValueError("artifact policy coverage runtime member differs")
+        if name not in packaged_members:
+            packaged_members.add(name)
+            add_identity("wheel-entry:packaged-native-runtime-member", entry.to_dict())
+
+    add_packaged_member(
+        native_runtime_inventory.wheel_member,
+        native_runtime_inventory.wheel_member_sha256,
+        native_runtime_inventory.wheel_member_size,
+    )
+    for node in native_runtime_transitive_closure.nodes:
+        if node.kind == "wheel-member":
+            if node.wheel_member is None or node.sha256 is None or node.size is None:
+                raise ValueError("artifact policy coverage runtime node is incomplete")
+            add_packaged_member(node.wheel_member, node.sha256, node.size)
+        elif node.kind == "system-logical":
+            add_identity("native-runtime:logical-system-leaf", node.to_dict())
+        else:  # pragma: no cover - closure node model invariant
+            raise ValueError("artifact policy coverage runtime node kind is invalid")
+    for entry in immutable_entries:
+        if entry.name not in packaged_members:
+            add_identity("wheel-entry:other", entry.to_dict())
+    add_identity("wheel-output:subject", rebuilt_subject.to_dict())
+
+    for class_identities in classes.values():
+        class_identities.sort()
+        if len(class_identities) != len(set(class_identities)):
+            raise ValueError("artifact policy coverage identities overlap")
+
+    replay_digest = sha256_hex(canonical_json_bytes(source_transformation_verification.to_dict()))
+    analysis_digest = sha256_hex(canonical_json_bytes(analysis_input_verification.to_dict()))
+    cargo_policy_digest = sha256_hex(
+        canonical_json_bytes(component_license_policy_verification.to_dict())
+    )
+    source_policy_digest = sha256_hex(
+        canonical_json_bytes(project_source_license_policy_verification.to_dict())
+    )
+    rows: list[ArtifactPolicyCoverageClass] = []
+    for class_id in ARTIFACT_POLICY_COVERAGE_CLASS_IDS:
+        identity_state, license_state, transformation_state = _ARTIFACT_POLICY_CLASS_SEMANTICS[
+            class_id
+        ]
+        license_kind: str | None = None
+        license_digest: str | None = None
+        if license_state == "scoped-owner-declaration-bound":
+            license_kind = PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_KIND
+            license_digest = source_policy_digest
+        elif license_state == "scoped-cargo-owner-receipt-bound":
+            license_kind = COMPONENT_LICENSE_POLICY_VERIFICATION_KIND
+            license_digest = cargo_policy_digest
+        transformation_kind: str | None = None
+        transformation_digest: str | None = None
+        if transformation_state in {
+            "scoped-replay-input-bound",
+            "scoped-replay-output-verified",
+        }:
+            transformation_kind = SOURCE_TRANSFORMATION_VERIFICATION_KIND
+            transformation_digest = replay_digest
+        elif transformation_state == "scoped-analysis-input-projection-bound":
+            transformation_kind = ANALYSIS_INPUT_VERIFICATION_KIND
+            transformation_digest = analysis_digest
+        identities = tuple(classes[class_id])
+        rows.append(
+            ArtifactPolicyCoverageClass(
+                class_id=class_id,
+                observed_count=len(identities),
+                canonical_identity_set_sha256=(
+                    artifact_policy_identity_set_digest(class_id, identities)
+                ),
+                identity_state=identity_state,
+                license_policy_state=license_state,
+                transformation_provenance_state=transformation_state,
+                license_policy_receipt_kind=license_kind,
+                license_policy_receipt_sha256=license_digest,
+                transformation_provenance_receipt_kind=transformation_kind,
+                transformation_provenance_receipt_sha256=transformation_digest,
+            )
+        )
+    immutable_rows = tuple(rows)
+    return ArtifactPolicyCoverageInventory(
+        classes=immutable_rows,
+        observed_component_count=sum(item.observed_count for item in immutable_rows),
+        canonical_partition_sha256=artifact_policy_partition_digest(immutable_rows),
+    )
+
+
+def _validate_runtime_closure_evidence_binding(
+    *,
+    closure: NativeRuntimeTransitiveClosureInventory,
+    runtime: NativeRuntimeInventory,
+    path_resolution: NativeRuntimePathResolutionInventory,
+    wheel_entries: tuple[WheelEntryRef, ...],
+    target_triple: str,
+) -> None:
+    """Cross-bind the C6.9 graph to C6.4 bytes and C6.8 root edges."""
+    if type(closure) is not NativeRuntimeTransitiveClosureInventory:
+        raise TypeError("native runtime closure model is invalid")
+    if (
+        closure.format != runtime.format
+        or closure.architecture != runtime.architecture
+        or closure.subject_wheel_member != runtime.wheel_member
+        or closure.subject_sha256 != runtime.subject_sha256
+        or closure.subject_size != runtime.subject_size
+    ):
+        raise ValueError("native runtime closure subject must exactly bind runtime inventory")
+    if (
+        path_resolution.subject_wheel_member != closure.subject_wheel_member
+        or path_resolution.subject_sha256 != closure.subject_sha256
+    ):
+        raise ValueError("native runtime closure subject must bind path resolution")
+    wheel_nodes = tuple(node for node in closure.nodes if node.kind == "wheel-member")
+    wheel_members = tuple(node.wheel_member for node in wheel_nodes)
+    if len(wheel_members) != len(set(wheel_members)):
+        raise ValueError("native runtime closure wheel members must be unique")
+    for node in wheel_nodes:
+        matches = tuple(
+            entry
+            for entry in wheel_entries
+            if entry.name == node.wheel_member
+            and entry.sha256 == node.sha256
+            and entry.uncompressed_size == node.size
+        )
+        if len(matches) != 1:
+            raise ValueError("native runtime closure wheel binding is invalid")
+
+    nodes_by_ref = {node.node_ref: node for node in closure.nodes}
+    root_edges = tuple(edge for edge in closure.edges if edge.source_ref == closure.root_node_ref)
+    if len(root_edges) != len(path_resolution.records):
+        raise ValueError("native runtime closure root edge coverage is incomplete")
+    edges_by_name = {edge.dependency_name: edge for edge in root_edges}
+    if len(edges_by_name) != len(root_edges):
+        raise ValueError("native runtime closure root edges are ambiguous")
+    for record in path_resolution.records:
+        edge = edges_by_name.get(record.dependency_name)
+        if edge is None or edge.mechanism != record.mechanism:
+            raise ValueError("native runtime closure root edge binding is invalid")
+        target = nodes_by_ref[edge.target_ref]
+        if record.resolution == "wheel-member":
+            if (
+                target.kind != "wheel-member"
+                or target.wheel_member != record.wheel_member
+                or target.sha256 != record.sha256
+                or target.size != record.size
+            ):
+                raise ValueError("native runtime closure root wheel edge is inconsistent")
+        elif target.kind != "system-logical" or target.name != record.dependency_name:
+            raise ValueError("native runtime closure root system edge is inconsistent")
+    if closure.format == "elf":
+        # Imported lazily to avoid the build layer's evidence-model import
+        # cycle while still enforcing the same target-specific C6.4 allowlist.
+        from rextio.build.runtime_inventory import _allowed_elf_dependencies
+
+        allowed_system_names = _allowed_elf_dependencies(target_triple)
+        if any(
+            node.kind == "system-logical" and node.name not in allowed_system_names
+            for node in closure.nodes
+        ):
+            raise ValueError("native runtime closure ELF system leaf is outside target allowlist")
+
+
+def validate_logical_reference(reference: str) -> None:
+    """Reject absolute, parent-escaping, or machine-private path references."""
+    if not reference or not reference.strip():
+        raise ValueError("logical reference must not be empty")
+    text = reference.strip()
+    if len(text) > MAX_EVIDENCE_STRING_CHARS:
+        raise ValueError("logical reference exceeds the allowed length")
+    if "\\" in text or "\0" in text or any(ord(ch) < 32 for ch in text):
+        raise ValueError("logical reference contains unsafe characters")
+    posix = PurePosixPath(text)
+    windows = PureWindowsPath(text)
+    if posix.is_absolute() or windows.is_absolute() or ".." in posix.parts or ".." in windows.parts:
+        raise ValueError("logical reference must be project-relative")
+    if text.startswith("/") or (len(text) >= 2 and text[1] == ":"):
+        raise ValueError("logical reference must be project-relative")
+    for part in posix.parts:
+        if part in ("", ".", ".."):
+            raise ValueError("logical reference is invalid")
+        if not _SAFE_LOGICAL_SEGMENT.fullmatch(part):
+            raise ValueError("logical reference segment is invalid")
+
+
+def project_relative_logical_path(project_root: Path, path: Path) -> str:
+    """Return a sanitized project-relative logical path for ``path``."""
+    try:
+        root = project_root.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+        relative = resolved.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise ArtifactEvidenceError(
+            "path escapes the project root", reason=REASON_SOURCE_UNREADABLE
+        ) from exc
+    logical = relative.as_posix()
+    validate_logical_reference(logical)
+    return logical
+
+
+def sha256_hex(data: bytes) -> str:
+    """Return the lowercase SHA-256 hex digest of ``data``."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_regular_file_bytes(path: Path, *, max_bytes: int = MAX_EVIDENCE_FILE_BYTES) -> bytes:
+    """Read a regular non-symlink file with fixed size bounds and post-read fstat."""
+    if max_bytes <= 0 or max_bytes > MAX_EVIDENCE_FILE_BYTES:
+        raise ArtifactEvidenceError("file size bound is invalid", reason=REASON_SOURCE_UNREADABLE)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+
+    try:
+        link_stat = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise ArtifactEvidenceError(
+            "evidence input file is missing", reason=REASON_SOURCE_UNREADABLE
+        ) from exc
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "evidence input file could not be inspected", reason=REASON_SOURCE_UNREADABLE
+        ) from exc
+    if stat.S_ISLNK(link_stat.st_mode) or not stat.S_ISREG(link_stat.st_mode):
+        raise ArtifactEvidenceError(
+            "evidence input must be a regular non-symlink file",
+            reason=REASON_SOURCE_UNREADABLE,
+        )
+    if link_stat.st_size < 0 or link_stat.st_size > max_bytes:
+        raise ArtifactEvidenceError(
+            "evidence input size is outside the allowed range",
+            reason=REASON_SOURCE_UNREADABLE,
+        )
+
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "evidence input could not be opened", reason=REASON_SOURCE_UNREADABLE
+        ) from exc
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ArtifactEvidenceError(
+                "evidence input must be a regular non-symlink file",
+                reason=REASON_SOURCE_UNREADABLE,
+            )
+        if hasattr(link_stat, "st_ino") and hasattr(file_stat, "st_ino"):
+            if link_stat.st_ino != file_stat.st_ino or link_stat.st_dev != file_stat.st_dev:
+                raise ArtifactEvidenceError(
+                    "evidence input changed during open",
+                    reason=REASON_SOURCE_SNAPSHOT_MISMATCH,
+                )
+        if file_stat.st_size > max_bytes:
+            raise ArtifactEvidenceError(
+                "evidence input size is outside the allowed range",
+                reason=REASON_SOURCE_UNREADABLE,
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            try:
+                chunk = os.read(fd, min(65536, remaining))
+            except BlockingIOError as exc:
+                raise ArtifactEvidenceError(
+                    "evidence input could not be read", reason=REASON_SOURCE_UNREADABLE
+                ) from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > max_bytes:
+            raise ArtifactEvidenceError(
+                "evidence input size is outside the allowed range",
+                reason=REASON_SOURCE_UNREADABLE,
+            )
+        # Post-read coherence: the descriptor must still name the same regular file.
+        post_stat = os.fstat(fd)
+        if not stat.S_ISREG(post_stat.st_mode):
+            raise ArtifactEvidenceError(
+                "evidence input changed after read",
+                reason=REASON_SOURCE_SNAPSHOT_MISMATCH,
+            )
+        if hasattr(file_stat, "st_ino") and hasattr(post_stat, "st_ino"):
+            if file_stat.st_ino != post_stat.st_ino or file_stat.st_dev != post_stat.st_dev:
+                raise ArtifactEvidenceError(
+                    "evidence input changed after read",
+                    reason=REASON_SOURCE_SNAPSHOT_MISMATCH,
+                )
+        if post_stat.st_size != len(data):
+            raise ArtifactEvidenceError(
+                "evidence input size changed during read",
+                reason=REASON_SOURCE_SNAPSHOT_MISMATCH,
+            )
+        return data
+    finally:
+        os.close(fd)
+
+
+def hash_regular_file(path: Path, *, max_bytes: int = MAX_EVIDENCE_FILE_BYTES) -> tuple[str, int]:
+    """Return ``(sha256, size)`` for a bounded regular file."""
+    data = read_regular_file_bytes(path, max_bytes=max_bytes)
+    return sha256_hex(data), len(data)
+
+
+def ensure_sidecar_path_contained(path: Path, *, project_root: Path, expected_parent: Path) -> Path:
+    """Validate sidecar path containment and return the resolved final path.
+
+    Rejects symlink parents and paths that escape ``project_root`` or are not
+    direct children of ``expected_parent`` (typically ``dist/``).
+    """
+    try:
+        root = project_root.resolve(strict=False)
+        parent = expected_parent.resolve(strict=False)
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "sidecar parent could not be resolved", reason=REASON_SIDECAR_WRITE_FAILED
+        ) from exc
+    try:
+        parent.relative_to(root)
+    except ValueError as exc:
+        raise ArtifactEvidenceError(
+            "sidecar parent escapes the project root",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+    if expected_parent.is_symlink():
+        raise ArtifactEvidenceError(
+            "sidecar parent must not be a symlink",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    if path.parent.resolve(strict=False) != parent:
+        raise ArtifactEvidenceError(
+            "sidecar path is not contained in the expected parent",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    if path.name != path.name.strip() or "/" in path.name or "\\" in path.name:
+        raise ArtifactEvidenceError(
+            "sidecar basename is invalid", reason=REASON_SIDECAR_WRITE_FAILED
+        )
+    return parent / path.name
+
+
+def _dirfd_ops_available() -> bool:
+    """Return whether Python dir_fd keyword ops are usable on this platform.
+
+    Uses the real Python APIs (``os.open(..., dir_fd=)``, ``os.replace`` /
+    ``os.rename`` with ``src_dir_fd``/``dst_dir_fd``, ``os.unlink(..., dir_fd=)``).
+    The dead ``os.openat`` / ``os.renameat`` / ``os.unlinkat`` names are never
+    required — they are absent on common CPython builds (including macOS).
+    """
+    if os.name == "nt":  # pragma: no cover - Windows uses path fallback
+        return False
+    try:
+        open_params = inspect.signature(os.open).parameters
+        unlink_params = inspect.signature(os.unlink).parameters
+        replace_params = inspect.signature(os.replace).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic interpreters
+        return False
+    return (
+        "dir_fd" in open_params
+        and "dir_fd" in unlink_params
+        and "src_dir_fd" in replace_params
+        and "dst_dir_fd" in replace_params
+    )
+
+
+def _open_pinned_parent_dirfd(parent: Path) -> tuple[int, os.stat_result]:
+    """Open ``parent`` with O_DIRECTORY|O_NOFOLLOW and verify inode against lstat.
+
+    Returns ``(dir_fd, link_stat)``. Caller owns the dirfd and must close it.
+    """
+    try:
+        link_stat = os.lstat(parent)
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "sidecar parent could not be inspected",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+    if stat.S_ISLNK(link_stat.st_mode):
+        raise ArtifactEvidenceError(
+            "sidecar parent must not be a symlink",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    if not stat.S_ISDIR(link_stat.st_mode):
+        raise ArtifactEvidenceError(
+            "sidecar parent is not a directory",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    dir_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        dir_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        dir_flags |= os.O_NOFOLLOW
+    try:
+        dir_fd = os.open(str(parent), dir_flags)
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "sidecar parent directory could not be opened",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+    try:
+        dir_stat = os.fstat(dir_fd)
+        if not stat.S_ISDIR(dir_stat.st_mode):
+            raise ArtifactEvidenceError(
+                "sidecar parent is not a directory",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        if (
+            getattr(link_stat, "st_ino", None) is not None
+            and getattr(dir_stat, "st_ino", None) is not None
+            and (link_stat.st_ino != dir_stat.st_ino or link_stat.st_dev != dir_stat.st_dev)
+        ):
+            raise ArtifactEvidenceError(
+                "sidecar parent changed during open",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        return dir_fd, link_stat
+    except ArtifactEvidenceError:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+        raise
+    except OSError as exc:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+        raise ArtifactEvidenceError(
+            "sidecar parent directory could not be verified",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+
+
+def _validate_sidecar_basename(name: str) -> str:
+    if (
+        not name
+        or name != name.strip()
+        or "/" in name
+        or "\\" in name
+        or name in {".", ".."}
+        or "\0" in name
+    ):
+        raise ArtifactEvidenceError(
+            "sidecar basename is invalid", reason=REASON_SIDECAR_WRITE_FAILED
+        )
+    return name
+
+
+@dataclass(frozen=True)
+class _EntryIdentity:
+    """No-follow filesystem identity used to prove transaction ownership."""
+
+    device: int
+    inode: int
+    mode: int
+
+    @classmethod
+    def from_stat(cls, entry: os.stat_result) -> _EntryIdentity:
+        return cls(entry.st_dev, entry.st_ino, entry.st_mode)
+
+
+@dataclass(frozen=True)
+class _FileReceipt:
+    """Identity plus bounded exact bytes for an owned regular output."""
+
+    identity: _EntryIdentity
+    sha256: str
+    size: int
+
+    @classmethod
+    def from_bytes(cls, identity: _EntryIdentity, data: bytes) -> _FileReceipt:
+        return cls(identity=identity, sha256=sha256_hex(data), size=len(data))
+
+
+def _lstat_at(dir_fd: int, name: str) -> os.stat_result | None:
+    try:
+        return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _lstat_path(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _write_exclusive_at(dir_fd: int, name: str, data: bytes) -> _EntryIdentity:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    created = False
+    succeeded = False
+    identity: _EntryIdentity | None = None
+    offset = 0
+    try:
+        fd = os.open(name, flags, 0o644, dir_fd=dir_fd)
+        created = True
+        entry = os.fstat(fd)
+        identity = _EntryIdentity.from_stat(entry)
+        if not stat.S_ISREG(entry.st_mode) or getattr(entry, "st_nlink", 1) != 1:
+            raise ArtifactEvidenceError(
+                "sidecar stage is not an exclusive regular file",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        view = memoryview(data)
+        while offset < len(data):
+            written = os.write(fd, view[offset:])
+            if written <= 0:
+                raise OSError("short sidecar stage write")
+            offset += written
+        os.fsync(fd)
+        succeeded = True
+        assert identity is not None
+        return identity
+    except ArtifactEvidenceError:
+        raise
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "sidecar stage could not be written",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if created and not succeeded and identity is not None:
+            expected = _FileReceipt.from_bytes(identity, data[:offset])
+            current = _lstat_at(dir_fd, name)
+            if (
+                current is not None
+                and getattr(current, "st_nlink", 1) == 1
+                and _receipt_matches_at(dir_fd, name, expected)
+            ):
+                try:
+                    os.unlink(name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+
+
+def _read_exact_at(dir_fd: int, name: str, expected: _EntryIdentity, *, max_bytes: int) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+        before = os.fstat(fd)
+        if _EntryIdentity.from_stat(before) != expected or not stat.S_ISREG(before.st_mode):
+            raise ArtifactEvidenceError(
+                "sidecar ownership changed during verification",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        if before.st_size < 0 or before.st_size > max_bytes:
+            raise ArtifactEvidenceError(
+                "sidecar size changed during verification",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        after = os.fstat(fd)
+        if (
+            len(data) > max_bytes
+            or _EntryIdentity.from_stat(after) != expected
+            or after.st_size != len(data)
+        ):
+            raise ArtifactEvidenceError(
+                "sidecar changed during verification",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        return data
+    except ArtifactEvidenceError:
+        raise
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "sidecar could not be verified",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _receipt_at(dir_fd: int, name: str, *, max_bytes: int) -> _FileReceipt:
+    entry = _lstat_at(dir_fd, name)
+    if entry is None or not stat.S_ISREG(entry.st_mode):
+        raise ArtifactEvidenceError(
+            "owned sidecar is not a regular file",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    identity = _EntryIdentity.from_stat(entry)
+    data = _read_exact_at(dir_fd, name, identity, max_bytes=max_bytes)
+    return _FileReceipt.from_bytes(identity, data)
+
+
+def _receipt_path(path: Path, *, max_bytes: int) -> _FileReceipt:
+    before = _lstat_path(path)
+    if before is None or not stat.S_ISREG(before.st_mode):
+        raise ArtifactEvidenceError(
+            "owned sidecar is not a regular file",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    if before.st_size < 0 or before.st_size > max_bytes:
+        raise ArtifactEvidenceError(
+            "owned sidecar size is outside the bound",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise ArtifactEvidenceError(
+            "owned sidecar could not be read",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        ) from exc
+    after = _lstat_path(path)
+    identity = _EntryIdentity.from_stat(before)
+    if (
+        after is None
+        or _EntryIdentity.from_stat(after) != identity
+        or len(data) != after.st_size
+        or len(data) > max_bytes
+    ):
+        raise ArtifactEvidenceError(
+            "owned sidecar changed during read",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    return _FileReceipt.from_bytes(identity, data)
+
+
+def _receipt_matches_at(dir_fd: int, name: str, receipt: _FileReceipt) -> bool:
+    try:
+        current = _receipt_at(dir_fd, name, max_bytes=receipt.size)
+    except ArtifactEvidenceError:
+        return False
+    return current == receipt
+
+
+def _receipt_matches_path(path: Path, receipt: _FileReceipt) -> bool:
+    try:
+        current = _receipt_path(path, max_bytes=receipt.size)
+    except ArtifactEvidenceError:
+        return False
+    return current == receipt
+
+
+def _restore_quarantined_at(
+    quarantine_fd: int,
+    quarantine_name: str,
+    public_fd: int,
+    public_name: str,
+) -> bool:
+    """Restore one quarantined regular entry without replacing a public name."""
+    try:
+        quarantined = _lstat_at(quarantine_fd, quarantine_name)
+        if quarantined is None or not stat.S_ISREG(quarantined.st_mode):
+            return False
+        identity = _EntryIdentity.from_stat(quarantined)
+        os.link(
+            quarantine_name,
+            public_name,
+            src_dir_fd=quarantine_fd,
+            dst_dir_fd=public_fd,
+            follow_symlinks=False,
+        )
+        restored = _lstat_at(public_fd, public_name)
+        if restored is None or _EntryIdentity.from_stat(restored) != identity:
+            return False
+        # Keep the recovery link even after a create-if-absent public restore.
+        # A concurrent public replacement after the identity check must not
+        # turn a later quarantine unlink into deletion of the last known copy.
+        return True
+    except OSError:
+        # EEXIST deliberately preserves both the concurrent public entry and
+        # this transaction's quarantined recovery copy.
+        return False
+
+
+def _restore_quarantined_path(quarantine: Path, public: Path) -> bool:
+    """Path fallback for create-if-absent quarantine restoration."""
+    try:
+        quarantined = _lstat_path(quarantine)
+        if quarantined is None or not stat.S_ISREG(quarantined.st_mode):
+            return False
+        identity = _EntryIdentity.from_stat(quarantined)
+        os.link(quarantine, public, follow_symlinks=False)
+        restored = _lstat_path(public)
+        if restored is None or _EntryIdentity.from_stat(restored) != identity:
+            return False
+        # Deliberately retain the transaction-private recovery link; mismatch
+        # already makes rollback incomplete and requires manual disposition.
+        return True
+    except OSError:
+        return False
+
+
+def _quarantine_and_dispose_owned_at(
+    public_fd: int,
+    public_name: str,
+    quarantine_fd: int,
+    quarantine_name: str,
+    receipt: _FileReceipt,
+) -> bool:
+    """Atomically isolate a public entry before proving and deleting ownership."""
+    try:
+        os.replace(
+            public_name,
+            quarantine_name,
+            src_dir_fd=public_fd,
+            dst_dir_fd=quarantine_fd,
+        )
+    except OSError:
+        return False
+    if _receipt_matches_at(quarantine_fd, quarantine_name, receipt):
+        try:
+            os.unlink(quarantine_name, dir_fd=quarantine_fd)
+            return _lstat_at(public_fd, public_name) is None
+        except OSError:
+            return False
+    # The moved entry was not ours. Put it back only with create-if-absent
+    # semantics; otherwise retain the private recovery copy for manual action.
+    _restore_quarantined_at(
+        quarantine_fd,
+        quarantine_name,
+        public_fd,
+        public_name,
+    )
+    return False
+
+
+def _quarantine_and_dispose_owned_path(
+    public: Path,
+    quarantine: Path,
+    receipt: _FileReceipt,
+) -> bool:
+    """Path fallback for quarantine-first ownership cleanup."""
+    try:
+        os.replace(public, quarantine)
+    except OSError:
+        return False
+    if _receipt_matches_path(quarantine, receipt):
+        try:
+            quarantine.unlink()
+            return _lstat_path(public) is None
+        except OSError:
+            return False
+    _restore_quarantined_path(quarantine, public)
+    return False
+
+
+class SidecarWriteTransaction:
+    """Publish a bounded sidecar set without losing pre-existing entries.
+
+    Existing exact output entries are renamed into a private same-filesystem
+    backup directory. New regular files are installed with hard-link
+    create-if-absent semantics, and rollback removes only the exact inode/dev
+    identities emitted by this transaction before restoring prior entries.
+    """
+
+    def __init__(
+        self,
+        paths: Sequence[Path],
+        *,
+        project_root: Path,
+        expected_parent: Path,
+    ) -> None:
+        if not paths:
+            raise ArtifactEvidenceError(
+                "sidecar transaction is empty", reason=REASON_SIDECAR_WRITE_FAILED
+            )
+        contained = tuple(
+            ensure_sidecar_path_contained(
+                path, project_root=project_root, expected_parent=expected_parent
+            )
+            for path in paths
+        )
+        basenames = tuple(_validate_sidecar_basename(path.name) for path in contained)
+        if len(set(basenames)) != len(basenames):
+            raise ArtifactEvidenceError(
+                "sidecar transaction contains duplicate outputs",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+
+        expected_parent.mkdir(parents=True, exist_ok=True)
+        self.paths = contained
+        self.basenames = basenames
+        self.project_root = project_root
+        self.expected_parent = expected_parent
+        self._token = secrets.token_hex(16)
+        self._backup_dir_name = _validate_sidecar_basename(
+            f".rextio-sidecar-{self._token}.rollback"
+        )
+        self._originals: list[_FileReceipt | None] = [None] * len(paths)
+        self._processed: set[int] = set()
+        self._emitted: dict[int, _FileReceipt] = {}
+        self._staged: dict[int, tuple[str, _FileReceipt, bytes]] = {}
+        self._active = True
+        self._parent_fd: int | None = None
+        self._backup_fd: int | None = None
+        self._parent_identity: _EntryIdentity | None = None
+        self._backup_path = expected_parent / self._backup_dir_name
+
+        try:
+            if _dirfd_ops_available():
+                self._prepare_dirfd()
+            else:
+                self._prepare_path()
+        except BaseException:
+            self.rollback()
+            raise
+
+    @classmethod
+    def prepare(
+        cls,
+        paths: Sequence[Path],
+        *,
+        project_root: Path,
+        expected_parent: Path,
+    ) -> SidecarWriteTransaction:
+        return cls(
+            paths,
+            project_root=project_root,
+            expected_parent=expected_parent,
+        )
+
+    def _prepare_dirfd(self) -> None:
+        parent_fd, parent_stat = _open_pinned_parent_dirfd(self.expected_parent)
+        self._parent_fd = parent_fd
+        self._parent_identity = _EntryIdentity.from_stat(parent_stat)
+        try:
+            os.mkdir(self._backup_dir_name, 0o700, dir_fd=parent_fd)
+            flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            self._backup_fd = os.open(self._backup_dir_name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar transaction could not preserve prior outputs",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+
+    def _prepare_path(self) -> None:
+        parent = self.expected_parent
+        parent_entry = parent.lstat()
+        if stat.S_ISLNK(parent_entry.st_mode) or not stat.S_ISDIR(parent_entry.st_mode):
+            raise ArtifactEvidenceError(
+                "sidecar parent is not a real directory",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        self._parent_identity = _EntryIdentity.from_stat(parent_entry)
+        try:
+            self._backup_path.mkdir(mode=0o700)
+        except ArtifactEvidenceError:
+            raise
+        except OSError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar transaction could not preserve prior outputs",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+
+    def _index_for(self, path: Path) -> int:
+        try:
+            return self.paths.index(path)
+        except ValueError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar output is outside the transaction",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+
+    def write(self, path: Path, data: bytes) -> None:
+        if not self._active or len(data) > MAX_SIDECAR_BYTES:
+            raise ArtifactEvidenceError(
+                "sidecar transaction write is invalid",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        index = self._index_for(path)
+        if index in self._staged:
+            raise ArtifactEvidenceError(
+                "sidecar output was staged twice", reason=REASON_SIDECAR_WRITE_FAILED
+            )
+        if self._parent_fd is not None:
+            self._write_dirfd(index, data)
+        else:
+            self._write_path(index, data)
+
+    def _write_dirfd(self, index: int, data: bytes) -> None:
+        assert self._parent_fd is not None
+        name = self.basenames[index]
+        temp_name = _validate_sidecar_basename(f".{name}.{self._token}.{index}.stage")
+        identity = _write_exclusive_at(self._parent_fd, temp_name, data)
+        if _read_exact_at(self._parent_fd, temp_name, identity, max_bytes=len(data)) != data:
+            raise ArtifactEvidenceError(
+                "sidecar stage bytes changed",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        self._staged[index] = (
+            temp_name,
+            _FileReceipt.from_bytes(identity, data),
+            data,
+        )
+
+    def _write_path(self, index: int, data: bytes) -> None:
+        path = self.paths[index]
+        temp = self.expected_parent / f".{path.name}.{self._token}.{index}.stage"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd: int | None = None
+        identity: _EntryIdentity | None = None
+        offset = 0
+        staged = False
+        try:
+            fd = os.open(str(temp), flags, 0o644)
+            entry = os.fstat(fd)
+            identity = _EntryIdentity.from_stat(entry)
+            if not stat.S_ISREG(entry.st_mode) or getattr(entry, "st_nlink", 1) != 1:
+                raise ArtifactEvidenceError(
+                    "sidecar stage is not an exclusive regular file",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            view = memoryview(data)
+            while offset < len(data):
+                written = os.write(fd, view[offset:])
+                if written <= 0:
+                    raise OSError("short sidecar stage write")
+                offset += written
+            os.fsync(fd)
+            if _EntryIdentity.from_stat(os.fstat(fd)) != identity:
+                raise ArtifactEvidenceError(
+                    "sidecar stage ownership changed",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            os.close(fd)
+            fd = None
+            if temp.read_bytes() != data:
+                raise ArtifactEvidenceError(
+                    "sidecar stage bytes changed",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            self._staged[index] = (
+                temp.name,
+                _FileReceipt.from_bytes(identity, data),
+                data,
+            )
+            staged = True
+        except ArtifactEvidenceError:
+            raise
+        except OSError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar stage could not be written",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if not staged and identity is not None:
+                expected = _FileReceipt.from_bytes(identity, data[:offset])
+                current = _lstat_path(temp)
+                if (
+                    current is not None
+                    and getattr(current, "st_nlink", 1) == 1
+                    and _receipt_matches_path(temp, expected)
+                ):
+                    try:
+                        temp.unlink()
+                    except OSError:
+                        pass
+
+    def _parent_matches(self) -> bool:
+        try:
+            current = self.expected_parent.lstat()
+        except OSError:
+            return False
+        return (
+            self._parent_identity is not None
+            and _EntryIdentity.from_stat(current) == self._parent_identity
+        )
+
+    def commit(
+        self,
+        claim_sink: Callable[[tuple[tuple[Path, _FileReceipt], ...]], None] | None = None,
+    ) -> None:
+        if not self._active or len(self._staged) != len(self.paths):
+            raise ArtifactEvidenceError(
+                "sidecar transaction is incomplete",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        if not self._parent_matches():
+            raise ArtifactEvidenceError(
+                "sidecar parent changed before commit",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        self._preserve_outputs()
+        self._publish_staged_outputs()
+        for index, receipt in self._emitted.items():
+            current = (
+                _lstat_at(self._parent_fd, self.basenames[index])
+                if self._parent_fd is not None
+                else _lstat_path(self.paths[index])
+            )
+            identity_matches = (
+                current is not None and _EntryIdentity.from_stat(current) == receipt.identity
+            )
+            content_matches = (
+                _receipt_matches_at(self._parent_fd, self.basenames[index], receipt)
+                if self._parent_fd is not None
+                else _receipt_matches_path(self.paths[index], receipt)
+            )
+            if not identity_matches or not content_matches:
+                raise ArtifactEvidenceError(
+                    "sidecar ownership changed before commit",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+        if claim_sink is not None:
+            claim_sink(
+                tuple(
+                    (self.paths[index], receipt) for index, receipt in sorted(self._emitted.items())
+                )
+            )
+        if not self._cleanup_stages():
+            raise ArtifactEvidenceError(
+                "sidecar stage cleanup lost ownership",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        self._active = False
+        self._discard_backups()
+        self._close()
+
+    def _preserve_outputs(self) -> None:
+        try:
+            for index, name in enumerate(self.basenames):
+                entry = (
+                    _lstat_at(self._parent_fd, name)
+                    if self._parent_fd is not None
+                    else _lstat_path(self.paths[index])
+                )
+                if entry is None:
+                    self._processed.add(index)
+                    continue
+                if stat.S_ISDIR(entry.st_mode):
+                    raise ArtifactEvidenceError(
+                        "sidecar output is a directory",
+                        reason=REASON_SIDECAR_WRITE_FAILED,
+                    )
+                if not stat.S_ISREG(entry.st_mode):
+                    raise ArtifactEvidenceError(
+                        "sidecar output is not a regular file",
+                        reason=REASON_SIDECAR_WRITE_FAILED,
+                    )
+                receipt = (
+                    _receipt_at(self._parent_fd, name, max_bytes=MAX_SIDECAR_BYTES)
+                    if self._parent_fd is not None
+                    else _receipt_path(self.paths[index], max_bytes=MAX_SIDECAR_BYTES)
+                )
+                # Write-ahead recovery state: once the following rename can
+                # succeed, rollback must already know exactly which prior file
+                # belongs in this slot. Post-rename inspection must never be the
+                # first point at which ownership becomes durable in memory.
+                self._originals[index] = receipt
+                self._processed.add(index)
+                if self._parent_fd is not None:
+                    assert self._backup_fd is not None
+                    os.replace(
+                        name,
+                        str(index),
+                        src_dir_fd=self._parent_fd,
+                        dst_dir_fd=self._backup_fd,
+                    )
+                    moved = _lstat_at(self._backup_fd, str(index))
+                else:
+                    backup = self._backup_path / str(index)
+                    os.replace(self.paths[index], backup)
+                    moved = _lstat_path(backup)
+                moved_matches = (
+                    moved is not None
+                    and _EntryIdentity.from_stat(moved) == receipt.identity
+                    and (
+                        _receipt_matches_at(self._backup_fd, str(index), receipt)
+                        if self._backup_fd is not None
+                        else _receipt_matches_path(self._backup_path / str(index), receipt)
+                    )
+                )
+                if not moved_matches:
+                    raise ArtifactEvidenceError(
+                        "sidecar backup identity changed",
+                        reason=REASON_SIDECAR_WRITE_FAILED,
+                    )
+        except ArtifactEvidenceError:
+            raise
+        except OSError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar transaction could not preserve prior outputs",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+
+    def _publish_staged_outputs(self) -> None:
+        try:
+            for index in range(len(self.paths)):
+                temp_name, receipt, data = self._staged[index]
+                current = (
+                    _lstat_at(self._parent_fd, self.basenames[index])
+                    if self._parent_fd is not None
+                    else _lstat_path(self.paths[index])
+                )
+                if current is not None:
+                    raise ArtifactEvidenceError(
+                        "sidecar output was concurrently created",
+                        reason=REASON_SIDECAR_WRITE_FAILED,
+                    )
+                if self._parent_fd is not None:
+                    os.link(
+                        temp_name,
+                        self.basenames[index],
+                        src_dir_fd=self._parent_fd,
+                        dst_dir_fd=self._parent_fd,
+                        follow_symlinks=False,
+                    )
+                    installed = _lstat_at(self._parent_fd, self.basenames[index])
+                else:
+                    os.link(
+                        self.expected_parent / temp_name,
+                        self.paths[index],
+                        follow_symlinks=False,
+                    )
+                    installed = _lstat_path(self.paths[index])
+                if installed is None or _EntryIdentity.from_stat(installed) != receipt.identity:
+                    raise ArtifactEvidenceError(
+                        "sidecar install identity changed",
+                        reason=REASON_SIDECAR_WRITE_FAILED,
+                    )
+                self._emitted[index] = receipt
+                installed_bytes = (
+                    _read_exact_at(
+                        self._parent_fd,
+                        self.basenames[index],
+                        receipt.identity,
+                        max_bytes=len(data),
+                    )
+                    if self._parent_fd is not None
+                    else self.paths[index].read_bytes()
+                )
+                if installed_bytes != data:
+                    raise ArtifactEvidenceError(
+                        "sidecar bytes changed after install",
+                        reason=REASON_SIDECAR_WRITE_FAILED,
+                    )
+            if self._parent_fd is not None:
+                try:
+                    os.fsync(self._parent_fd)
+                except OSError:
+                    pass
+        except ArtifactEvidenceError:
+            raise
+        except OSError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar could not be installed without replacement",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+
+    def rollback(self) -> bool:
+        if not self._active:
+            return True
+        self._active = False
+        complete = self._parent_matches()
+        try:
+            for index in sorted(self._processed, reverse=True):
+                if not self._rollback_index(index):
+                    complete = False
+            if not self._cleanup_stages():
+                complete = False
+            if not self._remove_backup_directory():
+                complete = False
+        except Exception:
+            complete = False
+        self._close()
+        return complete
+
+    def _cleanup_stages(self) -> bool:
+        complete = True
+        for index, (name, receipt, _data) in tuple(self._staged.items()):
+            quarantine_name = _validate_sidecar_basename(f"stage-{self._token}-{index}.quarantine")
+            if self._parent_fd is not None:
+                assert self._backup_fd is not None
+                cleaned = _quarantine_and_dispose_owned_at(
+                    self._parent_fd,
+                    name,
+                    self._backup_fd,
+                    quarantine_name,
+                    receipt,
+                )
+            else:
+                cleaned = _quarantine_and_dispose_owned_path(
+                    self.expected_parent / name,
+                    self._backup_path / quarantine_name,
+                    receipt,
+                )
+            if cleaned:
+                del self._staged[index]
+            else:
+                complete = False
+        return complete
+
+    def _rollback_index(self, index: int) -> bool:
+        emitted = self._emitted.get(index)
+        complete = True
+        if emitted is not None:
+            quarantine_name = _validate_sidecar_basename(f"output-{self._token}-{index}.quarantine")
+            if self._parent_fd is not None:
+                assert self._backup_fd is not None
+                complete = _quarantine_and_dispose_owned_at(
+                    self._parent_fd,
+                    self.basenames[index],
+                    self._backup_fd,
+                    quarantine_name,
+                    emitted,
+                )
+            else:
+                complete = _quarantine_and_dispose_owned_path(
+                    self.paths[index],
+                    self._backup_path / quarantine_name,
+                    emitted,
+                )
+        elif (
+            _lstat_at(self._parent_fd, self.basenames[index])
+            if self._parent_fd is not None
+            else _lstat_path(self.paths[index])
+        ) is not None:
+            # Never delete an output that this transaction did not emit.
+            complete = False
+
+        original = self._originals[index]
+        if original is None:
+            return complete
+        current = (
+            _lstat_at(self._parent_fd, self.basenames[index])
+            if self._parent_fd is not None
+            else _lstat_path(self.paths[index])
+        )
+        if current is not None:
+            return False
+        try:
+            if self._parent_fd is not None:
+                assert self._backup_fd is not None
+                backup = _lstat_at(self._backup_fd, str(index))
+                if (
+                    backup is None
+                    or _EntryIdentity.from_stat(backup) != original.identity
+                    or not _receipt_matches_at(self._backup_fd, str(index), original)
+                ):
+                    return False
+                os.link(
+                    str(index),
+                    self.basenames[index],
+                    src_dir_fd=self._backup_fd,
+                    dst_dir_fd=self._parent_fd,
+                    follow_symlinks=False,
+                )
+                restored = _lstat_at(self._parent_fd, self.basenames[index])
+                if (
+                    restored is None
+                    or _EntryIdentity.from_stat(restored) != original.identity
+                    or not _receipt_matches_at(self._parent_fd, self.basenames[index], original)
+                ):
+                    return False
+                os.unlink(str(index), dir_fd=self._backup_fd)
+            else:
+                backup_path = self._backup_path / str(index)
+                backup = _lstat_path(backup_path)
+                if (
+                    backup is None
+                    or _EntryIdentity.from_stat(backup) != original.identity
+                    or not _receipt_matches_path(backup_path, original)
+                ):
+                    return False
+                os.link(backup_path, self.paths[index], follow_symlinks=False)
+                restored = _lstat_path(self.paths[index])
+                if (
+                    restored is None
+                    or _EntryIdentity.from_stat(restored) != original.identity
+                    or not _receipt_matches_path(self.paths[index], original)
+                ):
+                    return False
+                backup_path.unlink()
+        except OSError:
+            return False
+        return complete
+
+    def _discard_backups(self) -> None:
+        for index, original in enumerate(self._originals):
+            if original is None:
+                continue
+            try:
+                if self._backup_fd is not None:
+                    backup = _lstat_at(self._backup_fd, str(index))
+                    if (
+                        backup is not None
+                        and _EntryIdentity.from_stat(backup) == original.identity
+                        and _receipt_matches_at(self._backup_fd, str(index), original)
+                    ):
+                        os.unlink(str(index), dir_fd=self._backup_fd)
+                else:
+                    backup_path = self._backup_path / str(index)
+                    backup = _lstat_path(backup_path)
+                    if (
+                        backup is not None
+                        and _EntryIdentity.from_stat(backup) == original.identity
+                        and _receipt_matches_path(backup_path, original)
+                    ):
+                        backup_path.unlink()
+            except OSError:
+                continue
+        self._remove_backup_directory()
+
+    def _remove_backup_directory(self) -> bool:
+        try:
+            if self._backup_fd is not None:
+                assert self._parent_fd is not None
+                os.rmdir(self._backup_dir_name, dir_fd=self._parent_fd)
+            elif self._backup_path.exists():
+                self._backup_path.rmdir()
+        except OSError:
+            return False
+        return True
+
+    def _close(self) -> None:
+        for fd_name in ("_backup_fd", "_parent_fd"):
+            fd = getattr(self, fd_name)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                setattr(self, fd_name, None)
+
+
+def write_atomic_bytes(
+    path: Path,
+    data: bytes,
+    *,
+    project_root: Path | None = None,
+    expected_parent: Path | None = None,
+) -> Path:
+    """Write ``data`` atomically with containment checks and exclusive create.
+
+    On supported POSIX platforms the parent directory is pinned with a dirfd
+    for exclusive temp create, replace, and fsync via real Python ``dir_fd``
+    APIs. Elsewhere a conservative contained path-based fallback is used.
+    Returns the final path.
+    """
+    if len(data) > MAX_SIDECAR_BYTES:
+        raise ArtifactEvidenceError(
+            "sidecar payload exceeds the allowed size", reason=REASON_SIDECAR_WRITE_FAILED
+        )
+    if project_root is not None and expected_parent is not None:
+        path = ensure_sidecar_path_contained(
+            path, project_root=project_root, expected_parent=expected_parent
+        )
+        parent = expected_parent
+    else:
+        parent = path.parent
+        if parent.is_symlink():
+            raise ArtifactEvidenceError(
+                "sidecar parent must not be a symlink",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+    parent.mkdir(parents=True, exist_ok=True)
+    if parent.is_symlink():
+        raise ArtifactEvidenceError(
+            "sidecar parent must not be a symlink",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+
+    token = secrets.token_hex(8)
+    basename = _validate_sidecar_basename(path.name)
+    tmp_name = f".{basename}.{token}.tmp"
+    _validate_sidecar_basename(tmp_name)
+
+    # Prefer real Python dir_fd ops on POSIX (not the absent os.openat symbols).
+    if _dirfd_ops_available():
+        return _write_atomic_bytes_dirfd(
+            path, data, parent=parent, tmp_name=tmp_name, basename=basename
+        )
+
+    return _write_atomic_bytes_path(path, data, tmp_path=parent / tmp_name)
+
+
+def _write_atomic_bytes_dirfd(
+    path: Path,
+    data: bytes,
+    *,
+    parent: Path,
+    tmp_name: str,
+    basename: str,
+) -> Path:
+    """POSIX dirfd-pinned exclusive write/replace/fsync for sidecar mutation.
+
+    Uses ``os.open(name, flags, mode, dir_fd=...)``, ``os.replace`` with
+    ``src_dir_fd``/``dst_dir_fd``, and ``os.unlink(name, dir_fd=...)``.
+    """
+    dir_fd, _link_stat = _open_pinned_parent_dirfd(parent)
+    tmp_created = False
+    operation_error: ArtifactEvidenceError | None = None
+    try:
+        file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            file_flags |= os.O_NOFOLLOW
+
+        fd: int | None = None
+        file_error: ArtifactEvidenceError | None = None
+        try:
+            fd = os.open(tmp_name, file_flags, 0o644, dir_fd=dir_fd)
+            tmp_created = True
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ArtifactEvidenceError(
+                    "sidecar temp path is not a regular file",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            if getattr(file_stat, "st_nlink", 1) != 1:
+                raise ArtifactEvidenceError(
+                    "sidecar temp path has unexpected hard links",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            view = memoryview(data)
+            offset = 0
+            while offset < len(data):
+                written = os.write(fd, view[offset:])
+                if written <= 0:
+                    raise ArtifactEvidenceError(
+                        "sidecar write failed", reason=REASON_SIDECAR_WRITE_FAILED
+                    )
+                offset += written
+            os.fsync(fd)
+        except ArtifactEvidenceError as exc:
+            file_error = exc
+        except OSError:
+            file_error = ArtifactEvidenceError(
+                "sidecar temp could not be written",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            )
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    # Preserve an earlier, more precise error instead of
+                    # allowing close() to mask it. A close-only failure is
+                    # still surfaced through the sanitized evidence error.
+                    if file_error is None:
+                        file_error = ArtifactEvidenceError(
+                            "sidecar temp could not be closed",
+                            reason=REASON_SIDECAR_WRITE_FAILED,
+                        )
+                fd = None
+        if file_error is not None:
+            raise file_error
+
+        try:
+            os.replace(tmp_name, basename, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except OSError as exc:
+            raise ArtifactEvidenceError(
+                "sidecar could not be replaced atomically",
+                reason=REASON_SIDECAR_WRITE_FAILED,
+            ) from exc
+        tmp_created = False
+        try:
+            os.fsync(dir_fd)
+        except OSError:
+            # Directory fsync is a best-effort durability strengthening after
+            # the atomic replacement; it cannot make the replacement partial.
+            pass
+    except ArtifactEvidenceError as exc:
+        operation_error = exc
+    except OSError:
+        # No raw OS failure may escape the bounded evidence path.
+        operation_error = ArtifactEvidenceError(
+            "sidecar could not be written",
+            reason=REASON_SIDECAR_WRITE_FAILED,
+        )
+    finally:
+        if tmp_created:
+            # Remove only the exact random temp name created by this call.
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+        try:
+            os.close(dir_fd)
+        except OSError:
+            # Closing the pinned directory is best-effort. In particular, once
+            # replace() succeeded, a close failure must not prevent the caller
+            # from hashing the sidecar and recording that this emission owns it.
+            # On pre-replace failures, ``operation_error`` already carries the
+            # sanitized cause and must not be masked by cleanup.
+            pass
+
+    if operation_error is not None:
+        raise operation_error
+    return path
+
+
+def _write_atomic_bytes_path(path: Path, data: bytes, *, tmp_path: Path) -> Path:
+    """Conservative contained path-based atomic write fallback."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        fd = os.open(str(tmp_path), flags, 0o644)
+        try:
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ArtifactEvidenceError(
+                    "sidecar temp path is not a regular file",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            if getattr(file_stat, "st_nlink", 1) != 1:
+                raise ArtifactEvidenceError(
+                    "sidecar temp path has unexpected hard links",
+                    reason=REASON_SIDECAR_WRITE_FAILED,
+                )
+            view = memoryview(data)
+            offset = 0
+            while offset < len(data):
+                written = os.write(fd, view[offset:])
+                if written <= 0:
+                    raise ArtifactEvidenceError(
+                        "sidecar write failed", reason=REASON_SIDECAR_WRITE_FAILED
+                    )
+                offset += written
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+        return path
+    except ArtifactEvidenceError:
+        _unlink_quiet(tmp_path)
+        raise
+    except OSError as exc:
+        _unlink_quiet(tmp_path)
+        raise ArtifactEvidenceError(
+            "sidecar could not be written", reason=REASON_SIDECAR_WRITE_FAILED
+        ) from exc
+
+
+def _cleanup_created_sidecars_impl(
+    basenames: Sequence[str],
+    *,
+    project_root: Path,
+    expected_parent: Path,
+) -> None:
+    """Implement exact created-sidecar cleanup under a pinned parent.
+
+    Never path-unlinks through a symlink or swapped parent and never sweeps a
+    directory. Uses the same dirfd mechanism as write when available; on path
+    fallback still refuses symlink parents.
+    """
+    if not basenames:
+        return
+    try:
+        root = project_root.resolve(strict=False)
+        parent = expected_parent.resolve(strict=False)
+        parent.relative_to(root)
+    except (OSError, ValueError):
+        return
+    try:
+        if expected_parent.is_symlink():
+            return
+    except OSError:
+        return
+
+    names: list[str] = []
+    for name in basenames:
+        try:
+            names.append(_validate_sidecar_basename(name))
+        except ArtifactEvidenceError:
+            continue
+    if not names:
+        return
+
+    if _dirfd_ops_available():
+        try:
+            dir_fd, _ = _open_pinned_parent_dirfd(expected_parent)
+        except ArtifactEvidenceError:
+            return
+        try:
+            for name in names:
+                try:
+                    os.unlink(name, dir_fd=dir_fd)
+                except OSError:
+                    continue
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+        finally:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
+        return
+
+    # Contained path fallback: still refuse symlink parents; unlink only exact
+    # children of expected_parent by basename (no recursive sweep).
+    for name in names:
+        candidate = expected_parent / name
+        try:
+            if candidate.is_symlink():
+                continue
+            if candidate.parent.resolve(strict=False) != parent:
+                continue
+        except OSError:
+            continue
+        _unlink_quiet(candidate)
+
+
+def cleanup_created_sidecars(
+    basenames: Sequence[str],
+    *,
+    project_root: Path,
+    expected_parent: Path,
+) -> None:
+    """Best-effort no-throw removal of exact sidecars created by one emission."""
+    try:
+        _cleanup_created_sidecars_impl(
+            basenames,
+            project_root=project_root,
+            expected_parent=expected_parent,
+        )
+    except Exception:
+        # Evidence cleanup must never turn an otherwise successful wheel build
+        # into a failure, including on unusual filesystem/interpreter errors.
+        return
+
+
+def cleanup_paths(paths: Sequence[Path]) -> None:
+    """Remove specific paths without a directory sweep (test-only helper).
+
+    Prefer :func:`cleanup_created_sidecars` for emission cleanup. Does not
+    follow symlinks.
+    """
+    for path in paths:
+        try:
+            if path.is_symlink():
+                continue
+        except OSError:
+            continue
+        _unlink_quiet(path)
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    """Serialize ``value`` as deterministic UTF-8 JSON (sorted, compact)."""
+    _assert_json_depth(value, depth=0)
+    text = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return text.encode("utf-8")
+
+
+def pretty_json_bytes(value: object) -> bytes:
+    """Serialize ``value`` as deterministic pretty UTF-8 JSON with trailing NL."""
+    _assert_json_depth(value, depth=0)
+    text = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    )
+    return (text + "\n").encode("utf-8")
+
+
+def content_uuid_urn(digest_hex: str) -> str:
+    """Derive a deterministic RFC 4122 UUIDv5 ``urn:uuid:`` from a SHA-256 digest."""
+    if not _HEX_SHA256.fullmatch(digest_hex):
+        raise ValueError("digest must be 64 lowercase hex characters")
+    value = uuid.uuid5(_CDX_UUID_NAMESPACE, f"rextio:cdx:sha256:{digest_hex}")
+    return f"urn:uuid:{value}"
+
+
+def canonicalize_registry_source(source: str) -> str:
+    """Canonicalize a Cargo registry source; reject credentials and local paths."""
+    if not isinstance(source, str) or not source.startswith("registry+"):
+        raise ArtifactEvidenceError(
+            "cargo package source is not a registry URI",
+            reason=REASON_CARGO_GRAPH_INVALID,
+        )
+    rest = source[len("registry+") :]
+    if any(ord(ch) < 32 for ch in rest) or len(rest) > MAX_EVIDENCE_STRING_CHARS:
+        raise ArtifactEvidenceError(
+            "cargo package source is invalid", reason=REASON_CARGO_GRAPH_INVALID
+        )
+    parsed = urlparse(rest)
+    if parsed.username or parsed.password:
+        raise ArtifactEvidenceError(
+            "cargo package source must not carry credentials",
+            reason=REASON_CARGO_GRAPH_INVALID,
+        )
+    if parsed.query or parsed.fragment:
+        raise ArtifactEvidenceError(
+            "cargo package source must not carry query or fragment",
+            reason=REASON_CARGO_GRAPH_INVALID,
+        )
+    if parsed.scheme not in {"https", "http"}:
+        raise ArtifactEvidenceError(
+            "cargo package source scheme is not allowed",
+            reason=REASON_CARGO_GRAPH_INVALID,
+        )
+    if not parsed.hostname:
+        raise ArtifactEvidenceError(
+            "cargo package source host is missing", reason=REASON_CARGO_GRAPH_INVALID
+        )
+    host = parsed.hostname.lower()
+    path = parsed.path or ""
+    if ".." in PurePosixPath(path).parts:
+        raise ArtifactEvidenceError(
+            "cargo package source path is invalid", reason=REASON_CARGO_GRAPH_INVALID
+        )
+    netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    return f"registry+{parsed.scheme}://{netloc}{path}".rstrip("/")
+
+
+def canonicalize_zip_entry_name(name: str) -> str:
+    """Return a strict canonical ZIP entry name or raise on unsafe/noncanonical forms."""
+    if not isinstance(name, str) or not name:
+        raise ArtifactEvidenceError(
+            "wheel entry name is invalid", reason=REASON_WHEEL_INVENTORY_INVALID
+        )
+    if len(name) > MAX_WHEEL_ENTRY_PATH_CHARS:
+        raise ArtifactEvidenceError(
+            "wheel entry path is too long", reason=REASON_WHEEL_INVENTORY_INVALID
+        )
+    if "\0" in name or any(ord(ch) < 32 for ch in name):
+        raise ArtifactEvidenceError(
+            "wheel entry name contains control characters",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if "\\" in name:
+        raise ArtifactEvidenceError(
+            "wheel entry path uses backslashes",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if name.startswith("/") or name.startswith("\\"):
+        raise ArtifactEvidenceError(
+            "wheel entry path is absolute",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    # Reject Windows drive paths such as "C:foo" or "C:/foo".
+    if len(name) >= 2 and name[1] == ":":
+        raise ArtifactEvidenceError(
+            "wheel entry path contains a drive prefix",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    is_dir = name.endswith("/")
+    body = name[:-1] if is_dir else name
+    if not body:
+        raise ArtifactEvidenceError(
+            "wheel entry name is invalid", reason=REASON_WHEEL_INVENTORY_INVALID
+        )
+    parts = body.split("/")
+    if any(part == "" for part in parts):
+        raise ArtifactEvidenceError(
+            "wheel entry path is noncanonical",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if any(part in {".", ".."} for part in parts):
+        raise ArtifactEvidenceError(
+            "wheel entry path contains a dot segment",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    canonical = "/".join(parts) + ("/" if is_dir else "")
+    if canonical != name:
+        raise ArtifactEvidenceError(
+            "wheel entry path is noncanonical",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    return canonical
+
+
+def _preflight_zip_eocd_entry_count(data: bytes) -> int:
+    r"""Parse a structurally valid classic EOCD; fail closed on ZIP64/malformed.
+
+    Locates the classic EOCD by requiring ``comment_length`` to reach EOF (so a
+    forged EOCD signature inside the archive comment cannot win). Validates
+    disk/count fields and central-directory bounds. Inspects a ZIP64 end-of-
+    central-directory locator **only** at its legal 20-byte position
+    immediately before EOCD — never by scanning payload bytes for ``PK\x06\x07``.
+    """
+    if len(data) < 22:
+        raise ArtifactEvidenceError(
+            "wheel is not a valid ZIP archive", reason=REASON_WHEEL_INVENTORY_INVALID
+        )
+    max_comment = 65535
+    search_start = max(0, len(data) - (22 + max_comment))
+    eocd_sig = b"PK\x05\x06"
+    candidates: list[int] = []
+    # Walk every candidate in the bounded EOCD window. More than one terminal
+    # candidate is ambiguous: a forged record inside the real archive comment
+    # can otherwise cause a non-empty wheel to be interpreted as empty.
+    cursor = len(data) - 22
+    while cursor >= search_start:
+        if data[cursor : cursor + 4] == eocd_sig:
+            comment_len = int.from_bytes(data[cursor + 20 : cursor + 22], "little")
+            if cursor + 22 + comment_len == len(data):
+                candidates.append(cursor)
+        cursor -= 1
+    if not candidates:
+        raise ArtifactEvidenceError(
+            "wheel EOCD is missing or truncated",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if len(candidates) != 1:
+        raise ArtifactEvidenceError(
+            "wheel EOCD is ambiguous",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    pos = candidates[0]
+
+    disk_no = int.from_bytes(data[pos + 4 : pos + 6], "little")
+    cd_disk = int.from_bytes(data[pos + 6 : pos + 8], "little")
+    entries_on_disk = int.from_bytes(data[pos + 8 : pos + 10], "little")
+    total_entries = int.from_bytes(data[pos + 10 : pos + 12], "little")
+    cd_size = int.from_bytes(data[pos + 12 : pos + 16], "little")
+    cd_offset = int.from_bytes(data[pos + 16 : pos + 20], "little")
+
+    # Classic ZIP64 sentinels in EOCD fields mean the real sizes live in ZIP64.
+    if (
+        total_entries == 0xFFFF
+        or entries_on_disk == 0xFFFF
+        or cd_size == 0xFFFFFFFF
+        or cd_offset == 0xFFFFFFFF
+    ):
+        raise ArtifactEvidenceError(
+            "ZIP64 wheels are not supported in this evidence slice",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    # Single-disk classic archives only.
+    if disk_no != 0 or cd_disk != 0:
+        raise ArtifactEvidenceError(
+            "multi-disk ZIP archives are not supported",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if entries_on_disk != total_entries:
+        raise ArtifactEvidenceError(
+            "wheel EOCD entry counts are inconsistent",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if total_entries > MAX_WHEEL_ENTRIES:
+        raise ArtifactEvidenceError(
+            "wheel entry count exceeds the bound",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    # Central directory must sit entirely before EOCD and within the archive.
+    if cd_offset > pos or cd_size > pos:
+        raise ArtifactEvidenceError(
+            "wheel central directory bounds are invalid",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if cd_offset + cd_size > pos:
+        raise ArtifactEvidenceError(
+            "wheel central directory bounds are invalid",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    if cd_offset + cd_size > len(data):
+        raise ArtifactEvidenceError(
+            "wheel central directory bounds are invalid",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+
+    # ZIP64 EOCD locator is exactly 20 bytes immediately before the classic EOCD.
+    locator_sig = b"PK\x06\x07"
+    if pos >= 20 and data[pos - 20 : pos - 16] == locator_sig:
+        raise ArtifactEvidenceError(
+            "ZIP64 wheels are not supported in this evidence slice",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    return total_entries
+
+
+def inventory_wheel_zip_bytes(data: bytes) -> tuple[WheelEntryRef, ...]:
+    """Bounded ZIP inventory from exact wheel bytes (no filesystem re-read)."""
+    if not data or len(data) > MAX_EVIDENCE_FILE_BYTES:
+        raise ArtifactEvidenceError(
+            "wheel size is outside the allowed range",
+            reason=REASON_WHEEL_INVENTORY_INVALID,
+        )
+    # Preflight EOCD entry count before constructing ZipFile.
+    expected_entry_count = _preflight_zip_eocd_entry_count(data)
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data), mode="r")
+    except zipfile.BadZipFile as exc:
+        raise ArtifactEvidenceError(
+            "wheel is not a valid ZIP archive", reason=REASON_WHEEL_INVENTORY_INVALID
+        ) from exc
+
+    entries: list[WheelEntryRef] = []
+    seen_names: set[str] = set()
+    total_uncompressed = 0
+    try:
+        infos = archive.infolist()
+        if len(infos) != expected_entry_count:
+            raise ArtifactEvidenceError(
+                "wheel EOCD entry count does not match the central directory",
+                reason=REASON_WHEEL_INVENTORY_INVALID,
+            )
+        if len(infos) > MAX_WHEEL_ENTRIES:
+            raise ArtifactEvidenceError(
+                "wheel entry count exceeds the bound",
+                reason=REASON_WHEEL_INVENTORY_INVALID,
+            )
+        for info in infos:
+            # Validate original (possibly NUL-truncated) names so parser
+            # truncation cannot bypass canonicalization rules.
+            orig = getattr(info, "orig_filename", None)
+            if isinstance(orig, (bytes, bytearray)) and b"\x00" in bytes(orig):
+                raise ArtifactEvidenceError(
+                    "wheel entry original name contains NUL",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            if isinstance(orig, str) and "\0" in orig:
+                raise ArtifactEvidenceError(
+                    "wheel entry original name contains NUL",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            if isinstance(orig, (bytes, bytearray)):
+                try:
+                    orig_text = bytes(orig).decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ArtifactEvidenceError(
+                        "wheel entry original name is not UTF-8",
+                        reason=REASON_WHEEL_INVENTORY_INVALID,
+                    ) from exc
+                if orig_text != info.filename and "\0" not in orig_text:
+                    # ZipFile may normalize; still require the reported filename
+                    # to be canonical and the original to not smuggle controls.
+                    canonicalize_zip_entry_name(orig_text.split("\0", 1)[0] or orig_text)
+            name = canonicalize_zip_entry_name(info.filename)
+            if name in seen_names:
+                raise ArtifactEvidenceError(
+                    "wheel contains duplicate entry names",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            seen_names.add(name)
+            if info.flag_bits & 0x1:
+                raise ArtifactEvidenceError(
+                    "wheel contains an encrypted entry",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            # Unix symlink: high 16 bits of external_attr hold the mode.
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise ArtifactEvidenceError(
+                    "wheel contains a symlink entry",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            if info.file_size > MAX_WHEEL_ENTRY_UNCOMPRESSED:
+                raise ArtifactEvidenceError(
+                    "wheel entry uncompressed size exceeds the bound",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            total_uncompressed += info.file_size
+            if total_uncompressed > MAX_WHEEL_TOTAL_UNCOMPRESSED:
+                raise ArtifactEvidenceError(
+                    "wheel total uncompressed size exceeds the bound",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            if name.endswith("/"):
+                # Directory entries must be empty (no payload).
+                if info.file_size != 0:
+                    raise ArtifactEvidenceError(
+                        "wheel directory entry must be empty",
+                        reason=REASON_WHEEL_INVENTORY_INVALID,
+                    )
+                digest = sha256_hex(b"")
+                entries.append(
+                    WheelEntryRef(
+                        name=name,
+                        sha256=digest,
+                        compressed_size=info.compress_size,
+                        uncompressed_size=0,
+                    )
+                )
+                continue
+            hasher = hashlib.sha256()
+            remaining = info.file_size
+            try:
+                with archive.open(info, "r") as handle:
+                    while remaining > 0:
+                        chunk = handle.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        if len(chunk) > remaining:
+                            raise ArtifactEvidenceError(
+                                "wheel entry expanded beyond declared size",
+                                reason=REASON_WHEEL_INVENTORY_INVALID,
+                            )
+                        hasher.update(chunk)
+                        remaining -= len(chunk)
+            except (RuntimeError, zipfile.BadZipFile, OSError) as exc:
+                raise ArtifactEvidenceError(
+                    "wheel entry could not be streamed",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                ) from exc
+            if remaining != 0:
+                raise ArtifactEvidenceError(
+                    "wheel entry size mismatch during stream",
+                    reason=REASON_WHEEL_INVENTORY_INVALID,
+                )
+            entries.append(
+                WheelEntryRef(
+                    name=name,
+                    sha256=hasher.hexdigest(),
+                    compressed_size=info.compress_size,
+                    uncompressed_size=info.file_size,
+                )
+            )
+    finally:
+        archive.close()
+
+    return tuple(sorted(entries, key=lambda item: item.name))
+
+
+def inventory_wheel_zip(path: Path) -> tuple[WheelEntryRef, ...]:
+    """Bounded final-wheel ZIP inventory by reading the path once as bytes."""
+    data = read_regular_file_bytes(path)
+    return inventory_wheel_zip_bytes(data)
+
+
+def load_wheel_snapshot(
+    path: Path, *, project_root: Path
+) -> tuple[EvidenceFileRef, tuple[WheelEntryRef, ...]]:
+    """Load one immutable wheel byte snapshot for both SHA-256 and ZIP inventory."""
+    data = read_regular_file_bytes(path)
+    digest = sha256_hex(data)
+    entries = inventory_wheel_zip_bytes(data)
+    logical = project_relative_logical_path(project_root, path)
+    subject = EvidenceFileRef(
+        logical_path=logical,
+        sha256=digest,
+        size=len(data),
+        role="host-extension-wheel",
+    )
+    return subject, entries
+
+
+def parse_wheel_version(logical_path: str) -> str:
+    """Extract the distribution version from a wheel filename, or ``unknown``."""
+    name = PurePosixPath(logical_path).name
+    match = _WHEEL_VERSION_RE.match(name)
+    if match is None:
+        return "unknown"
+    return match.group("version")
+
+
+def _cargo_package_sort_key(
+    package: CargoPackageRef,
+) -> tuple[str, str, str, str, str, str]:
+    """Return a total order across every serialized Cargo package identity."""
+    return (
+        package.name,
+        package.version,
+        package.kind,
+        package.source_fingerprint() or "",
+        package.checksum or "",
+        package.bom_ref(),
+    )
+
+
+def _validate_cargo_dependency_graph(
+    cargo_packages: Sequence[CargoPackageRef],
+    cargo_dependencies: Sequence[CargoDepEdge],
+) -> None:
+    """Reject duplicate package identities and dangling/self dependency edges."""
+    package_refs = [package.bom_ref() for package in cargo_packages]
+    known_refs = set(package_refs)
+    if len(package_refs) != len(known_refs):
+        raise ValueError("cargo package bom-refs must be unique")
+    for edge in cargo_dependencies:
+        if edge.dependent_ref == edge.dependency_ref:
+            raise ValueError("cargo dependency edges must not be self-referential")
+        if edge.dependent_ref not in known_refs or edge.dependency_ref not in known_refs:
+            raise ValueError("cargo dependency edge endpoint is not a known package")
+
+
+def _wheel_entry_bom_ref(entry: WheelEntryRef) -> str:
+    """Return the single canonical CycloneDX identity for a wheel member."""
+    return f"urn:rextio:wheel-entry:{entry.sha256}:{sha256_hex(entry.name.encode('utf-8'))[:16]}"
+
+
+def build_cyclonedx_document(
+    *,
+    subject: EvidenceFileRef,
+    inputs: Sequence[EvidenceFileRef],
+    wheel_entries: Sequence[WheelEntryRef],
+    cargo_packages: Sequence[CargoPackageRef],
+    cargo_dependencies: Sequence[CargoDepEdge],
+    target_triple: str,
+    native_runtime_inventory: NativeRuntimeInventory | None = None,
+) -> dict[str, object]:
+    """Build a CycloneDX 1.6 JSON document with honest incomplete composition.
+
+    The primary component lives only in ``metadata.component`` (not duplicated
+    in ``components``). Top-level ``dependencies`` describe the incomplete graph.
+    Direct native runtime linkage (C6.4) is optional additive inventory only and
+    is never claimed as a transitive closure.
+    """
+    runtime_dep_count = (
+        len(native_runtime_inventory.dependencies) if native_runtime_inventory is not None else 0
+    )
+    if (
+        len(inputs) + len(wheel_entries) + len(cargo_packages) + runtime_dep_count + 1
+        > MAX_EVIDENCE_COMPONENTS
+    ):
+        raise ArtifactEvidenceError(
+            "evidence component count exceeds the bound",
+            reason=REASON_EVIDENCE_INTERNAL,
+        )
+    try:
+        _validate_cargo_dependency_graph(cargo_packages, cargo_dependencies)
+    except ValueError as exc:
+        raise ArtifactEvidenceError(
+            "cargo dependency graph is invalid",
+            reason=REASON_CARGO_GRAPH_INVALID,
+        ) from exc
+
+    subject_ref = f"urn:rextio:wheel:{subject.sha256}"
+    wheel_version = parse_wheel_version(subject.logical_path)
+    components: list[dict[str, object]] = []
+    depends_on: list[str] = []
+    native_wheel_ref: str | None = None
+    if native_runtime_inventory is not None:
+        inv = native_runtime_inventory
+        matching_entries = [entry for entry in wheel_entries if entry.name == inv.wheel_member]
+        if len(matching_entries) != 1:
+            raise ArtifactEvidenceError(
+                "native runtime wheel member is not unique",
+                reason=REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+            )
+        native_entry = matching_entries[0]
+        if (
+            native_entry.sha256 != inv.wheel_member_sha256
+            or native_entry.uncompressed_size != inv.wheel_member_size
+        ):
+            raise ArtifactEvidenceError(
+                "native runtime wheel member binding is inconsistent",
+                reason=REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+            )
+        native_wheel_ref = _wheel_entry_bom_ref(native_entry)
+
+    for item in sorted(inputs, key=lambda value: (value.role, value.logical_path, value.sha256)):
+        # Include path and role in bom-ref identity so equal digests do not collide.
+        identity = sha256_hex(f"{item.role}|{item.logical_path}|{item.sha256}".encode("utf-8"))
+        bom_ref = f"urn:rextio:input:{identity}"
+        components.append(
+            {
+                "type": "file",
+                "bom-ref": bom_ref,
+                "name": PurePosixPath(item.logical_path).name,
+                "hashes": [{"alg": "SHA-256", "content": item.sha256}],
+                "properties": [
+                    {"name": "rextio:role", "value": item.role},
+                    {"name": "rextio:logical_path", "value": item.logical_path},
+                ],
+            }
+        )
+        depends_on.append(bom_ref)
+
+    for wheel_entry in sorted(wheel_entries, key=lambda value: value.name):
+        bom_ref = _wheel_entry_bom_ref(wheel_entry)
+        wheel_properties = [
+            {"name": "rextio:role", "value": "wheel-zip-entry"},
+            {
+                "name": "rextio:compressed_size",
+                "value": str(wheel_entry.compressed_size),
+            },
+            {
+                "name": "rextio:uncompressed_size",
+                "value": str(wheel_entry.uncompressed_size),
+            },
+        ]
+        if native_runtime_inventory is not None and bom_ref == native_wheel_ref:
+            wheel_properties.extend(
+                [
+                    {"name": "rextio:native_runtime_subject", "value": "true"},
+                    {"name": "rextio:format", "value": native_runtime_inventory.format},
+                    {
+                        "name": "rextio:architecture",
+                        "value": native_runtime_inventory.architecture,
+                    },
+                    {
+                        "name": "rextio:inspector",
+                        "value": native_runtime_inventory.inspector,
+                    },
+                    {"name": "rextio:linkage_scope", "value": "direct-only"},
+                    {"name": "rextio:transitive_closure", "value": "false"},
+                ]
+            )
+        components.append(
+            {
+                "type": "file",
+                "bom-ref": bom_ref,
+                "name": wheel_entry.name,
+                "hashes": [{"alg": "SHA-256", "content": wheel_entry.sha256}],
+                "properties": wheel_properties,
+            }
+        )
+        depends_on.append(bom_ref)
+
+    for package in sorted(cargo_packages, key=_cargo_package_sort_key):
+        bom_ref = package.bom_ref()
+        properties: list[dict[str, str]] = [
+            {"name": "rextio:role", "value": "cargo-package"},
+            {"name": "rextio:kind", "value": package.kind},
+        ]
+        fingerprint = package.source_fingerprint()
+        if fingerprint is not None:
+            properties.append({"name": "rextio:source_fingerprint", "value": fingerprint})
+        if package.features:
+            properties.append({"name": "rextio:features", "value": ",".join(package.features)})
+        component_entry: dict[str, object] = {
+            "type": "library",
+            "bom-ref": bom_ref,
+            "name": package.name,
+            "version": package.version,
+            "purl": package.purl(),
+            "properties": properties,
+        }
+        if package.license is not None:
+            # Cargo metadata may contain legacy/arbitrary license text. Do not
+            # claim it is a valid SPDX expression without a real validator.
+            component_entry["licenses"] = [{"license": {"name": package.license}}]
+        if package.checksum is not None:
+            component_entry["hashes"] = [{"alg": "SHA-256", "content": package.checksum}]
+        components.append(component_entry)
+        depends_on.append(bom_ref)
+
+    runtime_dependency_refs: list[str] = []
+    if native_runtime_inventory is not None:
+        for dep in sorted(native_runtime_inventory.dependencies, key=lambda item: item.name):
+            dep_ref = dep.bom_ref()
+            components.append(
+                {
+                    "type": "library",
+                    "bom-ref": dep_ref,
+                    "name": dep.name,
+                    "properties": [
+                        {"name": "rextio:role", "value": "native-direct-dependency"},
+                        {"name": "rextio:origin", "value": dep.origin},
+                        {
+                            "name": "rextio:format",
+                            "value": native_runtime_inventory.format,
+                        },
+                        {"name": "rextio:linkage_scope", "value": "direct-only"},
+                    ],
+                }
+            )
+            runtime_dependency_refs.append(dep_ref)
+
+    # Aggregate and deduplicate dependency refs by package bom-ref identity.
+    deps_map: dict[str, set[str]] = defaultdict(set)
+    for component_ref in (subject_ref, *depends_on, *runtime_dependency_refs):
+        deps_map[component_ref]
+    deps_map[subject_ref].update(depends_on)
+    for edge in cargo_dependencies:
+        deps_map[edge.dependent_ref].add(edge.dependency_ref)
+    if native_wheel_ref is not None:
+        deps_map[native_wheel_ref].update(runtime_dependency_refs)
+    dependency_graph: list[dict[str, object]] = [
+        {"ref": ref, "dependsOn": sorted(children)}
+        for ref, children in sorted(deps_map.items(), key=lambda item: item[0])
+    ]
+
+    metadata_properties: list[dict[str, str]] = [
+        {"name": "rextio:preview", "value": "true"},
+        {"name": "rextio:evidence_kind", "value": "host-extension-wheel"},
+        {"name": "rextio:target_triple", "value": target_triple},
+        {"name": "rextio:composition", "value": "incomplete"},
+        {"name": "rextio:signed", "value": "false"},
+        {"name": "rextio:authority", "value": "evidence-only"},
+        {"name": "rextio:distribution_authorized", "value": "false"},
+    ]
+    if native_runtime_inventory is not None:
+        metadata_properties.extend(
+            [
+                {
+                    "name": "rextio:native_runtime_format",
+                    "value": native_runtime_inventory.format,
+                },
+                {
+                    "name": "rextio:native_runtime_architecture",
+                    "value": native_runtime_inventory.architecture,
+                },
+                {
+                    "name": "rextio:native_runtime_scope",
+                    "value": "direct-only",
+                },
+                {
+                    "name": "rextio:native_runtime_transitive_closure",
+                    "value": "false",
+                },
+            ]
+        )
+
+    document: dict[str, object] = {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "version": 1,
+        "serialNumber": content_uuid_urn(subject.sha256),
+        "metadata": {
+            "component": {
+                "type": "library",
+                "bom-ref": subject_ref,
+                "name": PurePosixPath(subject.logical_path).name,
+                "version": wheel_version,
+                "hashes": [{"alg": "SHA-256", "content": subject.sha256}],
+                "properties": [
+                    {"name": "rextio:role", "value": subject.role},
+                    {"name": "rextio:logical_path", "value": subject.logical_path},
+                ],
+            },
+            "tools": {
+                "components": [
+                    {
+                        "type": "application",
+                        "name": "rextio",
+                        "version": REXTIO_VERSION,
+                    }
+                ]
+            },
+            "properties": metadata_properties,
+        },
+        "components": components,
+        "dependencies": dependency_graph,
+        "compositions": [
+            {
+                "aggregate": "incomplete",
+                "assemblies": [subject_ref],
+            }
+        ],
+    }
+    return document
+
+
+def build_intoto_provenance_document(
+    *,
+    subject: EvidenceFileRef,
+    sbom: EvidenceFileRef,
+    inputs: Sequence[EvidenceFileRef],
+    wheel_entries: Sequence[WheelEntryRef] = (),
+    cargo_packages: Sequence[CargoPackageRef],
+    target_triple: str,
+    native_runtime_inventory: NativeRuntimeInventory | None = None,
+    native_runtime_path_resolution: NativeRuntimePathResolutionInventory | None = None,
+    native_runtime_transitive_closure: (NativeRuntimeTransitiveClosureInventory | None) = None,
+    source_transformation_inventory: SourceTransformationInventory | None = None,
+    source_transformation_verification: SourceTransformationVerification | None = None,
+    analysis_input_verification: AnalysisInputVerification | None = None,
+    component_license_inventory: ComponentLicenseInventory | None = None,
+    component_license_policy_verification: (ComponentLicensePolicyVerification | None) = None,
+    project_source_license_policy_verification: (
+        ProjectSourceLicensePolicyVerification | None
+    ) = None,
+    artifact_policy_coverage_inventory: (ArtifactPolicyCoverageInventory | None) = None,
+    artifact_class_policy_verification: (ArtifactClassPolicyVerification | None) = None,
+) -> dict[str, object]:
+    """Build an unsigned in-toto Statement v1 with SLSA Provenance v1 predicate.
+
+    The SBOM is a second statement subject (an output), not a resolved input.
+    ``invocationId`` is omitted so deterministic sidecars do not invent a unique
+    invocation identity from the wheel hash alone. C6.4 native linkage is an
+    observation of the produced binary, so it is metadata rather than a resolved
+    build input/material.
+    """
+    materials: list[dict[str, object]] = []
+    for item in sorted(inputs, key=lambda value: (value.role, value.logical_path, value.sha256)):
+        materials.append(
+            {
+                "uri": f"file:{item.logical_path}",
+                "digest": {"sha256": item.sha256},
+                "annotations": {
+                    "rextio:role": item.role,
+                    "rextio:size": str(item.size),
+                },
+            }
+        )
+    if analysis_input_verification is not None:
+        if source_transformation_verification is None:
+            raise ValueError("analysis input verification requires C6.10 verification")
+        _validate_analysis_input_verification_binding(
+            verification=analysis_input_verification,
+            transformation_verification=source_transformation_verification,
+            inputs=inputs,
+        )
+        for record in sorted(
+            analysis_input_verification.records,
+            key=lambda value: (value.stub_path, value.source_path),
+        ):
+            if record.state != "present":
+                continue
+            if record.stub is None:  # pragma: no cover - model invariant
+                raise ValueError("present analysis input is missing its stub reference")
+            item = record.stub
+            materials.append(
+                {
+                    "uri": f"file:{item.logical_path}",
+                    "digest": {"sha256": item.sha256},
+                    "annotations": {
+                        "rextio:role": "project-python-stub",
+                        "rextio:size": str(item.size),
+                    },
+                }
+            )
+    for package in sorted(cargo_packages, key=_cargo_package_sort_key):
+        annotations: dict[str, str] = {
+            "rextio:role": "cargo-package",
+            "rextio:kind": package.kind,
+        }
+        fingerprint = package.source_fingerprint()
+        if fingerprint is not None:
+            annotations["rextio:source_fingerprint"] = fingerprint
+        entry: dict[str, object] = {
+            "uri": package.purl(),
+            "annotations": annotations,
+        }
+        if package.checksum is not None:
+            entry["digest"] = {"sha256": package.checksum}
+        materials.append(entry)
+
+    if component_license_policy_verification is not None:
+        if component_license_inventory is None:
+            raise ValueError("component license policy provenance requires its inventory")
+        _validate_component_license_policy_verification_binding(
+            verification=component_license_policy_verification,
+            inventory=component_license_inventory,
+        )
+        lock_file = component_license_policy_verification.lock_file
+        materials.append(
+            {
+                "uri": f"file:{lock_file.logical_path}",
+                "digest": {"sha256": lock_file.sha256},
+                "annotations": {
+                    "rextio:role": lock_file.role,
+                    "rextio:size": str(lock_file.size),
+                },
+            }
+        )
+
+    if project_source_license_policy_verification is not None:
+        if source_transformation_verification is None:
+            raise ValueError("project source license policy provenance requires C6.10 verification")
+        _validate_project_source_license_policy_verification_binding(
+            verification=project_source_license_policy_verification,
+            transformation_verification=source_transformation_verification,
+        )
+        lock_file = project_source_license_policy_verification.lock_file
+        materials.append(
+            {
+                "uri": f"file:{lock_file.logical_path}",
+                "digest": {"sha256": lock_file.sha256},
+                "annotations": {
+                    "rextio:role": lock_file.role,
+                    "rextio:size": str(lock_file.size),
+                },
+            }
+        )
+
+    if artifact_policy_coverage_inventory is not None:
+        if (
+            native_runtime_inventory is None
+            or native_runtime_path_resolution is None
+            or native_runtime_transitive_closure is None
+            or source_transformation_inventory is None
+            or source_transformation_verification is None
+            or analysis_input_verification is None
+            or component_license_inventory is None
+            or component_license_policy_verification is None
+            or project_source_license_policy_verification is None
+        ):
+            raise ValueError("artifact policy coverage provenance requires C6.9-C6.13 evidence")
+        expected_policy_coverage = derive_artifact_policy_coverage_inventory(
+            target_triple=target_triple,
+            subject=subject,
+            inputs=inputs,
+            wheel_entries=wheel_entries,
+            cargo_packages=cargo_packages,
+            native_runtime_inventory=native_runtime_inventory,
+            native_runtime_path_resolution=native_runtime_path_resolution,
+            native_runtime_transitive_closure=native_runtime_transitive_closure,
+            source_transformation_inventory=source_transformation_inventory,
+            source_transformation_verification=source_transformation_verification,
+            analysis_input_verification=analysis_input_verification,
+            component_license_inventory=component_license_inventory,
+            component_license_policy_verification=(component_license_policy_verification),
+            project_source_license_policy_verification=(project_source_license_policy_verification),
+        )
+        if artifact_policy_coverage_inventory != expected_policy_coverage:
+            raise ValueError("artifact policy coverage provenance binding differs")
+
+    if artifact_class_policy_verification is not None:
+        if artifact_policy_coverage_inventory is None:
+            raise ValueError("artifact class policy provenance requires C6.14 coverage")
+        _validate_artifact_class_policy_verification_binding(
+            verification=artifact_class_policy_verification,
+            inventory=artifact_policy_coverage_inventory,
+        )
+        lock_file = artifact_class_policy_verification.lock_file
+        lock_key = unicodedata.normalize("NFC", lock_file.logical_path).casefold()
+        existing_file_keys = {
+            unicodedata.normalize("NFC", uri.removeprefix("file:")).casefold()
+            for material in materials
+            if type((uri := material.get("uri"))) is str and uri.startswith("file:")
+        }
+        if lock_key in existing_file_keys:
+            raise ValueError("artifact class policy lock aliases an existing material")
+        materials.append(
+            {
+                "uri": f"file:{lock_file.logical_path}",
+                "digest": {"sha256": lock_file.sha256},
+                "annotations": {
+                    "rextio:role": lock_file.role,
+                    "rextio:size": str(lock_file.size),
+                },
+            }
+        )
+
+    if len(materials) > MAX_EVIDENCE_COMPONENTS:
+        raise ArtifactEvidenceError(
+            "provenance material count exceeds the bound",
+            reason=REASON_EVIDENCE_INTERNAL,
+        )
+
+    internal_parameters: dict[str, object] = {
+        "signed": False,
+        "reproducible_claim": False,
+        "hermetic_claim": False,
+        "complete_claim": False,
+        "external_source_authorization": False,
+        "authority": "evidence-only",
+        "distribution_authorized": False,
+        "build_input_closure_complete": False,
+        "scoped_analysis_inputs_verified": analysis_input_verification is not None,
+        "native_runtime_transitive_closure": False,
+        "native_runtime_dlopen": False,
+        "native_runtime_path_resolution_observed": (native_runtime_path_resolution is not None),
+        "native_runtime_path_resolution_complete": False,
+        "native_runtime_transitive_closure_observed": (
+            native_runtime_transitive_closure is not None
+        ),
+        "native_runtime_transitive_closure_complete": False,
+        "source_transformation_inventory_observed": (source_transformation_inventory is not None),
+        "scoped_source_transformation_verified": (source_transformation_verification is not None),
+        "source_transformation_provenance_complete": False,
+        "component_license_inventory_observed": component_license_inventory is not None,
+        "scoped_component_license_policy_verified": (
+            component_license_policy_verification is not None
+        ),
+        "component_license_policy_complete": False,
+        "scoped_project_source_license_policy_verified": (
+            project_source_license_policy_verification is not None
+        ),
+        "project_source_license_policy_complete": False,
+        "artifact_policy_coverage_observed": (artifact_policy_coverage_inventory is not None),
+        "artifact_policy_coverage_scope_complete": False,
+        "scoped_artifact_class_policy_declaration_bound": (
+            artifact_class_policy_verification is not None
+        ),
+        "artifact_class_policy_scope_complete": False,
+    }
+    if native_runtime_inventory is not None:
+        internal_parameters["native_runtime_format"] = native_runtime_inventory.format
+        internal_parameters["native_runtime_scope"] = "direct-only"
+
+    run_metadata: dict[str, object] = {
+        "rextio:native_runtime_path_resolution_observed": (
+            native_runtime_path_resolution is not None
+        ),
+        "rextio:native_runtime_transitive_closure_observed": (
+            native_runtime_transitive_closure is not None
+        ),
+        "rextio:source_transformation_verification_observed": (
+            source_transformation_verification is not None
+        ),
+        "rextio:component_license_inventory_observed": (component_license_inventory is not None),
+        "rextio:component_license_policy_verification_observed": (
+            component_license_policy_verification is not None
+        ),
+        "rextio:project_source_license_policy_verification_observed": (
+            project_source_license_policy_verification is not None
+        ),
+        "rextio:analysis_input_verification_observed": (analysis_input_verification is not None),
+        "rextio:artifact_policy_coverage_observed": (
+            artifact_policy_coverage_inventory is not None
+        ),
+        "rextio:artifact_class_policy_verification_observed": (
+            artifact_class_policy_verification is not None
+        ),
+    }
+    if native_runtime_inventory is not None:
+        run_metadata["rextio:observed_native_runtime"] = native_runtime_inventory.to_dict()
+    if native_runtime_path_resolution is not None:
+        run_metadata["rextio:native_runtime_path_resolution"] = (
+            native_runtime_path_resolution.to_dict()
+        )
+    if native_runtime_transitive_closure is not None:
+        run_metadata["rextio:native_runtime_transitive_closure"] = (
+            native_runtime_transitive_closure.to_dict()
+        )
+    if source_transformation_inventory is not None:
+        run_metadata["rextio:source_transformation_inventory"] = (
+            source_transformation_inventory.to_dict()
+        )
+    if source_transformation_verification is not None:
+        run_metadata["rextio:source_transformation_verification"] = (
+            source_transformation_verification.to_dict()
+        )
+    if component_license_inventory is not None:
+        run_metadata["rextio:component_license_inventory"] = component_license_inventory.to_dict()
+    if component_license_policy_verification is not None:
+        run_metadata["rextio:component_license_policy_verification"] = (
+            component_license_policy_verification.to_dict()
+        )
+    if project_source_license_policy_verification is not None:
+        run_metadata["rextio:project_source_license_policy_verification"] = (
+            project_source_license_policy_verification.to_dict()
+        )
+    if analysis_input_verification is not None:
+        run_metadata["rextio:analysis_input_verification"] = analysis_input_verification.to_dict()
+    if artifact_policy_coverage_inventory is not None:
+        run_metadata["rextio:artifact_policy_coverage_inventory"] = (
+            artifact_policy_coverage_inventory.to_dict()
+        )
+    if artifact_class_policy_verification is not None:
+        run_metadata["rextio:artifact_class_policy_verification"] = (
+            artifact_class_policy_verification.to_dict()
+        )
+
+    document: dict[str, object] = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+            {
+                "name": subject.logical_path,
+                "digest": {"sha256": subject.sha256},
+            },
+            {
+                "name": sbom.logical_path,
+                "digest": {"sha256": sbom.sha256},
+            },
+        ],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://rextio.dev/buildtypes/host-extension-wheel/v1-preview",
+                "externalParameters": {
+                    "artifact_kind": "host-extension",
+                    "packaging_backend": "wheel",
+                    "target_triple": target_triple,
+                    "preview": True,
+                },
+                "internalParameters": internal_parameters,
+                "resolvedDependencies": materials,
+            },
+            "runDetails": {
+                "builder": {
+                    "id": "https://rextio.dev/builder/host-extension-wheel/v1-preview",
+                    "version": {"rextio": REXTIO_VERSION},
+                },
+                "metadata": run_metadata,
+            },
+        },
+    }
+    return document
+
+
+def _bounded_identifier(value: str, label: str) -> str:
+    text = value.strip()
+    if not text or len(text) > MAX_EVIDENCE_STRING_CHARS:
+        raise ValueError(f"{label} is invalid")
+    if any(ord(ch) < 32 for ch in text):
+        raise ValueError(f"{label} contains control characters")
+    return text
+
+
+def _bounded_string(value: str, label: str) -> str:
+    text = value.strip()
+    if not text or len(text) > MAX_EVIDENCE_STRING_CHARS:
+        raise ValueError(f"{label} is invalid")
+    if any(ord(ch) < 32 for ch in text):
+        raise ValueError(f"{label} contains control characters")
+    return text
+
+
+def _assert_json_depth(value: object, *, depth: int) -> None:
+    if depth > MAX_JSON_DEPTH:
+        raise ArtifactEvidenceError(
+            "JSON nesting exceeds the allowed depth", reason=REASON_EVIDENCE_INTERNAL
+        )
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ArtifactEvidenceError(
+                    "JSON object keys must be strings", reason=REASON_EVIDENCE_INTERNAL
+                )
+            _assert_json_depth(child, depth=depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _assert_json_depth(child, depth=depth + 1)
+
+
+def _sanitize_error_message(message: str) -> str:
+    """Strip absolute paths and truncate attacker-influenced text."""
+    text = " ".join(message.split())
+    text = re.sub(r"(/[^ \t\n]+)+", "<redacted-path>", text)
+    text = re.sub(r"[A-Za-z]:\\[^ \t\n]+", "<redacted-path>", text)
+    # Never echo credential-looking userinfo fragments.
+    text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+", "<redacted-identity>", text)
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text or "artifact evidence generation failed"
+
+
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort directory fsync so the rename is durable where supported."""
+    if os.name == "nt":  # pragma: no cover - Windows directory fsync is limited
+        return
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        return
+    finally:
+        os.close(fd)
+
+
+__all__ = [
+    "ArtifactEvidence",
+    "ArtifactEvidenceError",
+    "ArtifactEvidenceGate",
+    "ANALYSIS_INPUT_SET_VERSION",
+    "ANALYSIS_INPUT_VERIFICATION_KIND",
+    "ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION",
+    "ANALYSIS_INPUT_VERIFICATION_SCOPE",
+    "AnalysisInputRecord",
+    "AnalysisInputVerification",
+    "CargoDepEdge",
+    "CargoPackageRef",
+    "ComponentLicenseInventory",
+    "ComponentLicensePolicyVerification",
+    "ComponentLicenseRecord",
+    "CARGO_LICENSE_POLICY",
+    "CARGO_LICENSE_POLICY_ACKNOWLEDGEMENT",
+    "CARGO_LICENSE_POLICY_ACTION_SCOPES",
+    "CARGO_LICENSE_POLICY_LOCK_FILENAME",
+    "CARGO_LICENSE_POLICY_LOCK_KIND",
+    "CARGO_LICENSE_POLICY_LOCK_ROLE",
+    "CARGO_LICENSE_POLICY_LOCK_SCHEMA_VERSION",
+    "COMPONENT_LICENSE_INVENTORY_KIND",
+    "COMPONENT_LICENSE_INVENTORY_SCHEMA_VERSION",
+    "COMPONENT_LICENSE_INVENTORY_SCOPE",
+    "COMPONENT_LICENSE_POLICY_VERIFICATION_KIND",
+    "COMPONENT_LICENSE_POLICY_VERIFICATION_SCHEMA_VERSION",
+    "COMPONENT_LICENSE_POLICY_VERIFICATION_SCOPE",
+    "DEFAULT_LIMITATIONS",
+    "EvidenceFileRef",
+    "MAX_CARGO_EDGES",
+    "MAX_CARGO_METADATA_BYTES",
+    "MAX_CARGO_PACKAGES",
+    "MAX_COMPONENT_LICENSE_INVENTORY_CHARS",
+    "MAX_COMPONENT_LICENSE_OBSERVED_CHARS",
+    "MAX_COMPONENT_LICENSE_POLICY_VERIFICATION_CHARS",
+    "MAX_COMPONENT_LICENSE_RECORDS",
+    "MAX_CARGO_LICENSE_LOCK_BYTES",
+    "MAX_EVIDENCE_COMPONENTS",
+    "MAX_EVIDENCE_FILE_BYTES",
+    "MAX_EVIDENCE_STRING_CHARS",
+    "MAX_ANALYSIS_INPUT_EVIDENCE_CHARS",
+    "MAX_INPUT_FILES",
+    "MAX_JSON_DEPTH",
+    "MAX_RUNTIME_DEPS",
+    "MAX_RUNTIME_DEP_NAME_CHARS",
+    "MAX_RUNTIME_CLOSURE_CANDIDATE_ATTEMPTS",
+    "MAX_RUNTIME_CLOSURE_CANDIDATES_PER_DEPENDENCY",
+    "MAX_RUNTIME_CLOSURE_DEPTH",
+    "MAX_RUNTIME_CLOSURE_EDGES",
+    "MAX_RUNTIME_CLOSURE_INSPECTOR_INVOCATIONS",
+    "MAX_RUNTIME_CLOSURE_INSPECTOR_OUTPUT_BYTES",
+    "MAX_RUNTIME_CLOSURE_INVENTORY_CHARS",
+    "MAX_RUNTIME_CLOSURE_NODES",
+    "MAX_RUNTIME_INSPECTOR_OUTPUT_BYTES",
+    "MAX_RUNTIME_PATH_RESOLUTION_INVENTORY_CHARS",
+    "MAX_SIDECAR_BYTES",
+    "MAX_SOURCE_TRANSFORMATION_INVENTORY_CHARS",
+    "MAX_SOURCE_TRANSFORMATION_PLUGIN_IDS",
+    "MAX_SOURCE_TRANSFORMATION_PLUGIN_REFERENCES",
+    "MAX_SOURCE_TRANSFORMATION_VERIFICATION_CHARS",
+    "MAX_SOURCE_TRANSFORMATIONS",
+    "MAX_WHEEL_ENTRIES",
+    "MAX_WHEEL_ENTRY_PATH_CHARS",
+    "MAX_WHEEL_ENTRY_UNCOMPRESSED",
+    "MAX_WHEEL_TOTAL_UNCOMPRESSED",
+    "NativeRuntimeDependency",
+    "NativeRuntimeInventory",
+    "NativeRuntimePathResolutionInventory",
+    "NativeRuntimePathResolutionRecord",
+    "NativeRuntimeTransitiveClosureEdge",
+    "NativeRuntimeTransitiveClosureInventory",
+    "NativeRuntimeTransitiveClosureNode",
+    "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_KIND",
+    "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCHEMA_VERSION",
+    "NATIVE_RUNTIME_PATH_RESOLUTION_INVENTORY_SCOPE",
+    "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_KIND",
+    "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCHEMA_VERSION",
+    "NATIVE_RUNTIME_TRANSITIVE_CLOSURE_INVENTORY_SCOPE",
+    "REASON_CARGO_GRAPH_INVALID",
+    "REASON_CARGO_LOCK_MISSING",
+    "REASON_CARGO_METADATA_FAILED",
+    "REASON_CARGO_OUTPUT_EXCEEDED",
+    "REASON_EVIDENCE_INTERNAL",
+    "REASON_INPUT_COUNT_EXCEEDED",
+    "REASON_NATIVE_NOT_BUILT",
+    "REASON_RUNTIME_ARCHITECTURE_MISMATCH",
+    "REASON_RUNTIME_BINARY_MISMATCH",
+    "REASON_RUNTIME_BINARY_MISSING",
+    "REASON_RUNTIME_DEP_COUNT_EXCEEDED",
+    "REASON_RUNTIME_INSPECTOR_FAILED",
+    "REASON_RUNTIME_INSPECTOR_MISSING",
+    "REASON_RUNTIME_INSPECTOR_TIMEOUT",
+    "REASON_RUNTIME_MALFORMED",
+    "REASON_RUNTIME_OUTPUT_EXCEEDED",
+    "REASON_RUNTIME_PLATFORM_UNSUPPORTED",
+    "REASON_RUNTIME_UNSAFE_PATH",
+    "REASON_RUNTIME_UNEXPECTED_DEPENDENCY",
+    "REASON_RUNTIME_WHEEL_MEMBER_MISMATCH",
+    "REASON_SIDECAR_WRITE_FAILED",
+    "REASON_SNAPSHOT_MISSING",
+    "REASON_SOURCE_SNAPSHOT_MISMATCH",
+    "REASON_SOURCE_UNREADABLE",
+    "REASON_WHEEL_INVENTORY_INVALID",
+    "REASON_WHEEL_MUTATED",
+    "SidecarArtifact",
+    "SourceTransformationInventory",
+    "SourceTransformationRange",
+    "SourceTransformationRecord",
+    "SourceTransformationVerification",
+    "SOURCE_TRANSFORMATION_GENERATOR_BACKENDS",
+    "SOURCE_TRANSFORMATION_INVENTORY_KIND",
+    "SOURCE_TRANSFORMATION_INVENTORY_SCHEMA_VERSION",
+    "SOURCE_TRANSFORMATION_INVENTORY_SCOPE",
+    "SOURCE_TRANSFORMATION_VERIFICATION_KIND",
+    "SOURCE_TRANSFORMATION_VERIFICATION_SCHEMA_VERSION",
+    "SOURCE_TRANSFORMATION_VERIFICATION_SCOPE",
+    "SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION",
+    "SUPPORTED_SIGNATURE_PROJECTION_VERSION",
+    "UNAVAILABLE_REASONS",
+    "WheelEntryRef",
+    "build_cyclonedx_document",
+    "build_intoto_provenance_document",
+    "cargo_license_metadata_is_unknown",
+    "canonicalize_registry_source",
+    "canonicalize_zip_entry_name",
+    "canonical_json_bytes",
+    "analysis_input_projections_digest",
+    "analysis_input_records_digest",
+    "cleanup_created_sidecars",
+    "cleanup_paths",
+    "content_uuid_urn",
+    "ensure_sidecar_path_contained",
+    "hash_regular_file",
+    "inventory_wheel_zip",
+    "inventory_wheel_zip_bytes",
+    "load_wheel_snapshot",
+    "parse_wheel_version",
+    "pretty_json_bytes",
+    "project_relative_logical_path",
+    "read_regular_file_bytes",
+    "sha256_hex",
+    "validate_logical_reference",
+    "write_atomic_bytes",
+]

@@ -8,7 +8,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
-from rextio.build.orchestrator import generate_source_artifact
+from rextio.build.orchestrator import ArtifactProfilePlanningError, generate_source_artifact
 from rextio.cli.config_overrides import (
     key_value_overrides,
     package_policy_overrides,
@@ -16,6 +16,7 @@ from rextio.cli.config_overrides import (
 )
 from rextio.cli.check_cmd import write_check_report
 from rextio.cli.reporter import Reporter
+from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.targets.plan import TargetPlanError, create_target_plan
@@ -73,6 +74,19 @@ def run(args: Namespace) -> int:
     except PluginError as exc:
         reporter.error(f"RXT060 Plugin error: {exc}")
         return 1
+    if analysis.external_source_plan is not None:
+        plan = analysis.external_source_plan
+        reporter.warn(
+            "External source license warning: "
+            f"{plan.license_warning}"
+        )
+        if plan.authorization is not None:
+            auth = plan.authorization
+            reporter.warn(
+                "External source authorization: "
+                f"status={auth.status}"
+                + (f" reason={auth.reason}" if auth.reason else "")
+            )
     has_parse_error = any(diagnostic.code == "RXT000" for diagnostic in analysis.diagnostics)
     if has_parse_error:
         reports_dir = project_root / ".rextio" / "reports"
@@ -86,8 +100,9 @@ def run(args: Namespace) -> int:
         (reports_dir / "generate.json").write_text(
             json.dumps(
                 {
-                    "fallback": fallback,
                     "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
+                    "fallback": fallback,
                     "status": "analysis-failed",
                 },
                 indent=2,
@@ -101,16 +116,64 @@ def run(args: Namespace) -> int:
         reporter.error(f"Suggestion: run rextio check {project_root}")
         return 1
 
-    result = generate_source_artifact(
-        project_root,
-        analysis,
-        fallback,
-        boundary_fallback_threshold=config.build.fallback_threshold,
-        target_plan=target_plan,
-        rust_importable=config.rust.importable,
-        rust_crate_name=config.rust.crate_name,
-        embedding_enabled=config.embedding.enabled,
-    )
+    try:
+        result = generate_source_artifact(
+            project_root,
+            analysis,
+            fallback,
+            boundary_fallback_threshold=config.build.fallback_threshold,
+            target_plan=target_plan,
+            rust_importable=config.rust.importable,
+            rust_crate_name=config.rust.crate_name,
+            embedding_enabled=config.embedding.enabled,
+        )
+    except PluginError as exc:
+        reports_dir = project_root / ".rextio" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        write_check_report(project_root, analysis)
+        (reports_dir / "generate.json").write_text(
+            json.dumps(
+                {
+                    "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
+                    "error": {"code": "RXT060", "message": f"Plugin error: {exc}"},
+                    "fallback": fallback,
+                    "status": "plugin-capability-failed",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reporter.error(f"RXT060 Plugin error: {exc}")
+        reporter.error(
+            "Suggestion: fix the plugin artifact_capability() declaration or disable "
+            "the plugin, then rerun rextio generate."
+        )
+        return 1
+    except ArtifactProfilePlanningError as error:
+        reports_dir = project_root / ".rextio" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        write_check_report(project_root, analysis)
+        (reports_dir / "generate.json").write_text(
+            json.dumps(
+                {
+                    "analysis": analysis.to_dict(),
+                    "contract_version": TOOLING_CONTRACT_VERSION,
+                    "error": {"code": "RXT060", "message": str(error)},
+                    "fallback": fallback,
+                    "status": "artifact-profile-unavailable",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reporter.error(str(error))
+        reporter.error("Suggestion: run on a supported Rust host target or keep this project on fallback.")
+        return 1
     lines = ["Rextio generate", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:
         lines.append(f"  target version: {target_plan.spec.version}")

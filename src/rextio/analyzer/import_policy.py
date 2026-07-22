@@ -83,6 +83,8 @@ def classify_import_policies(
                     policy=configured_policy.policy,
                     plugin=configured_policy.plugin,
                     max_depth=configured_policy.max_depth,
+                    distribution=configured_policy.distribution,
+                    version=configured_policy.version,
                     reason="package-specific import policy from rextio.toml or CLI/environment override",
                 )
             )

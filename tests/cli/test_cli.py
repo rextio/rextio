@@ -14,8 +14,32 @@ from rextio.cli.main import (
     _positive_number,
     _rextio_deprecation_filter_present,
     main,
+    build_parser,
 )
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
+
+
+def test_build_parser_accepts_canonical_and_legacy_executable_fallbacks() -> None:
+    canonical = build_parser().parse_args(["build", "--executable-fallback=nuitka-sidecar"])
+    legacy = build_parser().parse_args(["build", "--hybrid-runtime=source"])
+
+    assert canonical.executable_fallback == "nuitka-sidecar"
+    assert legacy.hybrid_runtime == "source"
+
+
+def test_build_cli_rejects_conflicting_fallback_spellings(tmp_path: Path, capsys) -> None:
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--executable-fallback=error",
+            "--hybrid-runtime=source",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "conflicting executable fallback settings" in captured.err
 
 
 def _installed_rextio_filters() -> list[tuple]:
@@ -153,6 +177,7 @@ def test_init_creates_default_project_files(tmp_path: Path, capsys) -> None:
     assert (tmp_path / "REXTIO.md").exists()
     assert (tmp_path / ".rextioignore").exists()
     config_text = (tmp_path / "rextio.toml").read_text(encoding="utf-8")
+    assert 'artifact_evidence_policy = "best-effort"' in config_text
     assert 'native_marker = "auto"' in config_text
     assert 'default_external_policy = "fallback"' in config_text
     assert "[embedding]" in config_text

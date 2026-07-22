@@ -96,6 +96,60 @@ def main(argv: list[str]) -> int:
 @pytest.mark.skipif(
     shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e"
 )
+def test_real_cargo_runs_bounded_module_initializer_before_rust_main(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[rust]
+build_tool = "cargo"
+
+[policy]
+native_top_level = true
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        "seed = 1\n\ndef main(argv: list[str]) -> int:\n    return len(argv) - 1\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build",
+            str(tmp_path),
+            "--fallback=cpython",
+            "--executable-backend=rust",
+            "--executable-fallback=error",
+            "--entrypoint=app:main",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+    report = json.loads(
+        (tmp_path / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
+    )
+    executable = report["executable_build"]
+    assert executable["status"] == "built", executable
+    assert executable["closure"]["module_initializers"] == [
+        "app.__rextio_top_level__"
+    ]
+
+    binary = Path(executable["path"])
+    completed = subprocess.run(
+        [str(binary), "one", "two"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 2
+
+
+@pytest.mark.skipif(
+    shutil.which("cargo") is None, reason="cargo is required for the Rust executable e2e"
+)
 def test_rust_main_executable_with_embedding_config_embeds_unmarked_helper(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

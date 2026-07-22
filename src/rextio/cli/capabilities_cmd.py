@@ -24,6 +24,7 @@ from pathlib import Path
 
 from rextio.__about__ import __version__
 from rextio.analyzer.rule_records import core_rule_records
+from rextio.artifacts.models import ArtifactKind, FallbackStrategy
 from rextio.capabilities import (
     DICT_KEY_TYPES,
     LIST_ITEM_TYPES,
@@ -94,6 +95,22 @@ def build_manifest(
         "project_root": str(project_root),
         "config_fingerprint": config_fingerprint(config),
         "target": {"language": target_plan.spec.language},
+        # Capabilities is configuration introspection, not an analysis/build.
+        # Declare the artifact vocabulary without probing the local host or
+        # pretending every kind is requested. Resolved profiles live in
+        # generate/build plans after source analysis.
+        "artifact_contract": {
+            "status": "experimental",
+            "profile_resolution": "generate-build-only",
+            "kinds": [kind.value for kind in ArtifactKind],
+            "host_executable_fallbacks": [strategy.value for strategy in FallbackStrategy],
+        },
+        "device_provider_contract": {
+            "status": "draft",
+            "discovery": False,
+            "provider_selected": False,
+            "local_probe_performed": False,
+        },
         "type_capabilities": {
             "scalar_types": sorted(SCALAR_TYPES),
             "numeric_types": sorted(NUMERIC_TYPES),
@@ -114,6 +131,9 @@ def build_manifest(
                 "rules_provided": plugin.rules_provided,
                 "api_version": plugin.api_version,
                 "lowering_provided": plugin.lowering_provided,
+                # Plugin API 1.4: presence only. Capabilities never executes
+                # profile hooks or resolves allow/deny for a host profile.
+                "artifact_capability_declared": plugin.artifact_capability_declared,
             }
             # Sorted by id (not entry-point discovery order) so the manifest
             # is byte-stable across environments, matching the rules array.

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rextio.analyzer.diagnostics import Diagnostic
+from rextio.analyzer.stub_inputs import StubInputSnapshot
 from rextio.analyzer.final_bindings import (
     ModuleBindings,
     ProjectBindings,
@@ -24,6 +25,8 @@ from rextio.contract import TOOLING_CONTRACT_VERSION
 
 if TYPE_CHECKING:
     from rextio.analyzer.plugin_claims import ClaimEngine
+    from rextio.source.external import ExternalSourcePlan
+    from rextio.source.planning import HostSourcePlan
     from rextio.plugins.api import (
         CallableMeta,
         ClaimExpr,
@@ -154,6 +157,8 @@ class ImportPolicyDecision:
     policy: str
     plugin: str | None = None
     max_depth: int = 0
+    distribution: str | None = None
+    version: str | None = None
     reason: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -166,6 +171,8 @@ class ImportPolicyDecision:
             "policy": self.policy,
             "plugin": self.plugin,
             "max_depth": self.max_depth,
+            "distribution": self.distribution,
+            "version": self.version,
             "reason": self.reason,
         }
 
@@ -721,6 +728,17 @@ class ProjectAnalysis:
     """The analysis of a whole project: its modules and the derived candidate views."""
 
     project_root: Path
+    # Private build-consistency input; intentionally omitted from reports.
+    _stub_inputs: StubInputSnapshot | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    # Strict Full C6 scanner authority used for this exact analysis.  This is
+    # process-local identity only: reports and equality deliberately omit it.
+    # The analyzer layer keeps the type opaque so ordinary analysis does not
+    # depend on the build layer.
+    _full_c6_analysis_scope: object | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
     modules: list[ModuleAnalysis] = field(default_factory=list)
     # The single project-wide final-binding authority (one ``ModuleBindings`` per
     # module), built once and shared by module parsing, callable indexing, the
@@ -731,6 +749,13 @@ class ProjectAnalysis:
     # ``FunctionAnalysis.project_mutations``), used by the boundary resolver and
     # the definition/build gate.
     project_mutations: ProjectMutations = _EMPTY_MUTATIONS
+    # Added only when a command/build asks for Train-C host source planning.
+    # Keeping analysis itself side-effect free avoids widening every internal
+    # analyzer call while check/generate/build reports expose the same plan.
+    host_source_plan: HostSourcePlan | None = None
+    # Train C5: sanitized, non-executing installed-distribution inventory.
+    # This is preview evidence only and never authorizes a build.
+    external_source_plan: ExternalSourcePlan | None = None
 
     @property
     def native_candidates(self) -> list[FunctionAnalysis]:
@@ -869,7 +894,7 @@ class ProjectAnalysis:
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of the whole project analysis."""
-        return {
+        data: dict[str, object] = {
             "contract_version": TOOLING_CONTRACT_VERSION,
             "project_root": str(self.project_root),
             "modules": [module.to_dict() for module in self.modules],
@@ -886,3 +911,8 @@ class ProjectAnalysis:
             ],
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
         }
+        if self.host_source_plan is not None:
+            data["host_source_plan"] = self.host_source_plan.to_dict()
+        if self.external_source_plan is not None:
+            data["external_source_plan"] = self.external_source_plan.to_dict()
+        return data

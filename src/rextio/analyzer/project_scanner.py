@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterable
+from dataclasses import replace
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rextio.analyzer.boundary import apply_boundary_checks
 from rextio.analyzer.callable_metadata import index_project_symbols
@@ -28,40 +30,86 @@ from rextio.analyzer.module_parser import (
     module_name_for_path,
     parse_module,
 )
+from rextio.analyzer.stub_inputs import (
+    StubInputSnapshot,
+    capture_sibling_stub_inputs,
+)
 from rextio.analyzer.plugin_claims import ClaimEngine
+from rextio.analyzer.project_namespace import (
+    BUILTIN_IGNORED_PARTS,
+    has_builtin_ignored_part,
+)
 from rextio.analyzer.type_collector import annotation_name, is_supported_type
 from rextio.config.schema import ImportsConfig, RextioConfig
 from rextio.plugins.models import PluginRegistry, RextioPlugin
+from rextio.source.authorization import verify_external_source_authorization
+from rextio.source.external import resolve_external_source_plan
 from rextio.targets.models import normalize_target_language
 
-IGNORED_PARTS = {
-    ".git",
-    ".hg",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".rextio",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-    "venv",
-}
+if TYPE_CHECKING:
+    from rextio.build.full_c6_host_inputs import FullC6AnalysisScope
+    from rextio.source.external_linkage import ExternalNativeRegistry
 
 
-def scan_python_files(project_root: Path) -> list[Path]:
-    """Return the project's Python files, honoring .rextioignore."""
+# Backward-compatible module constant used by existing analyzer callers/tests.
+IGNORED_PARTS = BUILTIN_IGNORED_PARTS
+
+
+def scan_python_files(
+    project_root: Path,
+    *,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
+    full_c6_config: RextioConfig | None = None,
+) -> list[Path]:
+    """Return project Python files under ordinary or sealed Full C6 rules."""
     root = project_root.resolve()
-    ignore_patterns = load_rextioignore(root)
-    files: list[Path] = []
-    for path in root.rglob("*.py"):
-        relative = path.relative_to(root)
-        if _is_ignored(relative, ignore_patterns):
-            continue
-        files.append(path)
-    return sorted(files)
+    if full_c6_analysis_scope is None:
+        ignore_patterns = load_rextioignore(root)
+        files = []
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(root)
+            if _is_ignored(relative, ignore_patterns):
+                continue
+            files.append(path)
+    else:
+        from rextio.build.full_c6_host_inputs import (
+            FullC6HostInputsError,
+            begin_full_c6_analysis_namespace,
+            finish_full_c6_analysis_namespace,
+            require_full_c6_analysis_files,
+        )
+
+        if type(full_c6_config) is not RextioConfig:
+            raise FullC6HostInputsError(
+                "Full C6 analysis scope lacks its exact typed config"
+            )
+        observation = begin_full_c6_analysis_namespace(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=full_c6_config,
+        )
+        files = list(
+            require_full_c6_analysis_files(
+                full_c6_analysis_scope,
+                project_root=root,
+                config=full_c6_config,
+            )
+        )
+    result = sorted(files)
+    if full_c6_analysis_scope is not None:
+        assert full_c6_config is not None  # exact type established above
+        final_files = require_full_c6_analysis_files(
+            full_c6_analysis_scope, project_root=root, config=full_c6_config
+        )
+        if tuple(result) != final_files:
+            raise FullC6HostInputsError("Full C6 analysis namespace changed")
+        finish_full_c6_analysis_namespace(
+            full_c6_analysis_scope,
+            observation,
+            project_root=root,
+            config=full_c6_config,
+        )
+    return result
 
 
 def load_rextioignore(project_root: Path) -> list[str]:
@@ -80,7 +128,7 @@ def load_rextioignore(project_root: Path) -> list[str]:
 
 def _is_ignored(relative: Path, ignore_patterns: list[str]) -> bool:
     parts = relative.parts
-    if any(part in IGNORED_PARTS for part in parts):
+    if has_builtin_ignored_part(relative):
         return True
     relative_text = relative.as_posix()
     for pattern in ignore_patterns:
@@ -110,6 +158,8 @@ def analyze_project(
     delegate_fallback: bool = False,
     plugin_registry: PluginRegistry | None = None,
     plugin_config: RextioConfig | None = None,
+    external_native_registry: ExternalNativeRegistry | None = None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
 ) -> ProjectAnalysis:
     """Analyze a project directory and return its ProjectAnalysis.
 
@@ -126,9 +176,32 @@ def analyze_project(
     root = Path(project_root).resolve()
     target_language = normalize_target_language(target_language)
     analysis = ProjectAnalysis(project_root=root)
-    files = scan_python_files(root)
+    full_c6_observation: object | None = None
+    if full_c6_analysis_scope is not None:
+        from rextio.build.full_c6_host_inputs import (
+            FullC6HostInputsError,
+            begin_full_c6_analysis_namespace,
+        )
+
+        if type(plugin_config) is not RextioConfig:
+            raise FullC6HostInputsError(
+                "Full C6 analysis scope lacks its exact typed config"
+            )
+        full_c6_observation = begin_full_c6_analysis_namespace(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=plugin_config,
+        )
+    files = scan_python_files(
+        root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=plugin_config,
+    )
+    analysis._full_c6_analysis_scope = full_c6_analysis_scope
+    stub_inputs = capture_sibling_stub_inputs(root, tuple(files))
+    analysis._stub_inputs = stub_inputs
     project_modules = _project_module_names(files, root)
-    project_return_types = _project_annotated_return_types(files, root)
+    project_return_types = _project_annotated_return_types(files, root, stub_inputs)
     trusted_annotation_targets = frozenset(
         annotation
         for binding in (() if plugin_registry is None else plugin_registry.types)
@@ -184,6 +257,7 @@ def analyze_project(
             claim_engine=claim_engine,
             project_mutations=project_mutations,
             project_bindings=project_bindings,
+            stub_inputs=stub_inputs,
         )
         for path in files
     ]
@@ -192,9 +266,37 @@ def analyze_project(
         boundary_warnings=boundary_warnings,
         embedding_enabled=embedding_enabled,
         delegate_fallback=delegate_fallback,
+        external_native_registry=external_native_registry,
     )
     _strip_divergence_notes_from_non_native(analysis)
     _note_plugin_lowerable_accelerated(analysis, tuple(active_plugins))
+    if imports_config is not None:
+        plan = resolve_external_source_plan(imports_config, analysis)
+        if plan is not None:
+            authorization = verify_external_source_authorization(root, plan)
+            analysis.external_source_plan = replace(plan, authorization=authorization)
+    if full_c6_analysis_scope is not None:
+        from rextio.build.full_c6_host_inputs import (
+            FullC6HostInputsError,
+            finish_full_c6_analysis_namespace,
+            require_full_c6_analysis_files,
+        )
+
+        assert plugin_config is not None  # exact type established by strict scan
+        final_files = require_full_c6_analysis_files(
+            full_c6_analysis_scope,
+            project_root=root,
+            config=plugin_config,
+        )
+        if tuple(files) != final_files:
+            raise FullC6HostInputsError("Full C6 analysis namespace changed")
+        assert full_c6_observation is not None
+        finish_full_c6_analysis_namespace(
+            full_c6_analysis_scope,
+            full_c6_observation,
+            project_root=root,
+            config=plugin_config,
+        )
     return analysis
 
 
@@ -273,7 +375,11 @@ def _strip_divergence_notes_from_non_native(analysis: ProjectAnalysis) -> None:
                 ]
 
 
-def _project_annotated_return_types(files: list[Path], project_root: Path) -> dict[str, str]:
+def _project_annotated_return_types(
+    files: list[Path],
+    project_root: Path,
+    snapshot: StubInputSnapshot | None = None,
+) -> dict[str, str]:
     """Collect supported top-level function return annotations by qualified name.
 
     A sibling ``.pyi`` stub's return annotation overrides the source annotation,
@@ -302,12 +408,27 @@ def _project_annotated_return_types(files: list[Path], project_root: Path) -> di
                 and is_supported_type(item.returns)
             ):
                 return_types[_qualname(item.name)] = annotation_name(item.returns)
-        stub_path = path.with_suffix(".pyi")
-        if not stub_path.exists():
-            continue
+        if snapshot is None:
+            stub_path = path.with_suffix(".pyi")
+            if not stub_path.exists():
+                continue
+            try:
+                stub_source = stub_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            stub_filename = str(stub_path)
+        else:
+            record = snapshot.for_source(path)
+            if not record.analyzer_consumable:
+                continue
+            record_text = record.text
+            if not isinstance(record_text, str):
+                continue
+            stub_source = record_text
+            stub_filename = record.stub_path
         try:
-            stub_tree = ast.parse(stub_path.read_text(encoding="utf-8"), filename=str(stub_path))
-        except SyntaxError:
+            stub_tree = ast.parse(stub_source, filename=stub_filename)
+        except (MemoryError, SyntaxError, RecursionError):
             continue
         for item in stub_tree.body:
             if (

@@ -1,9 +1,11 @@
 # Rextio
 
-Rextio **0.1.4** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-18 with plugin API **1.3** and tooling contract
-**2.2.0**. It supersedes 0.1.3 and its tooling contract 2.1.0. Release Train B
-completed in consumer-first order: rextio-lsp 0.1.2, then core 0.1.4.
+Rextio **0.1.5** is an alpha-stage local build tool for Python projects,
+published to PyPI on 2026-07-23 with plugin API **1.4**, tooling contract
+**2.24.0**, and readiness policy **11**. It supersedes 0.1.4. Release Train C
+ships experimental host source-AOT/executable planning and a bounded Full-C6 +
+C5.2 Alpha; it does not claim broad Full C6, general package AOT, or CUDA
+support.
 
 ```text
 pip install rextio

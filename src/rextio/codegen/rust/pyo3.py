@@ -10,6 +10,7 @@ def render_pyo3_module(
     module_name: str = "_rextio_native",
     exported_functions: list[str] | None = None,
     extra_prelude: list[str] | None = None,
+    module_initializers: list[str] | None = None,
 ) -> str:
     """Render the PyO3 module registration wiring for the generated functions."""
     exports = (
@@ -57,6 +58,8 @@ def render_pyo3_module(
             f"fn {module_name}(m: &Bound<'_, PyModule>) -> PyResult<()> {{",
         ]
     )
+    for initializer in module_initializers or []:
+        lines.append(f"    {initializer}")
     for rust_name in exports:
         lines.append(f"    m.add_function(wrap_pyfunction!({rust_name}, m)?)?;")
     lines.extend(

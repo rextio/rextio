@@ -3,14 +3,75 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
-from dataclasses import dataclass
+import stat
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from rextio.analyzer.call_resolution import FunctionResolver
-from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
+from rextio.analyzer.models import ProjectAnalysis
 from rextio.analyzer.native_marker import external_accelerator_for_source
+from rextio.artifacts.closure import (
+    ClosureStatus,
+    NativeClosureReport,
+    closure_requires_prebuild_failure,
+    resolve_executable_fallback,
+    strategy_from_compatibility_value,
+)
+from rextio.artifacts.entry_graph import executable_entry_graph
+from rextio.artifacts.authorization import (
+    ArtifactDistributionAuthorizationAssessment,
+    evaluate_artifact_distribution_authorization,
+)
+from rextio.artifacts.evidence import (
+    ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
+    ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+    MAX_EVIDENCE_FILE_BYTES,
+    MAX_SIDECAR_BYTES,
+    REASON_EVIDENCE_INTERNAL,
+    REASON_RUNTIME_BINARY_MISMATCH,
+    REASON_RUNTIME_BINARY_MISSING,
+    REASON_RUNTIME_WHEEL_MEMBER_MISMATCH,
+    REASON_SIDECAR_WRITE_FAILED,
+    REASON_WHEEL_MUTATED,
+    ArtifactEvidence,
+    ArtifactEvidenceError,
+    ArtifactEvidenceGate,
+    _EntryIdentity,
+    _FileReceipt,
+    _dirfd_ops_available,
+    _lstat_at,
+    _open_pinned_parent_dirfd,
+    _quarantine_and_dispose_owned_at,
+    _quarantine_and_dispose_owned_path,
+    _receipt_at,
+    _receipt_matches_at,
+    _receipt_matches_path,
+    _receipt_path,
+    hash_regular_file,
+    load_wheel_snapshot,
+    project_relative_logical_path,
+)
+from rextio.artifacts.models import ArtifactKind, ArtifactProfile, FallbackStrategy
+from rextio.contract import TOOLING_CONTRACT_VERSION
+from rextio.artifacts.profiles import (
+    ArtifactProfilePlanningError,
+    detect_host_target_triple,
+    host_executable_profile,
+    host_extension_profile,
+    rust_crate_profile,
+)
+from rextio.build.supply_chain import (
+    EvidenceInputSnapshot,
+    capture_cargo_lock_input,
+    capture_generated_python_inputs,
+    capture_generated_rust_inputs,
+    capture_project_source_snapshot,
+    emit_host_extension_wheel_evidence,
+    is_in_scope_host_extension_cpython,
+)
 from rextio.ir.types import RxtPluginType, normalize_type_name
 from rextio.build.cargo_builder import (
     NativeBuildResult,
@@ -42,11 +103,20 @@ from rextio.build.rust_crate_builder import (
     skipped_rust_crate_build,
 )
 from rextio.build.wheel_builder import (
+    ExternalWheelContract,
     WheelBuildResult,
+    artifact_wheel_path,
     build_artifact_wheel,
     skipped_wheel,
 )
+from rextio.build.full_c6_pipeline import (
+    FULL_C6_DISTRIBUTION_POLICY,
+    FullC6ExternalBuildContext,
+    FullC6PipelineError,
+    validate_full_c6_external_context,
+)
 from rextio.codegen.rust.generator import (
+    crate_emitted_qualnames,
     generate_rust_crate_module,
     generate_rust_main_binary,
     generate_rust_module,
@@ -64,11 +134,24 @@ from rextio.fallback.cpython import (
 )
 from rextio.fallback.nuitka import build_nuitka_fallback
 from rextio.ir.nodes import ModuleIR
+from rextio.ir.module_init import ModuleInitIR
 from rextio.ir.lowering import LoweringError, PluginTypeMaps, lower_project
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.partition.build_plan import BuildPlan, create_build_plan
 from rextio.partition.fallback_plan import FallbackPlan
+from rextio.plugins.capabilities import (
+    StandalonePluginContext,
+    analysis_function_plugin_type_keys,
+    build_standalone_plugin_context,
+    profile_crate_dependencies,
+)
+from rextio.plugins.loader import PluginError
 from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
+from rextio.source.external import (
+    ExternalSourceBuildBlockedError,
+    ExternalSourceC5NotImplementedError,
+)
+from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlan, default_target_plan
 
 
@@ -78,6 +161,16 @@ from rextio.targets.plan import TargetPlan, default_target_plan
 _DISPATCHER_RESERVED_TOP_LEVEL_NAMES = frozenset(
     {"importlib", "json", "os", "sys", "types", "rextio"}
 )
+
+
+def _required_host_target_triple() -> str:
+    """Resolve a requested native host target through one actionable error."""
+    try:
+        return detect_host_target_triple()
+    except ValueError as error:
+        raise ArtifactProfilePlanningError(
+            f"RXT060 Artifact profile planning failed. Cause: {error}"
+        ) from error
 
 
 def _plugin_lowering_inputs(
@@ -163,10 +256,18 @@ class GenerateResult:
     native_source: NativeSourceResult
     rust_crate_source: NativeSourceResult
     plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
+    # Plugin API 1.4: resolved per-profile standalone capability (generate only
+    # for requested rust-crate / host-executable profiles). Additive; absence
+    # means no standalone profile was resolved for this generate.
+    standalone_plugin_capabilities: tuple[dict[str, object], ...] = ()
+    # Train C5 preview evidence.  Presence never authorizes a build.
+    external_source_plan: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result."""
         data: dict[str, object] = {
+            # Additive tooling contract version (2.7.0+); consumers may ignore.
+            "contract_version": TOOLING_CONTRACT_VERSION,
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -179,6 +280,7 @@ class GenerateResult:
             "embedding_candidate_count": len(self.plan.native.embedded_functions),
             "native_source": self.native_source.to_dict(),
             "rust_crate_source": self.rust_crate_source.to_dict(),
+            "artifact_profiles": [profile.to_dict() for profile in self.plan.artifact_profiles],
         }
         # Mirror build.json's plugin dependency report so the two reports stay
         # consistent (council round 8).
@@ -186,6 +288,12 @@ class GenerateResult:
             data["plugin_crate_dependencies"] = [
                 dict(dependency) for dependency in self.plugin_crate_dependencies
             ]
+        if self.standalone_plugin_capabilities:
+            data["standalone_plugin_capabilities"] = [
+                dict(item) for item in self.standalone_plugin_capabilities
+            ]
+        if self.external_source_plan is not None:
+            data["external_source_plan"] = dict(self.external_source_plan)
         return data
 
 
@@ -209,14 +317,32 @@ class BuildResult:
     # extension: {"plugin_id", "name", "version", "features"} dicts
     # (docs/specs/plugin-lowering.md section 5). Empty for plugin-free builds.
     plugin_crate_dependencies: tuple[dict[str, object], ...] = ()
+    # Plugin API 1.4: resolved standalone capability details for requested
+    # rust-crate / host-executable profiles (additive).
+    standalone_plugin_capabilities: tuple[dict[str, object], ...] = ()
+    # C6.2: bounded host-extension wheel SBOM/provenance preview (additive).
+    # Absent when the build is outside the ordinary host-extension wheel path.
+    artifact_evidence: ArtifactEvidence | None = None
+    # C6.3: emitted only for the opt-in required evidence policy. Even a
+    # satisfied gate remains incomplete, unsigned, and non-authorizing.
+    artifact_evidence_gate: ArtifactEvidenceGate | None = None
+    # C6.5-C6.9: derived only from final C6.2-C6.9 evidence. This readiness
+    # report is always blocked and never authorizes distribution.
+    artifact_distribution_authorization: (
+        ArtifactDistributionAuthorizationAssessment | None
+    ) = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this result.
 
         ``plugin_crate_dependencies`` is emitted only when non-empty, so
         ``build.json`` keeps its existing shape for plugin-free builds.
+        ``artifact_evidence`` is emitted for in-scope host-extension+cpython
+        wheels as preview-ready or unavailable; out-of-scope builds omit it.
         """
         data: dict[str, object] = {
+            # Additive tooling contract version (2.7.0+); consumers may ignore.
+            "contract_version": TOOLING_CONTRACT_VERSION,
             "fallback": self.fallback,
             "boundary_fallback_threshold": self.boundary_fallback_threshold,
             "target": self.target_plan.to_dict(),
@@ -233,12 +359,798 @@ class BuildResult:
             "wheel_build": self.wheel_build.to_dict(),
             "executable_build": self.executable_build.to_dict(),
             "rust_crate_build": self.rust_crate_build.to_dict(),
+            "artifact_profiles": [profile.to_dict() for profile in self.plan.artifact_profiles],
         }
         if self.plugin_crate_dependencies:
             data["plugin_crate_dependencies"] = [
                 dict(dependency) for dependency in self.plugin_crate_dependencies
             ]
+        if self.standalone_plugin_capabilities:
+            data["standalone_plugin_capabilities"] = [
+                dict(item) for item in self.standalone_plugin_capabilities
+            ]
+        if self.artifact_evidence is not None:
+            data["artifact_evidence"] = self.artifact_evidence.to_dict()
+        if self.artifact_evidence_gate is not None:
+            data["artifact_evidence_gate"] = self.artifact_evidence_gate.to_dict()
+        if self.artifact_distribution_authorization is not None:
+            data["artifact_distribution_authorization"] = (
+                self.artifact_distribution_authorization.to_dict()
+            )
         return data
+
+
+class ArtifactEvidenceRequiredError(RuntimeError):
+    """Raised when the opt-in required evidence policy blocks a build."""
+
+    def __init__(
+        self,
+        gate: ArtifactEvidenceGate,
+        *,
+        result: BuildResult | None = None,
+    ) -> None:
+        self.gate = gate
+        self.result = result
+        detail = gate.evidence_reason or gate.reason or "evidence-unavailable"
+        super().__init__(f"required artifact evidence gate blocked: {detail}")
+
+
+def _artifact_authorization_assessment_no_throw(
+    evidence: ArtifactEvidence,
+) -> ArtifactDistributionAuthorizationAssessment:
+    """Keep report-only C6.5 incapable of changing build or C6.3 outcomes."""
+    try:
+        return evaluate_artifact_distribution_authorization(evidence)
+    except Exception:
+        # Defense in depth: the evaluator is itself total, but an unrelated
+        # future regression still degrades only to a fixed sanitized record.
+        return evaluate_artifact_distribution_authorization(
+            ArtifactEvidence.unavailable(reason=REASON_EVIDENCE_INTERNAL)
+        )
+
+
+@dataclass(frozen=True)
+class _RequiredEvidenceRollback:
+    """No-throw rollback result used to avoid overstating output cleanup."""
+
+    current_outputs_removed: bool
+    previous_outputs_restored: bool
+    backup_directory_removed: bool
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.current_outputs_removed
+            and self.previous_outputs_restored
+            and self.backup_directory_removed
+        )
+
+
+def _lstat_or_none(path: Path) -> os.stat_result | None:
+    """Inspect one directory entry without following a symlink."""
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _unlink_entry_no_follow(path: Path) -> bool:
+    """Remove one non-directory entry without following symlinks."""
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if stat.S_ISDIR(entry.st_mode):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    try:
+        return _lstat_or_none(path) is None
+    except OSError:
+        return False
+
+
+def _entry_presence_no_follow(path: Path) -> bool | None:
+    """Return entry presence without following links, or None if inspection failed."""
+    try:
+        return _lstat_or_none(path) is not None
+    except OSError:
+        return None
+
+
+def _real_contained_directory(path: Path, *, parent: Path) -> None:
+    """Require an existing direct child directory without following a symlink."""
+    try:
+        entry = path.lstat()
+        parent_entry = parent.lstat()
+        if stat.S_ISLNK(parent_entry.st_mode) or not stat.S_ISDIR(parent_entry.st_mode):
+            raise OSError("required evidence parent must be a real directory")
+        if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+            raise OSError("required evidence directory must be a real directory")
+        resolved_parent = parent.resolve(strict=True)
+        resolved_path = path.resolve(strict=True)
+    except OSError as error:
+        raise OSError("required evidence directory could not be inspected") from error
+    if resolved_path.parent != resolved_parent:
+        raise OSError("required evidence directory escapes its expected parent")
+
+
+@dataclass
+class _RequiredEvidenceOutputs:
+    """Pinned required-output transaction with exact ownership receipts."""
+
+    paths: tuple[Path, ...]
+    backups: tuple[Path | None, ...]
+    backup_dir: Path
+    _backup_receipts: tuple[_FileReceipt | None, ...]
+    _dist_parent: Path
+    _dist_identity: _EntryIdentity
+    _prepared_count: int
+    _dist_fd: int | None = None
+    _build_fd: int | None = None
+    _backup_fd: int | None = None
+    _claimed: dict[int, _FileReceipt] = field(default_factory=dict)
+    _active: bool = True
+    _last_rollback: _RequiredEvidenceRollback | None = None
+
+    @classmethod
+    def prepare(cls, layout: ArtifactLayout, wheel_path: Path) -> _RequiredEvidenceOutputs:
+        paths = (
+            wheel_path,
+            wheel_path.with_suffix(wheel_path.suffix + ".cdx.json"),
+            wheel_path.with_suffix(wheel_path.suffix + ".intoto.json"),
+        )
+        dist_parent = wheel_path.parent
+        if dist_parent != layout.dist_dir:
+            raise OSError("required evidence output parent is not the dist directory")
+        dist_parent.mkdir(parents=True, exist_ok=True)
+        _real_contained_directory(dist_parent, parent=layout.root)
+        _real_contained_directory(layout.build_dir, parent=layout.rextio_dir)
+        backup_dir = layout.build_dir / "required-evidence-output-backup"
+
+        dist_fd: int | None = None
+        build_fd: int | None = None
+        backup_fd: int | None = None
+        backup_created = False
+        dist_entry = dist_parent.lstat()
+        dist_identity = _EntryIdentity.from_stat(dist_entry)
+        if _dirfd_ops_available():
+            dist_fd, pinned_dist = _open_pinned_parent_dirfd(dist_parent)
+            dist_identity = _EntryIdentity.from_stat(pinned_dist)
+            build_fd, _ = _open_pinned_parent_dirfd(layout.build_dir)
+            try:
+                os.mkdir(backup_dir.name, 0o700, dir_fd=build_fd)
+                backup_created = True
+                flags = os.O_RDONLY
+                if hasattr(os, "O_DIRECTORY"):
+                    flags |= os.O_DIRECTORY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                backup_fd = os.open(backup_dir.name, flags, dir_fd=build_fd)
+            except OSError:
+                if backup_fd is not None:
+                    try:
+                        os.close(backup_fd)
+                    except OSError:
+                        pass
+                    backup_fd = None
+                if backup_created and build_fd is not None:
+                    try:
+                        os.rmdir(backup_dir.name, dir_fd=build_fd)
+                    except OSError:
+                        pass
+                for open_fd in (build_fd, dist_fd):
+                    if open_fd is not None:
+                        try:
+                            os.close(open_fd)
+                        except OSError:
+                            pass
+                raise
+        else:
+            backup_dir.mkdir(mode=0o700, exist_ok=False)
+        try:
+            _real_contained_directory(backup_dir, parent=layout.build_dir)
+        except OSError:
+            if backup_fd is not None:
+                try:
+                    os.close(backup_fd)
+                except OSError:
+                    pass
+                backup_fd = None
+            try:
+                if build_fd is not None:
+                    os.rmdir(backup_dir.name, dir_fd=build_fd)
+                else:
+                    backup_dir.rmdir()
+            except OSError:
+                pass
+            for containment_fd in (build_fd, dist_fd):
+                if containment_fd is not None:
+                    try:
+                        os.close(containment_fd)
+                    except OSError:
+                        pass
+            raise
+
+        backups: list[Path | None] = [None] * len(paths)
+        receipts: list[_FileReceipt | None] = [None] * len(paths)
+        transaction = cls(
+            paths=paths,
+            backups=tuple(backups),
+            backup_dir=backup_dir,
+            _backup_receipts=tuple(receipts),
+            _dist_parent=dist_parent,
+            _dist_identity=dist_identity,
+            _prepared_count=0,
+            _dist_fd=dist_fd,
+            _build_fd=build_fd,
+            _backup_fd=backup_fd,
+        )
+        try:
+            for index, path in enumerate(paths):
+                entry = (
+                    _lstat_at(dist_fd, path.name) if dist_fd is not None else _lstat_or_none(path)
+                )
+                transaction._prepared_count = index + 1
+                if entry is None:
+                    continue
+                if not stat.S_ISREG(entry.st_mode):
+                    raise OSError("required evidence output path is not a regular file")
+                receipt = (
+                    _receipt_at(dist_fd, path.name, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+                    if dist_fd is not None
+                    else _receipt_path(path, max_bytes=MAX_SIDECAR_BYTES * 4)
+                )
+                backup = backup_dir / f"{index}.previous"
+                # Write-ahead recovery state must exist before rename. A
+                # post-rename receipt failure can then enter ordinary rollback
+                # without rediscovering ownership from a possibly changed file.
+                backups[index] = backup
+                receipts[index] = receipt
+                transaction.backups = tuple(backups)
+                transaction._backup_receipts = tuple(receipts)
+                if dist_fd is not None:
+                    assert backup_fd is not None
+                    os.replace(
+                        path.name,
+                        backup.name,
+                        src_dir_fd=dist_fd,
+                        dst_dir_fd=backup_fd,
+                    )
+                    if not _receipt_matches_at(backup_fd, backup.name, receipt):
+                        raise OSError("required evidence backup identity changed")
+                else:
+                    path.replace(backup)
+                    if not _receipt_matches_path(backup, receipt):
+                        raise OSError("required evidence backup identity changed")
+        except BaseException as error:
+            outcome = transaction.rollback()
+            if not outcome.complete:
+                raise OSError(
+                    "required evidence output preparation rollback was incomplete"
+                ) from error
+            raise
+        transaction.backups = tuple(backups)
+        transaction._backup_receipts = tuple(receipts)
+        return transaction
+
+    def _parent_matches(self) -> bool:
+        try:
+            current = self._dist_parent.lstat()
+        except OSError:
+            return False
+        return _EntryIdentity.from_stat(current) == self._dist_identity
+
+    def _current_receipt(self, index: int) -> _FileReceipt | None:
+        path = self.paths[index]
+        try:
+            entry = (
+                _lstat_at(self._dist_fd, path.name)
+                if self._dist_fd is not None
+                else _lstat_or_none(path)
+            )
+            if entry is None:
+                return None
+            if not stat.S_ISREG(entry.st_mode):
+                raise OSError("required evidence output is not a regular file")
+            return (
+                _receipt_at(self._dist_fd, path.name, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+                if self._dist_fd is not None
+                else _receipt_path(path, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+            )
+        except ArtifactEvidenceError as exc:
+            # Transaction state machines use one error domain. Receipt helpers
+            # deliberately raise ArtifactEvidenceError, but allowing it to
+            # escape here would bypass commit/rollback's fixed-reason RXT060
+            # path and could make defensive cleanup fail a second time.
+            raise OSError("required evidence output receipt is unavailable") from exc
+
+    def publish_wheel(self, staged_path: Path) -> _FileReceipt:
+        """Publish the private wheel stage with create-if-absent ownership."""
+        if not self._active:
+            raise OSError("required evidence transaction is inactive")
+        expected = self.paths[0]
+        if staged_path.parent != self.backup_dir or staged_path.name != expected.name:
+            raise OSError("required evidence wheel stage is outside the transaction")
+        if self._backup_fd is not None:
+            assert self._dist_fd is not None
+            receipt = _receipt_at(
+                self._backup_fd,
+                staged_path.name,
+                max_bytes=MAX_EVIDENCE_FILE_BYTES,
+            )
+            try:
+                os.link(
+                    staged_path.name,
+                    expected.name,
+                    src_dir_fd=self._backup_fd,
+                    dst_dir_fd=self._dist_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                if _receipt_matches_at(self._backup_fd, staged_path.name, receipt):
+                    try:
+                        os.unlink(staged_path.name, dir_fd=self._backup_fd)
+                    except OSError:
+                        pass
+                raise OSError("required evidence wheel publication was not exclusive") from exc
+            if not _receipt_matches_at(self._dist_fd, expected.name, receipt):
+                raise OSError("required evidence wheel publication changed")
+            self._claimed[0] = receipt
+            if not _receipt_matches_at(self._backup_fd, staged_path.name, receipt):
+                raise OSError("required evidence wheel stage changed after publication")
+            os.unlink(staged_path.name, dir_fd=self._backup_fd)
+            return receipt
+
+        receipt = _receipt_path(staged_path, max_bytes=MAX_EVIDENCE_FILE_BYTES)
+        try:
+            os.link(staged_path, expected, follow_symlinks=False)
+        except OSError as exc:
+            if _receipt_matches_path(staged_path, receipt):
+                try:
+                    staged_path.unlink()
+                except OSError:
+                    pass
+            raise OSError("required evidence wheel publication was not exclusive") from exc
+        if not _receipt_matches_path(expected, receipt):
+            raise OSError("required evidence wheel publication changed")
+        self._claimed[0] = receipt
+        if not _receipt_matches_path(staged_path, receipt):
+            raise OSError("required evidence wheel stage changed after publication")
+        staged_path.unlink()
+        return receipt
+
+    def claim(self, path: Path, receipt: _FileReceipt | None = None) -> None:
+        """Claim one successfully produced exact output for later rollback."""
+        if not self._active:
+            raise OSError("required evidence transaction is inactive")
+        if receipt is None:
+            raise OSError("required evidence output claim requires a publication receipt")
+        matches = [index for index, expected in enumerate(self.paths) if expected == path]
+        if len(matches) != 1:
+            raise OSError("required evidence output is outside the transaction")
+        index = matches[0]
+        current = self._current_receipt(index)
+        if current is None or current != receipt:
+            raise OSError("required evidence output ownership claim failed")
+        self._claimed[index] = current
+
+    def claim_many(self, outputs: tuple[tuple[Path, _FileReceipt], ...]) -> None:
+        """Atomically validate and record a sidecar publication receipt set."""
+        if len(outputs) != 2:
+            raise OSError("required sidecar claim must contain the exact output pair")
+        pending: dict[int, _FileReceipt] = {}
+        for path, receipt in outputs:
+            matches = [index for index, expected in enumerate(self.paths) if expected == path]
+            if len(matches) != 1:
+                raise OSError("required sidecar claim is outside the transaction")
+            index = matches[0]
+            current = self._current_receipt(index)
+            if current != receipt:
+                raise OSError("required sidecar ownership claim failed")
+            pending[index] = receipt
+        if set(pending) != {1, 2}:
+            raise OSError("required sidecar claim did not name the exact output pair")
+        self._claimed.update(pending)
+
+    def commit(self) -> None:
+        """Discard preserved prior outputs after required evidence succeeds."""
+        if not self._active or not self._parent_matches():
+            raise OSError("required evidence output parent changed before commit")
+        if set(self._claimed) != set(range(len(self.paths))):
+            raise OSError("required evidence outputs were not all claimed")
+        for index, receipt in self._claimed.items():
+            if self._current_receipt(index) != receipt:
+                raise OSError("required evidence output changed before commit")
+        for index, backup_receipt in enumerate(self._backup_receipts):
+            if backup_receipt is None:
+                continue
+            backup = self.backups[index]
+            assert backup is not None
+            try:
+                if self._backup_fd is not None:
+                    if _receipt_matches_at(self._backup_fd, backup.name, backup_receipt):
+                        os.unlink(backup.name, dir_fd=self._backup_fd)
+                elif _receipt_matches_path(backup, backup_receipt):
+                    backup.unlink()
+            except OSError:
+                pass
+        self._active = False
+        self._remove_backup_dir()
+        self._close()
+
+    def claim_mismatch_reason(self) -> str:
+        """Return a fixed reason for a failed final ownership revalidation."""
+        if not self._parent_matches():
+            return REASON_SIDECAR_WRITE_FAILED
+        for index in range(len(self.paths)):
+            claimed = self._claimed.get(index)
+            if claimed is None:
+                return REASON_SIDECAR_WRITE_FAILED
+            try:
+                current = self._current_receipt(index)
+            except OSError:
+                current = None
+            if current != claimed:
+                return REASON_WHEEL_MUTATED if index == 0 else REASON_SIDECAR_WRITE_FAILED
+        return REASON_SIDECAR_WRITE_FAILED
+
+    def rollback(self) -> _RequiredEvidenceRollback:
+        """Remove this run's outputs and restore prior entries without following links."""
+        if not self._active:
+            return self._last_rollback or _RequiredEvidenceRollback(True, True, True)
+        removed = self._parent_matches()
+        restored = True
+        for index in range(self._prepared_count):
+            claimed = self._claimed.get(index)
+            if claimed is not None:
+                quarantine_name = f"{index}.current-quarantine"
+                if self._dist_fd is not None:
+                    assert self._backup_fd is not None
+                    cleaned = _quarantine_and_dispose_owned_at(
+                        self._dist_fd,
+                        self.paths[index].name,
+                        self._backup_fd,
+                        quarantine_name,
+                        claimed,
+                    )
+                else:
+                    cleaned = _quarantine_and_dispose_owned_path(
+                        self.paths[index],
+                        self.backup_dir / quarantine_name,
+                        claimed,
+                    )
+                if not cleaned:
+                    removed = False
+            else:
+                try:
+                    current_present = (
+                        _lstat_at(self._dist_fd, self.paths[index].name)
+                        if self._dist_fd is not None
+                        else _lstat_or_none(self.paths[index])
+                    )
+                except OSError:
+                    current_present = None
+                    removed = False
+                if current_present is not None:
+                    # Unknown output belongs to somebody else.
+                    removed = False
+
+            prior = self._backup_receipts[index]
+            if prior is None:
+                continue
+            backup = self.backups[index]
+            assert backup is not None
+            try:
+                current = self._current_receipt(index)
+            except OSError:
+                restored = False
+                continue
+            if current is not None:
+                restored = False
+                continue
+            try:
+                if self._backup_fd is not None:
+                    assert self._dist_fd is not None
+                    if not _receipt_matches_at(self._backup_fd, backup.name, prior):
+                        restored = False
+                        continue
+                    os.link(
+                        backup.name,
+                        self.paths[index].name,
+                        src_dir_fd=self._backup_fd,
+                        dst_dir_fd=self._dist_fd,
+                        follow_symlinks=False,
+                    )
+                    if not _receipt_matches_at(self._dist_fd, self.paths[index].name, prior):
+                        restored = False
+                        continue
+                    os.unlink(backup.name, dir_fd=self._backup_fd)
+                else:
+                    if not _receipt_matches_path(backup, prior):
+                        restored = False
+                        continue
+                    os.link(backup, self.paths[index], follow_symlinks=False)
+                    if not _receipt_matches_path(self.paths[index], prior):
+                        restored = False
+                        continue
+                    backup.unlink()
+            except OSError:
+                restored = False
+
+        backup_removed = self._remove_backup_dir()
+        result = _RequiredEvidenceRollback(removed, restored, backup_removed)
+        self._active = False
+        self._last_rollback = result
+        self._close()
+        return result
+
+    def _remove_backup_dir(self) -> bool:
+        if self._backup_fd is not None:
+            try:
+                os.close(self._backup_fd)
+            except OSError:
+                pass
+            self._backup_fd = None
+        try:
+            if self._build_fd is not None:
+                os.rmdir(self.backup_dir.name, dir_fd=self._build_fd)
+            else:
+                self.backup_dir.rmdir()
+        except OSError:
+            return False
+        return True
+
+    def _close(self) -> None:
+        for name in ("_backup_fd", "_build_fd", "_dist_fd"):
+            fd = getattr(self, name)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                setattr(self, name, None)
+
+
+def _required_evidence_output_mismatch_reason(
+    *,
+    project_root: Path,
+    layout: ArtifactLayout,
+    expected_wheel: Path,
+    wheel_build: WheelBuildResult,
+    native_build: NativeBuildResult,
+    evidence: ArtifactEvidence,
+) -> str | None:
+    """Revalidate the exact final files immediately before satisfying the gate."""
+    if (
+        evidence.status != "preview-ready"
+        or evidence.subject is None
+        or evidence.sbom is None
+        or evidence.provenance is None
+        or evidence.native_runtime_inventory is None
+    ):
+        return REASON_EVIDENCE_INTERNAL
+    if wheel_build.status != "built" or wheel_build.path is None:
+        return REASON_WHEEL_MUTATED
+    if Path(wheel_build.path) != expected_wheel:
+        return REASON_WHEEL_MUTATED
+
+    expected_sbom = expected_wheel.with_suffix(expected_wheel.suffix + ".cdx.json")
+    expected_provenance = expected_wheel.with_suffix(expected_wheel.suffix + ".intoto.json")
+    for path, recorded in (
+        (expected_sbom, evidence.sbom),
+        (expected_provenance, evidence.provenance),
+    ):
+        try:
+            logical = project_relative_logical_path(project_root, path)
+            digest, size = hash_regular_file(path, max_bytes=MAX_SIDECAR_BYTES)
+        except (ArtifactEvidenceError, OSError, ValueError):
+            return REASON_SIDECAR_WRITE_FAILED
+        if recorded.logical_path != logical or recorded.sha256 != digest or recorded.size != size:
+            return REASON_SIDECAR_WRITE_FAILED
+
+    native_mismatch = _required_native_runtime_mismatch_reason(
+        layout=layout,
+        native_build=native_build,
+        evidence=evidence,
+    )
+    if native_mismatch is not None:
+        return native_mismatch
+
+    # Take one final immutable wheel snapshot after checking both sidecars and
+    # the installed native binary. Besides binding the whole-wheel subject,
+    # this lets required mode revalidate the exact native ZIP member rather
+    # than trusting an earlier basename lookup.
+    try:
+        wheel_logical = project_relative_logical_path(project_root, expected_wheel)
+        final_subject, final_entries = load_wheel_snapshot(
+            expected_wheel,
+            project_root=project_root,
+        )
+    except (ArtifactEvidenceError, OSError, ValueError):
+        return REASON_WHEEL_MUTATED
+    if (
+        evidence.subject.logical_path != wheel_logical
+        or evidence.subject.sha256 != final_subject.sha256
+        or evidence.subject.size != final_subject.size
+    ):
+        return REASON_WHEEL_MUTATED
+
+    runtime_inventory = evidence.native_runtime_inventory
+    final_matches = tuple(
+        entry for entry in final_entries if entry.name == runtime_inventory.wheel_member
+    )
+    recorded_matches = tuple(
+        entry for entry in evidence.wheel_entries if entry.name == runtime_inventory.wheel_member
+    )
+    if len(final_matches) != 1 or len(recorded_matches) != 1:
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    final_member = final_matches[0]
+    recorded_member = recorded_matches[0]
+    if (
+        final_member != recorded_member
+        or final_member.sha256 != runtime_inventory.wheel_member_sha256
+        or final_member.uncompressed_size != runtime_inventory.wheel_member_size
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    return None
+
+
+def _required_native_runtime_mismatch_reason(
+    *,
+    layout: ArtifactLayout,
+    native_build: NativeBuildResult,
+    evidence: ArtifactEvidence,
+) -> str | None:
+    """Re-hash the exact contained installed binary recorded by C6.4."""
+    runtime_inventory = evidence.native_runtime_inventory
+    if runtime_inventory is None:
+        return REASON_EVIDENCE_INTERNAL
+    if native_build.status != "built" or native_build.installed_path is None:
+        return REASON_RUNTIME_BINARY_MISSING
+
+    installed = Path(native_build.installed_path)
+    try:
+        # The generated Python root itself must be the real directory created
+        # by this build, not a symlink redirected elsewhere.
+        _real_contained_directory(layout.python_dir, parent=layout.generated_dir)
+        root = Path(os.path.abspath(layout.python_dir))
+        binary = Path(os.path.abspath(installed))
+        relative = binary.relative_to(root)
+        if not relative.parts:
+            return REASON_RUNTIME_BINARY_MISSING
+
+        # Reject symlink ancestors as well as a symlink/non-regular leaf. This
+        # keeps a path lexically below the generated root from redirecting the
+        # final verification to another tree.
+        current = root
+        for part in relative.parts[:-1]:
+            current = current / part
+            entry = current.lstat()
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+                return REASON_RUNTIME_BINARY_MISSING
+        entry = binary.lstat()
+        if stat.S_ISLNK(entry.st_mode) or not stat.S_ISREG(entry.st_mode):
+            return REASON_RUNTIME_BINARY_MISSING
+        resolved_root = root.resolve(strict=True)
+        resolved_binary = binary.resolve(strict=True)
+        resolved_binary.relative_to(resolved_root)
+    except (OSError, ValueError):
+        return REASON_RUNTIME_BINARY_MISSING
+    try:
+        digest, size = hash_regular_file(binary)
+    except (ArtifactEvidenceError, OSError, ValueError):
+        return REASON_RUNTIME_BINARY_MISMATCH
+
+    expected_member = relative.as_posix()
+    if (
+        binary.name != runtime_inventory.subject_basename
+        or expected_member != runtime_inventory.wheel_member
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    if digest != runtime_inventory.subject_sha256 or size != runtime_inventory.subject_size:
+        return REASON_RUNTIME_BINARY_MISMATCH
+    if (
+        digest != runtime_inventory.wheel_member_sha256
+        or size != runtime_inventory.wheel_member_size
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+
+    recorded_matches = tuple(
+        entry for entry in evidence.wheel_entries if entry.name == runtime_inventory.wheel_member
+    )
+    if len(recorded_matches) != 1:
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    recorded_member = recorded_matches[0]
+    if (
+        recorded_member.sha256 != runtime_inventory.wheel_member_sha256
+        or recorded_member.uncompressed_size != runtime_inventory.wheel_member_size
+    ):
+        return REASON_RUNTIME_WHEEL_MEMBER_MISMATCH
+    return None
+
+
+@dataclass(frozen=True)
+class PlannedExecutableBuildResult(ExecutableBuildResult):
+    """An executable result carrying its deterministic closure report."""
+
+    closure: NativeClosureReport | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the executable result with its closure report."""
+        data = super().to_dict()
+        data["closure"] = self.closure.to_dict() if self.closure is not None else None
+        return data
+
+
+def _generate_artifact_profiles(
+    fallback: str,
+    *,
+    native_extension: bool,
+    rust_importable: bool,
+) -> tuple[ArtifactProfile, ...]:
+    if not native_extension and not rust_importable:
+        return ()
+    target_triple = _required_host_target_triple()
+    profiles: list[ArtifactProfile] = []
+    if native_extension:
+        profiles.append(
+            host_extension_profile(
+                target_triple,
+                python_fallback_backend=fallback,
+            )
+        )
+    if rust_importable:
+        profiles.append(rust_crate_profile(target_triple))
+    return tuple(profiles)
+
+
+def _build_artifact_profiles(
+    fallback: str,
+    executable_fallback: FallbackStrategy,
+    *,
+    executable_entrypoint: str | None,
+    executable_backend: str,
+    native_extension: bool,
+    rust_importable: bool,
+) -> tuple[ArtifactProfile, ...]:
+    rust_executable = executable_entrypoint is not None and executable_backend == "rust"
+    if not native_extension and not rust_importable and not rust_executable:
+        return ()
+    target_triple = _required_host_target_triple()
+    profiles: list[ArtifactProfile] = []
+    if native_extension:
+        profiles.append(
+            host_extension_profile(
+                target_triple,
+                python_fallback_backend=fallback,
+            )
+        )
+    if rust_executable:
+        profiles.append(host_executable_profile(target_triple, fallback=executable_fallback))
+    if rust_importable:
+        profiles.append(rust_crate_profile(target_triple))
+    return tuple(profiles)
+
+
+def required_artifact_evidence_scope_is_valid(
+    *,
+    native_extension: bool,
+    fallback: str,
+    executable_entrypoint: str | None,
+    rust_importable: bool,
+) -> bool:
+    """Check the exact C6.3 artifact set without probing any toolchain."""
+    return (
+        native_extension
+        and fallback == "cpython"
+        and executable_entrypoint is None
+        and not rust_importable
+    )
 
 
 def build_hybrid_artifact(
@@ -258,8 +1170,15 @@ def build_hybrid_artifact(
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     executable_analysis: ProjectAnalysis | None = None,
     executable_python: str | None = None,
-    executable_hybrid_runtime: str = "source",
+    executable_hybrid_runtime: str | None = None,
+    executable_fallback: FallbackStrategy | str | None = None,
     toolchain: ToolchainConfig | None = None,
+    artifact_evidence_policy: str = ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
+    artifact_distribution_policy: str = "disabled",
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
+    *,
+    executable_standalone: StandalonePluginContext | None = None,
+    standalone_contexts: dict[ArtifactKind, StandalonePluginContext] | None = None,
 ) -> BuildResult:
     """Build the hybrid native+fallback artifact for a project.
 
@@ -267,19 +1186,146 @@ def build_hybrid_artifact(
     backend uses; it is analyzed in delegate mode so the entrypoint can call
     project fallback functions through the external CPython dispatcher. It
     defaults to ``analysis`` for the other backends, which do not delegate.
+
+    ``executable_standalone`` / ``standalone_contexts`` allow the CLI preflight
+    to resolve plugin API 1.4 capability once and reuse the same immutable
+    context for closure, codegen, dependency selection, and reports.
     """
     if executable_analysis is None:
         executable_analysis = analysis
+    blocked_plan = analysis.external_source_plan or executable_analysis.external_source_plan
+    strict_distribution = artifact_distribution_policy == FULL_C6_DISTRIBUTION_POLICY
+    if artifact_distribution_policy not in {"disabled", FULL_C6_DISTRIBUTION_POLICY}:
+        raise ValueError("artifact_distribution_policy must be disabled or strict-evidence")
+    if strict_distribution:
+        if full_c6_external_context is None:
+            raise FullC6PipelineError(
+                "RXT060 strict evidence distribution policy lacks a same-transaction strict C5.2 context"
+            )
+        if blocked_plan is None:
+            raise FullC6PipelineError(
+                "RXT060 strict evidence distribution policy lacks an exact external source plan"
+            )
+        validate_full_c6_external_context(full_c6_external_context, analysis)
+        strict_scope_failures = (
+            fallback != "cpython"
+            or build_tool != "cargo"
+            or artifact_evidence_policy != ARTIFACT_EVIDENCE_POLICY_REQUIRED
+            or executable_entrypoint is not None
+            or rust_importable
+            or embedding_enabled
+        )
+        if strict_scope_failures:
+            raise FullC6PipelineError(
+                "RXT060 strict evidence distribution policy is frozen to Cargo/PyO3 host-extension + "
+                "CPython fallback, required evidence, no executable/importable crate, "
+                "and no helper embedding"
+            )
+    elif full_c6_external_context is not None:
+        raise FullC6PipelineError(
+            "RXT060 strict C5.2 context cannot enter an ordinary or preview build"
+        )
+    if blocked_plan is not None and not strict_distribution:
+        # External-source work must stop before target discovery, generated-
+        # source cleanup, Cargo, Python fallback, wheel, executable, or
+        # rust-crate work.  C6.1 verifies a project SourceLock; a verified lock
+        # still cannot claim remaining C5.2 linkage/codegen/packaging.
+        if blocked_plan.authorization_verified:
+            raise ExternalSourceC5NotImplementedError(blocked_plan)
+        raise ExternalSourceBuildBlockedError(blocked_plan)
+    if artifact_evidence_policy not in {
+        ARTIFACT_EVIDENCE_POLICY_BEST_EFFORT,
+        ARTIFACT_EVIDENCE_POLICY_REQUIRED,
+    }:
+        raise ValueError("artifact_evidence_policy must be best-effort or required")
+    ordinary_required_evidence = (
+        artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED
+        and not strict_distribution
+    )
+    if ordinary_required_evidence and not (
+        required_artifact_evidence_scope_is_valid(
+            native_extension=analysis.requires_native_build(),
+            fallback=fallback,
+            executable_entrypoint=executable_entrypoint,
+            rust_importable=rust_importable,
+        )
+    ):
+        raise ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope())
+    fallback_strategy = resolve_executable_fallback(executable_fallback, executable_hybrid_runtime)
     toolchain = toolchain or ToolchainConfig()
     target_plan = target_plan or default_target_plan()
+    if strict_distribution and (
+        target_plan.spec.language != "rust" or target_plan.plugins.active
+    ):
+        raise FullC6PipelineError(
+            "RXT060 strict evidence distribution policy is frozen to Rust with no active plugins"
+        )
     layout = ArtifactLayout(project_root)
-    plan = create_build_plan(analysis, fallback)
+    artifact_profiles = _build_artifact_profiles(
+        fallback,
+        fallback_strategy,
+        executable_entrypoint=executable_entrypoint,
+        executable_backend=executable_backend,
+        native_extension=analysis.requires_native_build(),
+        rust_importable=rust_importable and analysis.requires_native_build(),
+    )
+    plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
+    if ordinary_required_evidence and not (
+        len(plan.artifact_profiles) == 1 and is_in_scope_host_extension_cpython(plan)
+    ):
+        raise ArtifactEvidenceRequiredError(ArtifactEvidenceGate.out_of_scope())
+    # Resolve each exact ArtifactProfile's capability at most once for this command.
+    contexts = _ensure_standalone_contexts(
+        plan,
+        target_plan,
+        seed=standalone_contexts,
+        executable_analysis=executable_analysis,
+        executable_standalone=executable_standalone,
+        include_executable=(executable_backend == "rust" and executable_entrypoint is not None),
+    )
+    closure_report: NativeClosureReport | None = None
+    resolved_executable_standalone = contexts.get(ArtifactKind.HOST_EXECUTABLE)
+    if executable_backend == "rust" and executable_entrypoint is not None:
+        executable_profile = next(
+            profile for profile in artifact_profiles if profile.kind is ArtifactKind.HOST_EXECUTABLE
+        )
+        assert resolved_executable_standalone is not None
+        closure_report = executable_entry_graph(
+            executable_analysis,
+            _entrypoint_to_qualname(executable_entrypoint),
+            fallback_strategy,
+            profile=executable_profile,
+            plugin_capabilities=resolved_executable_standalone.capabilities,
+        )
+    if closure_report is not None and closure_requires_prebuild_failure(closure_report):
+        assert executable_entrypoint is not None
+        return _failed_closure_build_result(
+            layout,
+            analysis,
+            plan,
+            fallback,
+            boundary_fallback_threshold,
+            target_plan,
+            closure_report,
+            executable_entrypoint,
+            executable_name,
+            rust_crate_name,
+            standalone_contexts=contexts,
+        )
     _reset_generated_dir(layout.build_dir)
     _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    native_build, plugin_crate_dependencies = _generate_and_build_native(
+    # C6.2: only capture prebuild evidence snapshots for in-scope
+    # host-extension+cpython builds. Out-of-scope paths skip the work entirely.
+    evidence_snapshot: EvidenceInputSnapshot | None = None
+    if is_in_scope_host_extension_cpython(plan):
+        evidence_snapshot = capture_project_source_snapshot(project_root=project_root, plan=plan)
+        evidence_snapshot = capture_generated_python_inputs(
+            evidence_snapshot, project_root=project_root, layout=layout
+        )
+    native_build, plugin_crate_dependencies, updated_snapshot = _generate_and_build_native(
         plan,
         layout,
         build_tool,
@@ -287,7 +1333,16 @@ def build_hybrid_artifact(
         embedding_enabled=embedding_enabled,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
+        evidence_snapshot=evidence_snapshot,
+        project_root=project_root,
+        full_c6_external_context=full_c6_external_context,
     )
+    if updated_snapshot is not None:
+        evidence_snapshot = updated_snapshot
+    if evidence_snapshot is not None and native_build.status == "built":
+        evidence_snapshot = capture_cargo_lock_input(
+            evidence_snapshot, project_root=project_root, layout=layout
+        )
     rust_crate_build = _generate_and_build_rust_crate(
         plan,
         layout,
@@ -296,12 +1351,182 @@ def build_hybrid_artifact(
         crate_name=rust_crate_name,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
+        standalone_context=contexts.get(ArtifactKind.RUST_CRATE),
     )
     _write_build_artifact(layout)
     fallback_build = _build_fallback_backend(
         fallback, layout, build_timeout=build_timeout_seconds, toolchain=toolchain
     )
-    wheel_build = _build_wheel_artifact(project_root, layout, native_build, fallback_build)
+    required_outputs: _RequiredEvidenceOutputs | None = None
+    expected_wheel: Path | None = None
+    strict_candidate_dir: Path | None = None
+    if strict_distribution:
+        # A C5.2 candidate is build input for the separate two-build Full C6
+        # executor, not a distributable artifact.  Keep it under the private
+        # build tree; only the sealed publication adapter may create dist output.
+        strict_candidate_dir = layout.build_dir / "full-c6-candidate"
+        strict_candidate_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if ordinary_required_evidence:
+        expected_wheel = artifact_wheel_path(project_root, layout.build_python_dir, layout.dist_dir)
+        try:
+            required_outputs = _RequiredEvidenceOutputs.prepare(layout, expected_wheel)
+        except (ArtifactEvidenceError, OSError):
+            failed_evidence = ArtifactEvidence.unavailable(
+                reason=REASON_SIDECAR_WRITE_FAILED,
+                target_triple=plan.artifact_profiles[0].target_triple,
+            )
+            gate = ArtifactEvidenceGate.from_evidence(failed_evidence)
+            raise ArtifactEvidenceRequiredError(gate) from None
+    try:
+        wheel_build = _build_wheel_artifact(
+            project_root,
+            layout,
+            native_build,
+            fallback_build,
+            output_dir=(
+                required_outputs.backup_dir
+                if required_outputs is not None
+                else strict_candidate_dir
+            ),
+            external_contract=(
+                full_c6_external_context.wheel_contract
+                if full_c6_external_context is not None
+                else None
+            ),
+        )
+        publication_failure_reason: str | None = None
+        if required_outputs is not None:
+            assert expected_wheel is not None
+            if wheel_build.status == "built" and wheel_build.path is not None:
+                staged_wheel = Path(wheel_build.path)
+                try:
+                    required_outputs.publish_wheel(staged_wheel)
+                except (ArtifactEvidenceError, OSError):
+                    publication_failure_reason = REASON_WHEEL_MUTATED
+                else:
+                    wheel_build = WheelBuildResult(
+                        status=wheel_build.status,
+                        path=str(expected_wheel),
+                        message=wheel_build.message,
+                    )
+        # C6.2: after the ordinary host-extension+cpython wheel is finalized, emit
+        # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
+        # Unavailability never raises into the ordinary build success path.
+        artifact_evidence: ArtifactEvidence | None
+        if strict_distribution:
+            # C6.2-C6.15 preview records are intentionally not promoted or
+            # interpreted inside the complete Full C6 path.
+            artifact_evidence = None
+        elif publication_failure_reason is not None:
+            artifact_evidence = ArtifactEvidence.unavailable(
+                reason=publication_failure_reason,
+                target_triple=plan.artifact_profiles[0].target_triple,
+            )
+        else:
+            artifact_evidence = emit_host_extension_wheel_evidence(
+                project_root=project_root,
+                layout=layout,
+                plan=plan,
+                wheel_build=wheel_build,
+                native_build=native_build,
+                input_snapshot=evidence_snapshot,
+                embedding_enabled=embedding_enabled,
+                timeout=build_timeout_seconds,
+                toolchain=toolchain,
+                output_claim=(
+                    required_outputs.claim_many if required_outputs is not None else None
+                ),
+            )
+        artifact_evidence_gate: ArtifactEvidenceGate | None = None
+        if ordinary_required_evidence:
+            assert required_outputs is not None
+            assert expected_wheel is not None
+            if artifact_evidence is None:
+                artifact_evidence = ArtifactEvidence.unavailable(
+                    reason=REASON_EVIDENCE_INTERNAL,
+                    target_triple=plan.artifact_profiles[0].target_triple,
+                )
+            elif artifact_evidence.status == "preview-ready":
+                mismatch = _required_evidence_output_mismatch_reason(
+                    project_root=project_root,
+                    layout=layout,
+                    expected_wheel=expected_wheel,
+                    wheel_build=wheel_build,
+                    native_build=native_build,
+                    evidence=artifact_evidence,
+                )
+                if mismatch is not None:
+                    artifact_evidence = ArtifactEvidence.unavailable(
+                        reason=mismatch,
+                        target_triple=plan.artifact_profiles[0].target_triple,
+                    )
+            artifact_evidence_gate = ArtifactEvidenceGate.from_evidence(artifact_evidence)
+            if artifact_evidence_gate.status == "blocked":
+                rollback = required_outputs.rollback()
+                if rollback.complete:
+                    cleanup_message = (
+                        "the wheel and sidecars created by this run were removed and "
+                        "pre-existing outputs were restored."
+                    )
+                else:
+                    cleanup_message = (
+                        "output rollback was incomplete; files may remain and "
+                        "pre-existing outputs may require manual recovery."
+                    )
+                wheel_build = WheelBuildResult(
+                    status="failed",
+                    path=None,
+                    message=(
+                        "RXT060 Required artifact evidence was unavailable; " + cleanup_message
+                    ),
+                )
+            else:
+                try:
+                    required_outputs.commit()
+                except OSError:
+                    # A final output can still be replaced between the explicit
+                    # evidence revalidation above and transaction commit. Convert
+                    # that ownership failure into the required gate's fixed-reason
+                    # RXT060 path; rollback will remove only still-matching outputs
+                    # and preserve the concurrent replacement.
+                    artifact_evidence = ArtifactEvidence.unavailable(
+                        reason=required_outputs.claim_mismatch_reason(),
+                        target_triple=plan.artifact_profiles[0].target_triple,
+                    )
+                    artifact_evidence_gate = ArtifactEvidenceGate.from_evidence(artifact_evidence)
+                    rollback = required_outputs.rollback()
+                    if rollback.complete:
+                        cleanup_message = (
+                            "the wheel and sidecars created by this run were removed and "
+                            "pre-existing outputs were restored."
+                        )
+                    else:
+                        cleanup_message = (
+                            "output rollback was incomplete; files may remain and "
+                            "pre-existing outputs may require manual recovery."
+                        )
+                    wheel_build = WheelBuildResult(
+                        status="failed",
+                        path=None,
+                        message=(
+                            "RXT060 Required artifact evidence was unavailable; " + cleanup_message
+                        ),
+                    )
+    except BaseException as error:
+        if required_outputs is not None and required_outputs._active:
+            rollback = required_outputs.rollback()
+            if not rollback.complete:
+                raise OSError("required evidence output rollback was incomplete") from error
+        raise
+    # C6.5 is derived only after best-effort evidence has reached its final
+    # shape or required mode has completed revalidation and its output
+    # transaction. It cannot affect build success or gate semantics.
+    artifact_distribution_authorization = (
+        _artifact_authorization_assessment_no_throw(artifact_evidence)
+        if artifact_evidence is not None
+        else None
+    )
+
     executable_build = _build_executable_artifact(
         layout,
         native_build,
@@ -313,10 +1538,12 @@ def build_hybrid_artifact(
         plan,
         executable_analysis,
         executable_python,
-        executable_hybrid_runtime,
+        fallback_strategy,
         target_plan,
+        closure_report=closure_report,
         build_timeout=build_timeout_seconds,
         toolchain=toolchain,
+        executable_standalone=resolved_executable_standalone,
     )
 
     result = BuildResult(
@@ -333,16 +1560,89 @@ def build_hybrid_artifact(
         executable_build=executable_build,
         rust_crate_build=rust_crate_build,
         plugin_crate_dependencies=plugin_crate_dependencies,
+        standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
+        artifact_evidence=artifact_evidence,
+        artifact_evidence_gate=artifact_evidence_gate,
+        artifact_distribution_authorization=artifact_distribution_authorization,
     )
+    _write_build_result(layout, result)
+    if artifact_evidence_gate is not None and artifact_evidence_gate.status == "blocked":
+        raise ArtifactEvidenceRequiredError(artifact_evidence_gate, result=result)
+    return result
+
+
+def _failed_closure_build_result(
+    layout: ArtifactLayout,
+    analysis: ProjectAnalysis,
+    plan: BuildPlan,
+    fallback: str,
+    boundary_fallback_threshold: int,
+    target_plan: TargetPlan,
+    closure: NativeClosureReport,
+    entrypoint: str,
+    executable_name: str | None,
+    rust_crate_name: str,
+    *,
+    standalone_contexts: dict[ArtifactKind, StandalonePluginContext] | None = None,
+) -> BuildResult:
+    """Return an inspectable failure before any source, Cargo, or sidecar work."""
+    _cleanup_failed_prebuild_outputs(
+        layout,
+        target_plan,
+        entrypoint,
+        executable_name,
+        rust_crate_name,
+    )
+    executable_build = _closure_failure(entrypoint, closure)
+    cause = (
+        "Unavailable executable entry graph"
+        if closure.status is ClosureStatus.UNAVAILABLE
+        else "Open fallback=error executable closure"
+    )
+    result = BuildResult(
+        fallback=fallback,
+        boundary_fallback_threshold=boundary_fallback_threshold,
+        target_plan=target_plan,
+        layout=layout,
+        plan=plan,
+        accepted_native_count=plan.native.accepted_count,
+        rejected_native_count=plan.native.rejected_count,
+        native_build=skipped_native_build(f"{cause} prevented native build work."),
+        fallback_build=FallbackBuildResult(
+            status="skipped",
+            backend=fallback,
+            message=f"{cause} prevented fallback packaging.",
+        ),
+        wheel_build=skipped_wheel(f"{cause} prevented wheel packaging."),
+        executable_build=executable_build,
+        rust_crate_build=skipped_rust_crate_build(f"{cause} prevented Rust crate work."),
+        standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(
+            standalone_contexts or {}
+        ),
+    )
+    _reset_report_files(layout.reports_dir)
+    _write_check_report(layout, analysis)
+    _write_build_result(layout, result)
+    return result
+
+
+def _write_build_result(layout: ArtifactLayout, result: BuildResult) -> None:
+    """Serialize one aggregate build result deterministically."""
+    status = _build_status(
+        result.native_build,
+        result.fallback_build,
+        result.executable_build,
+        result.rust_crate_build,
+    )
+    if (
+        result.artifact_evidence_gate is not None
+        and result.artifact_evidence_gate.status == "blocked"
+    ):
+        status = "artifact-evidence-required-failed"
     (layout.reports_dir / "build.json").write_text(
         json.dumps(
             {
-                "status": _build_status(
-                    native_build,
-                    fallback_build,
-                    executable_build,
-                    rust_crate_build,
-                ),
+                "status": status,
                 **result.to_dict(),
             },
             indent=2,
@@ -351,7 +1651,6 @@ def build_hybrid_artifact(
         + "\n",
         encoding="utf-8",
     )
-    return result
 
 
 def generate_source_artifact(
@@ -363,11 +1662,22 @@ def generate_source_artifact(
     rust_importable: bool = False,
     rust_crate_name: str = "rextio_generated_rust",
     embedding_enabled: bool = False,
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
 ) -> GenerateResult:
     """Generate native and Python source artifacts without compiling."""
+    if full_c6_external_context is not None:
+        validate_full_c6_external_context(full_c6_external_context, analysis)
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
-    plan = create_build_plan(analysis, fallback)
+    artifact_profiles = _generate_artifact_profiles(
+        fallback,
+        native_extension=analysis.requires_native_build(),
+        rust_importable=rust_importable and analysis.requires_native_build(),
+    )
+    plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
+    # Resolve once per exact profile for this generate command; reuse for
+    # crate codegen, dependency selection, and JSON serialization.
+    contexts = _ensure_standalone_contexts(plan, target_plan, seed=None)
     _prepare_generated_sources(layout, target_plan)
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
@@ -377,6 +1687,7 @@ def generate_source_artifact(
         layout,
         target_plan,
         embedding_enabled=embedding_enabled,
+        full_c6_external_context=full_c6_external_context,
     )
     rust_crate_source = _generate_rust_crate_source(
         plan,
@@ -384,6 +1695,7 @@ def generate_source_artifact(
         target_plan,
         enabled=rust_importable,
         crate_name=rust_crate_name,
+        standalone_context=contexts.get(ArtifactKind.RUST_CRATE),
     )
 
     result = GenerateResult(
@@ -397,6 +1709,12 @@ def generate_source_artifact(
         native_source=native_source,
         rust_crate_source=rust_crate_source,
         plugin_crate_dependencies=plugin_crate_dependencies,
+        standalone_plugin_capabilities=_standalone_capability_reports_from_contexts(contexts),
+        external_source_plan=(
+            analysis.external_source_plan.to_dict()
+            if analysis.external_source_plan is not None
+            else None
+        ),
     )
     (layout.reports_dir / "generate.json").write_text(
         json.dumps(
@@ -435,6 +1753,7 @@ def _prepare_generated_sources(layout: ArtifactLayout, target_plan: TargetPlan) 
 
 
 def _write_check_report(layout: ArtifactLayout, analysis: ProjectAnalysis) -> None:
+    ensure_host_source_plan(analysis)
     (layout.reports_dir / "check.json").write_text(
         json.dumps(analysis.to_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -499,38 +1818,66 @@ def _generate_and_build_native(
     embedding_enabled: bool,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
-) -> tuple[NativeBuildResult, tuple[dict[str, object], ...]]:
+    evidence_snapshot: EvidenceInputSnapshot | None = None,
+    project_root: Path | None = None,
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
+) -> tuple[NativeBuildResult, tuple[dict[str, object], ...], EvidenceInputSnapshot | None]:
     if not plan.native.has_native_artifacts:
-        return skipped_native_build("No accepted native functions were found."), ()
+        return (
+            skipped_native_build("No accepted native functions were found."),
+            (),
+            evidence_snapshot,
+        )
     native_source, plugin_crate_dependencies = _generate_native_source(
         plan,
         layout,
         target_plan,
         embedding_enabled=embedding_enabled,
+        full_c6_external_context=full_c6_external_context,
     )
     if native_source.status == "failed":
-        return NativeBuildResult(
-            status="failed",
-            tool="codegen",
-            message=(
-                "RXT050 Codegen failure while generating native target code. "
-                f"Cause: {native_source.message}. Fallback Python files were still generated."
+        return (
+            NativeBuildResult(
+                status="failed",
+                tool="codegen",
+                message=(
+                    "RXT050 Codegen failure while generating native target code. "
+                    f"Cause: {native_source.message}. Fallback Python files were still generated."
+                ),
             ),
-        ), ()
+            (),
+            evidence_snapshot,
+        )
+
+    # Capture generated Rust inputs after write and before cargo compilation so
+    # later evidence can prove the exact build inputs (or mark unavailable).
+    if (
+        evidence_snapshot is not None
+        and project_root is not None
+        and native_source.status == "generated"
+    ):
+        evidence_snapshot = capture_generated_rust_inputs(
+            evidence_snapshot, project_root=project_root, layout=layout
+        )
 
     if target_plan.spec.language == "rust":
         return (
             _build_native_with_selected_tool(layout, build_tool, build_timeout, toolchain),
             plugin_crate_dependencies,
+            evidence_snapshot,
         )
-    return NativeBuildResult(
-        status="failed",
-        tool=target_plan.spec.language,
-        message=(
-            "RXT060 Build failed while compiling generated native module. "
-            f"Cause: target language {target_plan.spec.language!r} is not implemented."
+    return (
+        NativeBuildResult(
+            status="failed",
+            tool=target_plan.spec.language,
+            message=(
+                "RXT060 Build failed while compiling generated native module. "
+                f"Cause: target language {target_plan.spec.language!r} is not implemented."
+            ),
         ),
-    ), ()
+        (),
+        evidence_snapshot,
+    )
 
 
 def _generate_and_build_rust_crate(
@@ -542,6 +1889,7 @@ def _generate_and_build_rust_crate(
     crate_name: str,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
+    standalone_context: StandalonePluginContext | None = None,
 ) -> RustCrateBuildResult:
     if not enabled:
         return skipped_rust_crate_build("Rust-importable crate was not requested.")
@@ -551,6 +1899,7 @@ def _generate_and_build_rust_crate(
         target_plan,
         enabled=True,
         crate_name=crate_name,
+        standalone_context=standalone_context,
     )
     if source.status != "generated":
         if source.status == "skipped":
@@ -590,6 +1939,7 @@ def _generate_native_source(
     target_plan: TargetPlan,
     *,
     embedding_enabled: bool = False,
+    full_c6_external_context: FullC6ExternalBuildContext | None = None,
 ) -> tuple[NativeSourceResult, tuple[dict[str, object], ...]]:
     """Generate the PyO3 extension source; return (result, plugin crate deps).
 
@@ -613,13 +1963,25 @@ def _generate_native_source(
     plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(target_plan)
     try:
         module_ir = lower_project(
-            plan.analysis, include_embedding=embedding_enabled, plugin_types=plugin_types
+            plan.analysis,
+            include_embedding=embedding_enabled,
+            plugin_types=plugin_types,
+            external_native_registry=(
+                full_c6_external_context.registry
+                if full_c6_external_context is not None
+                else None
+            ),
         )
         rust_source = generate_rust_module(
             module_ir,
             boundary_call_return_types=_boundary_call_return_types(plan.analysis),
             plugin_providers=plugin_providers,
             plugin_types_by_key=plugin_types_by_key,
+            external_runtime_guard=(
+                full_c6_external_context.runtime_guard
+                if full_c6_external_context is not None
+                else None
+            ),
         )
     except (LoweringError, RustCodegenError) as exc:
         return NativeSourceResult(
@@ -662,6 +2024,109 @@ def _generate_native_source(
     ), plugin_crate_dependencies
 
 
+def _analysis_functions(analysis: ProjectAnalysis) -> list[object]:
+    return [function for module in analysis.modules for function in module.functions]
+
+
+def _standalone_context_for_kind(
+    plan: BuildPlan,
+    target_plan: TargetPlan,
+    kind: ArtifactKind,
+    *,
+    functions: list[object] | None = None,
+) -> StandalonePluginContext | None:
+    """Resolve plugin API 1.4 capability for one planned artifact profile kind."""
+    profile = next((item for item in plan.artifact_profiles if item.kind is kind), None)
+    if profile is None:
+        return None
+    return build_standalone_plugin_context(
+        profile=profile,
+        registry=target_plan.plugins,
+        functions=functions if functions is not None else _analysis_functions(plan.analysis),
+    )
+
+
+def _ensure_standalone_contexts(
+    plan: BuildPlan,
+    target_plan: TargetPlan,
+    *,
+    seed: dict[ArtifactKind, StandalonePluginContext] | None,
+    executable_analysis: ProjectAnalysis | None = None,
+    executable_standalone: StandalonePluginContext | None = None,
+    include_executable: bool = False,
+) -> dict[ArtifactKind, StandalonePluginContext]:
+    """Resolve each planned standalone profile at most once; reuse seed entries."""
+    contexts: dict[ArtifactKind, StandalonePluginContext] = dict(seed or {})
+    profiles_by_kind = {profile.kind: profile for profile in plan.artifact_profiles}
+
+    def validate_context(kind: ArtifactKind, context: StandalonePluginContext) -> None:
+        expected = profiles_by_kind.get(kind)
+        if expected is None:
+            raise PluginError(
+                f"pre-resolved standalone context for {kind.value!r} has no "
+                "matching planned artifact profile"
+            )
+        if context.profile != expected:
+            raise PluginError(
+                f"pre-resolved standalone context profile mismatch for {kind.value!r}: "
+                f"expected {expected.to_dict()!r}, got {context.profile.to_dict()!r}"
+            )
+
+    for kind, context in contexts.items():
+        validate_context(kind, context)
+    if ArtifactKind.RUST_CRATE not in contexts:
+        crate_ctx = _standalone_context_for_kind(plan, target_plan, ArtifactKind.RUST_CRATE)
+        if crate_ctx is not None:
+            contexts[ArtifactKind.RUST_CRATE] = crate_ctx
+    if include_executable and ArtifactKind.HOST_EXECUTABLE not in contexts:
+        if executable_standalone is not None:
+            validate_context(ArtifactKind.HOST_EXECUTABLE, executable_standalone)
+            contexts[ArtifactKind.HOST_EXECUTABLE] = executable_standalone
+        else:
+            analysis = executable_analysis or plan.analysis
+            exec_ctx = _standalone_context_for_kind(
+                plan,
+                target_plan,
+                ArtifactKind.HOST_EXECUTABLE,
+                functions=_analysis_functions(analysis),
+            )
+            if exec_ctx is not None:
+                contexts[ArtifactKind.HOST_EXECUTABLE] = exec_ctx
+    return contexts
+
+
+def _standalone_capability_reports_from_contexts(
+    contexts: Mapping[ArtifactKind, StandalonePluginContext],
+) -> tuple[dict[str, object], ...]:
+    """Serialize pre-resolved contexts without re-invoking capability hooks."""
+    reports: list[dict[str, object]] = []
+    for kind in (ArtifactKind.RUST_CRATE, ArtifactKind.HOST_EXECUTABLE):
+        context = contexts.get(kind)
+        if context is not None:
+            reports.append(context.to_dict())
+    return tuple(reports)
+
+
+def _plugin_ids_for_emitted_functions(
+    *,
+    analysis: ProjectAnalysis,
+    emitted_qualnames: frozenset[str],
+    standalone: StandalonePluginContext,
+) -> set[str]:
+    """Collect plugin ids only from functions actually emitted after exclusion."""
+    used: set[str] = set()
+    for function in analysis.accepted_native_functions:
+        if function.qualname not in emitted_qualnames:
+            continue
+        if not standalone.is_capable(function.qualname):
+            continue
+        for claim in function.plugin_claims:
+            used.add(claim.plugin_id)
+        for key in analysis_function_plugin_type_keys(function):
+            used.add(key.split("/", 1)[0])
+    return used
+
+
 def _generate_rust_crate_source(
     plan: BuildPlan,
     layout: ArtifactLayout,
@@ -669,6 +2134,7 @@ def _generate_rust_crate_source(
     *,
     enabled: bool,
     crate_name: str,
+    standalone_context: StandalonePluginContext | None = None,
 ) -> NativeSourceResult:
     if not enabled:
         return NativeSourceResult(
@@ -690,20 +2156,41 @@ def _generate_rust_crate_source(
         )
     try:
         # Include embedded helpers: an exported native function may call one, and
-        # the crate must carry the callee it references. Plugin types are passed
-        # so plugin-typed signatures lower; plugin-lowered functions are then
-        # excluded from the crate (they have no pure-Rust form), so the crate
-        # needs no providers and no cargo dependency injection.
-        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(target_plan)
+        # the crate must carry the callee it references. Plugin types + providers
+        # are passed so plugin API 1.4 standalone-capable functions can lower
+        # with native Rust types only. Legacy (no capability) plugin functions
+        # remain excluded transitively.
+        plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(target_plan)
+        standalone = standalone_context
+        if standalone is None:
+            standalone = _standalone_context_for_kind(plan, target_plan, ArtifactKind.RUST_CRATE)
         module_ir = lower_project(plan.analysis, include_embedding=True, plugin_types=plugin_types)
-        rust_source = generate_rust_crate_module(module_ir)
-    except (LoweringError, RustCodegenError) as exc:
+        rust_source = generate_rust_crate_module(
+            module_ir,
+            plugin_providers=plugin_providers,
+            plugin_types_by_key=plugin_types_by_key,
+            standalone=standalone,
+        )
+        extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+        if standalone is not None:
+            emitted = crate_emitted_qualnames(module_ir, standalone=standalone)
+            used_plugin_ids = _plugin_ids_for_emitted_functions(
+                analysis=plan.analysis,
+                emitted_qualnames=emitted,
+                standalone=standalone,
+            )
+            extra_dependencies = profile_crate_dependencies(
+                standalone.capabilities, used_plugin_ids
+            )
+    except (LoweringError, RustCodegenError, PluginError) as exc:
         return NativeSourceResult(
             status="failed",
             message=str(exc),
         )
 
-    _write_rust_crate_project(layout, rust_source, crate_name)
+    _write_rust_crate_project(
+        layout, rust_source, crate_name, extra_dependencies=extra_dependencies
+    )
     return NativeSourceResult(
         status="generated",
         message="Generated Rust-importable crate source for direct native functions.",
@@ -743,6 +2230,9 @@ def _build_wheel_artifact(
     layout: ArtifactLayout,
     native_build: NativeBuildResult,
     fallback_build: FallbackBuildResult,
+    *,
+    output_dir: Path | None = None,
+    external_contract: ExternalWheelContract | None = None,
 ) -> WheelBuildResult:
     if fallback_build.status != "built":
         return skipped_wheel("Fallback packaging failed, so no wheel was generated.")
@@ -750,7 +2240,12 @@ def _build_wheel_artifact(
     # tree still works through the Python fallback, so produce a fallback-only
     # (pure-Python, py3-none-any) wheel instead of skipping. The wheel tag
     # reflects the absence of the native extension automatically.
-    return build_artifact_wheel(project_root, layout.build_python_dir, layout.dist_dir)
+    return build_artifact_wheel(
+        project_root,
+        layout.build_python_dir,
+        output_dir if output_dir is not None else layout.dist_dir,
+        external_contract=external_contract,
+    )
 
 
 def _build_executable_artifact(
@@ -764,11 +2259,13 @@ def _build_executable_artifact(
     plan: BuildPlan,
     executable_analysis: ProjectAnalysis,
     executable_python: str | None,
-    executable_hybrid_runtime: str,
+    executable_fallback: FallbackStrategy,
     target_plan: TargetPlan,
     *,
+    closure_report: NativeClosureReport | None = None,
     build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     toolchain: ToolchainConfig | None = None,
+    executable_standalone: StandalonePluginContext | None = None,
 ) -> ExecutableBuildResult:
     if entrypoint is None:
         return skipped_executable("No executable entrypoint was requested.")
@@ -782,10 +2279,12 @@ def _build_executable_artifact(
             entrypoint,
             executable_name,
             executable_python,
-            executable_hybrid_runtime,
+            executable_fallback,
             target_plan,
+            closure_report=closure_report,
             build_timeout=build_timeout,
             toolchain=toolchain,
+            executable_standalone=executable_standalone,
         )
     if fallback_build.status != "built":
         return skipped_executable("Fallback packaging failed, so no executable was generated.")
@@ -874,73 +2373,46 @@ def _entrypoint_reachable_native_graph(
     analysis: ProjectAnalysis,
     entry_qualname: str,
 ) -> tuple[set[str], dict[str, str]]:
-    """Return direct-native functions and delegated callees reachable from entry."""
-    by_qualname = {
-        function.qualname: function for module in analysis.modules for function in module.functions
-    }
-    modules_by_name = {module.module_name: module for module in analysis.modules}
-    entry = by_qualname.get(entry_qualname)
-    if (
-        entry is None
-        or not entry.accepted
-        or entry.native_runtime_semantics
-        or entry.is_embedding_candidate
-    ):
-        return set(), {}
-
-    resolver = FunctionResolver(analysis)
-    reachable: set[str] = set()
-    delegated: dict[str, str] = {}
-    stack = [entry]
-    while stack:
-        function = stack.pop()
-        if function.qualname in reachable:
-            continue
-        reachable.add(function.qualname)
-        module = modules_by_name.get(function.module_name)
-        if module is None:
-            continue
-        for call in function.calls:
-            resolved = resolver.resolve(module, call.target).function
-            if resolved is None:
-                continue
-            if resolved.qualname in function.delegated_call_targets:
-                return_type = _normalized_function_return_type(resolved)
-                if return_type is not None:
-                    delegated[resolved.qualname] = return_type
-                continue
-            if resolved.is_embedding_candidate:
-                # An embedded helper is a plain crate function the caller invokes
-                # directly; keep it in the reachable set so the IR filter emits it.
-                # Its candidacy shape (a single scalar expression) has no calls of
-                # its own, so it is a leaf.
-                reachable.add(resolved.qualname)
-                continue
-            if resolved.accepted and not resolved.native_runtime_semantics:
-                stack.append(resolved)
-    return reachable, delegated
+    """Compatibility tuple derived from the reusable executable closure report."""
+    closure = executable_entry_graph(analysis, entry_qualname)
+    return set(closure.reachable_native_functions), closure.delegated_return_types
 
 
-def _normalized_function_return_type(function: FunctionAnalysis) -> str | None:
-    return_type = (
-        function.signature_return_type
-        or function.inferred_return_type
-        or function.annotated_return_type
-    )
-    return normalize_type_name(return_type)
-
-
-def _filter_module_ir(module_ir: ModuleIR, reachable_qualnames: set[str]) -> ModuleIR:
-    """Keep only entry-reachable functions when generating a Rust executable."""
+def _filter_module_ir(
+    module_ir: ModuleIR,
+    reachable_qualnames: set[str],
+    initializer_qualnames: set[str] | None = None,
+) -> ModuleIR:
+    """Keep entry-reachable functions and explicitly planned initializers."""
     if not reachable_qualnames:
         # An empty set means the entry itself was not an accepted direct-native
         # function. Pass the full IR through so `_resolve_main_entry` can name the
         # REAL problem (missing entry / RXT080 shim / embedding) - filtering everything
         # out here would degrade those diagnostics to a generic "missing entry".
         return module_ir
-    return ModuleIR(
-        [function for function in module_ir.functions if function.qualname in reachable_qualnames]
-    )
+    retained = reachable_qualnames | (initializer_qualnames or set())
+    return ModuleIR([function for function in module_ir.functions if function.qualname in retained])
+
+
+def _executable_initializer_plans(
+    analysis: ProjectAnalysis,
+    closure: NativeClosureReport,
+) -> dict[str, ModuleInitIR]:
+    """Resolve closure-authorized initializer names back to their exact plans."""
+    if not closure.module_initializers:
+        return {}
+    source_plan = ensure_host_source_plan(analysis)
+    plans_by_module = {plan.module_name: plan for plan in source_plan.module_initializers}
+    resolved: dict[str, ModuleInitIR] = {}
+    for qualname in closure.module_initializers:
+        module_name, separator, _name = qualname.rpartition(".")
+        plan = plans_by_module.get(module_name)
+        if not separator or plan is None:
+            raise LoweringError(
+                f"closure-authorized module initializer has no source plan: {qualname}"
+            )
+        resolved[qualname] = plan
+    return resolved
 
 
 def _write_hybrid_runtime(
@@ -1085,11 +2557,13 @@ def _build_rust_executable_artifact(
     entrypoint: str,
     executable_name: str | None,
     executable_python: str | None,
-    hybrid_runtime: str,
+    executable_fallback: FallbackStrategy | str | None,
     target_plan: TargetPlan | None = None,
     *,
+    closure_report: NativeClosureReport | None = None,
     build_timeout: float,
     toolchain: ToolchainConfig | None = None,
+    executable_standalone: StandalonePluginContext | None = None,
 ) -> ExecutableBuildResult:
     """Generate and build the native Rust executable for the entrypoint.
 
@@ -1099,11 +2573,13 @@ def _build_rust_executable_artifact(
     binary as ``<binary>.runtime``; a binary with no delegated calls needs no
     Python runtime at all.
     """
+    strategy = strategy_from_compatibility_value(executable_fallback)
     configured_python, python_error = resolve_python(toolchain or ToolchainConfig())
     if (toolchain and toolchain.python is not None) and configured_python is None:
-        # Do not silently degrade to "python3": programmatic callers skip the
-        # CLI preflight, and a binary baked with the wrong interpreter fails
-        # far from the cause.
+        # Preserve the pre-closure toolchain gate for programmatic callers.  In
+        # particular, callers may intentionally omit analysis while checking a
+        # configured interpreter, and no source or entry graph is authoritative
+        # until that prerequisite resolves.
         return ExecutableBuildResult(
             status="failed",
             path=None,
@@ -1112,43 +2588,82 @@ def _build_rust_executable_artifact(
             backend="rust",
         )
     entry_qualname = _entrypoint_to_qualname(entrypoint)
-    reachable_qualnames, delegated_return_types = _entrypoint_reachable_native_graph(
+    resolved_target_plan = target_plan or default_target_plan()
+    # Reuse the pre-resolved capability context when provided (CLI preflight /
+    # orchestrator) so the capability hook runs at most once per profile.
+    standalone = executable_standalone
+    if standalone is None:
+        profile = (
+            closure_report.profile
+            if closure_report is not None
+            else host_executable_profile(_required_host_target_triple(), fallback=strategy)
+        )
+        standalone = build_standalone_plugin_context(
+            profile=profile,
+            registry=resolved_target_plan.plugins,
+            functions=_analysis_functions(analysis),
+        )
+    if closure_report is not None and closure_report.profile != standalone.profile:
+        raise PluginError(
+            "pre-resolved executable closure profile does not match the standalone "
+            "plugin capability profile"
+        )
+    closure = closure_report or executable_entry_graph(
         analysis,
         entry_qualname,
+        strategy,
+        profile=standalone.profile,
+        plugin_capabilities=standalone.capabilities,
     )
-    nuitka_dispatcher = hybrid_runtime == "nuitka"
+    if closure_requires_prebuild_failure(closure):
+        _cleanup_failed_executable_outputs(layout, entrypoint, executable_name)
+        return _closure_failure(entrypoint, closure)
+    reachable_qualnames = set(closure.reachable_native_functions)
+    delegated_return_types = closure.delegated_return_types
+    nuitka_dispatcher = strategy is FallbackStrategy.NUITKA_SIDECAR
     if nuitka_dispatcher and delegated_return_types:
         accelerated = _externally_accelerated_runtime_modules(analysis)
         if accelerated:
             names = ", ".join(accelerated)
-            return ExecutableBuildResult(
-                status="failed",
-                path=None,
-                message=(
-                    "RXT060 Executable build failed: project module(s) "
-                    f"{names} use an external accelerator (e.g. Numba), which a "
-                    "Nuitka-compiled dispatcher cannot serve (compiled functions "
-                    "expose no bytecode for the accelerator and the accelerator "
-                    "package is not bundled). Every project module ships in the "
-                    "hybrid runtime and Nuitka follows imports into it, so this "
-                    "applies even when no accelerated function is delegated "
-                    "directly. Use --hybrid-runtime=source, whose dispatcher "
-                    "runs real CPython with the project's environment."
+            return _with_closure(
+                ExecutableBuildResult(
+                    status="failed",
+                    path=None,
+                    message=(
+                        "RXT060 Executable build failed: project module(s) "
+                        f"{names} use an external accelerator (e.g. Numba), which a "
+                        "Nuitka-compiled dispatcher cannot serve (compiled functions "
+                        "expose no bytecode for the accelerator and the accelerator "
+                        "package is not bundled). Every project module ships in the "
+                        "hybrid runtime and Nuitka follows imports into it, so this "
+                        "applies even when no accelerated function is delegated "
+                        "directly. Use --executable-fallback=python-subprocess "
+                        "(legacy: --hybrid-runtime=source), whose dispatcher runs "
+                        "real CPython with the project's environment."
+                    ),
+                    entrypoint=entrypoint,
+                    backend="rust",
                 ),
-                entrypoint=entrypoint,
-                backend="rust",
+                closure,
             )
     try:
-        # Plugin types let plugin-typed signatures lower; plugin-lowered
-        # functions have no pure-Rust form, so the crate renderer's exclusion
-        # and mode guard keep them out of the binary (never delegated either:
-        # plugin types never cross the delegation wire).
-        plugin_types, _plugin_providers, _plugin_types_by_key = _plugin_lowering_inputs(
-            target_plan or default_target_plan()
+        # Plugin types + providers enable plugin API 1.4 standalone-capable
+        # functions in the binary (native Rust types only). Legacy plugin
+        # functions without matching capability remain excluded / blocked by
+        # the pre-Cargo closure.
+        plugin_types, plugin_providers, plugin_types_by_key = _plugin_lowering_inputs(
+            resolved_target_plan
         )
+        initializer_plans = _executable_initializer_plans(analysis, closure)
         module_ir = _filter_module_ir(
-            lower_project(analysis, include_embedding=True, plugin_types=plugin_types),
+            lower_project(
+                analysis,
+                include_embedding=True,
+                plugin_types=plugin_types,
+                executable_module_initializers=initializer_plans,
+            ),
             reachable_qualnames,
+            set(closure.module_initializers),
         )
         main_rs = generate_rust_main_binary(
             module_ir,
@@ -1156,14 +2671,32 @@ def _build_rust_executable_artifact(
             delegated_return_types,
             _delegation_python(executable_python, toolchain),
             nuitka_dispatcher=nuitka_dispatcher,
+            initializer_qualnames=closure.module_initializers,
+            plugin_providers=plugin_providers,
+            plugin_types_by_key=plugin_types_by_key,
+            standalone=standalone,
         )
-    except (RustCodegenError, LoweringError) as exc:
-        return ExecutableBuildResult(
-            status="failed",
-            path=None,
-            message=f"RXT060 Executable build failed while generating the Rust binary. Cause: {exc}",
-            entrypoint=entrypoint,
-            backend="rust",
+        # Only functions that survive transitive exclusion and remain reachable
+        # may inject profile-specific crate dependencies.
+        emitted = crate_emitted_qualnames(module_ir, standalone=standalone) & frozenset(
+            reachable_qualnames
+        )
+        used_plugin_ids = _plugin_ids_for_emitted_functions(
+            analysis=analysis,
+            emitted_qualnames=emitted,
+            standalone=standalone,
+        )
+        extra_dependencies = profile_crate_dependencies(standalone.capabilities, used_plugin_ids)
+    except (RustCodegenError, LoweringError, PluginError) as exc:
+        return _with_closure(
+            ExecutableBuildResult(
+                status="failed",
+                path=None,
+                message=f"RXT060 Executable build failed while generating the Rust binary. Cause: {exc}",
+                entrypoint=entrypoint,
+                backend="rust",
+            ),
+            closure,
         )
 
     binary_name = _rust_binary_name(executable_name, entry_qualname)
@@ -1173,7 +2706,12 @@ def _build_rust_executable_artifact(
         shutil.rmtree(crate_dir)
     layout.rust_bin_src_dir.mkdir(parents=True, exist_ok=True)
     (crate_dir / "Cargo.toml").write_text(
-        render_binary_cargo_toml("rextio_generated_bin", binary_name, hybrid=hybrid),
+        render_binary_cargo_toml(
+            "rextio_generated_bin",
+            binary_name,
+            hybrid=hybrid,
+            extra_dependencies=extra_dependencies,
+        ),
         encoding="utf-8",
     )
     (layout.rust_bin_src_dir / "main.rs").write_text(main_rs, encoding="utf-8")
@@ -1194,12 +2732,15 @@ def _build_rust_executable_artifact(
             _write_hybrid_runtime(runtime_dir, analysis, set(delegated_return_types))
         except RustCodegenError as exc:
             _cleanup_rust_executable_outputs(result.path, runtime_dir)
-            return ExecutableBuildResult(
-                status="failed",
-                path=None,
-                message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {exc}",
-                entrypoint=entrypoint,
-                backend="rust",
+            return _with_closure(
+                ExecutableBuildResult(
+                    status="failed",
+                    path=None,
+                    message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {exc}",
+                    entrypoint=entrypoint,
+                    backend="rust",
+                ),
+                closure,
             )
         if nuitka_dispatcher:
             error = _build_nuitka_dispatcher(
@@ -1207,14 +2748,131 @@ def _build_rust_executable_artifact(
             )
             if error is not None:
                 _cleanup_rust_executable_outputs(result.path, runtime_dir)
-                return ExecutableBuildResult(
-                    status="failed",
-                    path=None,
-                    message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {error}",
-                    entrypoint=entrypoint,
-                    backend="rust",
+                return _with_closure(
+                    ExecutableBuildResult(
+                        status="failed",
+                        path=None,
+                        message=f"RXT060 Executable build failed while packaging the dispatcher. Cause: {error}",
+                        entrypoint=entrypoint,
+                        backend="rust",
+                    ),
+                    closure,
                 )
-    return result
+    return _with_closure(result, closure)
+
+
+def _closure_failure(entrypoint: str, closure: NativeClosureReport) -> PlannedExecutableBuildResult:
+    if closure.status is ClosureStatus.UNAVAILABLE:
+        blocker_details = "; ".join(
+            f"{blocker.source} -> {blocker.callee}: {blocker.reason}"
+            if blocker.callee is not None
+            else f"{blocker.source}: {blocker.reason}"
+            for blocker in closure.blockers
+        )
+        reason = closure.entrypoint_reason or blocker_details or "entry graph is unavailable"
+        details = f" Blockers: {blocker_details}." if blocker_details else ""
+        if closure.entrypoint_reason is not None:
+            guidance = (
+                "Fallback sidecars cannot replace a non-native entrypoint. "
+                "Suggestion: use a module:function entrypoint accepted as "
+                "native-direct and run rextio check for promotion diagnostics."
+            )
+        else:
+            guidance = (
+                "Fallback sidecars cannot reproduce missing initialization inside "
+                "the native process. Suggestion: simplify the module to the documented "
+                "executable initializer slice, disable native_top_level, or keep a "
+                "Python-hosted executable backend."
+            )
+        return PlannedExecutableBuildResult(
+            status="failed",
+            path=None,
+            message=(
+                "RXT060 Executable build failed because the Rust entry graph is "
+                f"unavailable for {entrypoint!r}: {reason}.{details} "
+                f"{guidance}"
+            ),
+            entrypoint=entrypoint,
+            backend="rust",
+            closure=closure,
+        )
+
+    edges = "; ".join(
+        f"{edge.source} -> {edge.callee}: {edge.reason}" for edge in closure.fallback_edges
+    )
+    return PlannedExecutableBuildResult(
+        status="failed",
+        path=None,
+        message=(
+            "RXT060 Executable build failed because fallback='error' requires a "
+            f"closed native entry graph. Reachable fallback edges: {edges}. "
+            "Suggestion: make every listed callee direct-native, or select "
+            "--executable-fallback=python-subprocess or nuitka-sidecar."
+        ),
+        entrypoint=entrypoint,
+        backend="rust",
+        closure=closure,
+    )
+
+
+def _cleanup_failed_prebuild_outputs(
+    layout: ArtifactLayout,
+    target_plan: TargetPlan,
+    entrypoint: str,
+    executable_name: str | None,
+    rust_crate_name: str,
+) -> None:
+    """Invalidate only artifacts a successful run with this config would own."""
+    for path in (
+        layout.build_dir,
+        layout.target_dir(target_plan.spec.language),
+        layout.rust_crate_dir,
+        layout.rust_bin_dir,
+        layout.python_dir,
+    ):
+        _remove_path(path)
+    _cleanup_failed_executable_outputs(layout, entrypoint, executable_name)
+    _remove_path(layout.dist_dir / f"{rust_crate_name}-rust-crate")
+    distribution = re.sub(r"[^A-Za-z0-9.]+", "_", layout.root.name).strip("._").lower()
+    distribution = distribution or "rextio_hybrid_artifact"
+    if layout.dist_dir.exists():
+        for wheel in layout.dist_dir.glob(f"{distribution}-0.1.0-*.whl"):
+            _remove_path(wheel)
+
+
+def _cleanup_failed_executable_outputs(
+    layout: ArtifactLayout,
+    entrypoint: str,
+    executable_name: str | None,
+) -> None:
+    _remove_path(layout.rust_bin_dir)
+    binary_name = _rust_binary_name(executable_name, _entrypoint_to_qualname(entrypoint))
+    for suffix in ("", ".exe"):
+        _remove_path(layout.dist_dir / f"{binary_name}{suffix}")
+    _remove_path(layout.dist_dir / f"{binary_name}{RUNTIME_DIR_SUFFIX}")
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _with_closure(
+    result: ExecutableBuildResult, closure: NativeClosureReport
+) -> PlannedExecutableBuildResult:
+    return PlannedExecutableBuildResult(
+        status=result.status,
+        path=result.path,
+        message=result.message,
+        entrypoint=result.entrypoint,
+        backend=result.backend,
+        command=result.command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        closure=closure,
+    )
 
 
 def _cleanup_rust_executable_outputs(binary_path: str | None, runtime_dir: Path) -> None:
@@ -1305,10 +2963,16 @@ def _write_rust_project(
     (layout.rust_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
 
 
-def _write_rust_crate_project(layout: ArtifactLayout, rust_source: str, crate_name: str) -> None:
+def _write_rust_crate_project(
+    layout: ArtifactLayout,
+    rust_source: str,
+    crate_name: str,
+    *,
+    extra_dependencies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+) -> None:
     layout.rust_crate_src_dir.mkdir(parents=True, exist_ok=True)
     (layout.rust_crate_dir / "Cargo.toml").write_text(
-        render_importable_cargo_toml(crate_name),
+        render_importable_cargo_toml(crate_name, extra_dependencies=extra_dependencies),
         encoding="utf-8",
     )
     (layout.rust_crate_src_dir / "lib.rs").write_text(rust_source, encoding="utf-8")
