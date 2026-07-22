@@ -2325,13 +2325,24 @@ CycloneDX, and SLSA files are each limited to 16 MiB; final evidence and sealed
 authorization are each limited to 2 MiB; and the signature envelope is limited
 to 16 KiB.
 
-A mismatch, alternate destination or name, pre-commit input/staging mutation,
-or pre-existing/concurrent destination fails closed. All temporary host-output
+A mismatch, alternate destination or name, or pre-commit input/staging mutation
+fails closed. An existing or concurrently created destination also fails closed
+unless it meets the exact recovery exception below. All temporary host-output
 and private-quarantine cleanup completes before the final no-replace directory
-rename; that successful rename is the publication commit point. A later
-external mutation does not retroactively invalidate the completed transaction
-receipt, but the changed bytes no longer match the receipt or manifest and
-consumers must treat that mismatching bundle as invalid.
+rename; that successful rename is the publication commit point. If interruption
+occurs after that commit point but before the caller receives its receipt, a
+retry may return the same receipt only when the existing target is still an
+owner-private mode-`0700` directory containing the exact closed bundle
+independently derived for the current verified request. Rextio
+opens it without following links, validates the target, safely recaptures every
+original payload source and the trusted public-key path against their initial
+captures, and then repeats member-byte, directory-descriptor, and name-to-inode
+binding validation before accepting it. A different, mutated, unsafe, or
+concurrently replaced destination remains a fail-closed collision and is never
+overwritten. A later external mutation does not retroactively
+invalidate the completed transaction receipt, but the changed bytes no longer
+match the receipt or manifest and consumers must treat that mismatching bundle
+as invalid.
 
 #### Strict lifecycle report shapes
 
@@ -2355,10 +2366,22 @@ serialized.
 
 A post-analysis lifecycle failure writes `build.json` with exactly
 `analysis`, `contract_version`, `distribution_authorized: false`,
-`error: {code, domain, message}`, `fallback`, `lifecycle: "failed"`, `stage`,
-and `status: "strict-evidence-failed"`. A scope failure before trusted
-analysis emits sanitized stderr only and writes no report, because even the
-project `.rextio` path is not yet trusted.
+`error`, `fallback`, `lifecycle: "failed"`, `stage`, and
+`status: "strict-evidence-failed"`. The `error` object has exactly four keys:
+`{code, domain, message, reason_code}`. `code` is `RXT060`; `domain` is the
+public exception class name; and `message` is the fixed, path-free stage
+failure message. `reason_code` is a non-empty lowercase kebab-case member of
+the producer's closed 2.24.0 strict-failure vocabulary. That vocabulary is
+the static exact-exception registry for production, external-execution,
+executor, sandbox, PyO3, toolchain, native-build, macOS/Linux permission, and
+Linux-launcher failures; it never contains exception text, paths, or other
+host-derived data. The most deeply nested exact registered cause wins. If no
+member of the exception chain is registered, `reason_code` is exactly
+`production-authority-unclassified`; consumers must treat that value as a
+fail-closed unclassified result, not infer details from `domain` or `message`,
+and must tolerate newly added kebab-case reason codes within contract major 2.
+A scope failure before trusted analysis emits sanitized stderr only and writes
+no report, because even the project `.rextio` path is not yet trusted.
 
 Each lifecycle `rextio build` run recollects the current production graph and
 performs exactly two actual isolated, offline, frozen Cargo invocations. The

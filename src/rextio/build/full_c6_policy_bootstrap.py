@@ -34,6 +34,7 @@ from rextio.build.full_c6_policy import (
     MAX_FULL_C6_POLICY_ROWS,
     MAX_FULL_C6_POLICY_TRANSFORMATIONS,
 )
+from rextio.build.full_c6_pipeline import FULL_C6_DISTRIBUTION_POLICY
 from rextio.build.full_c6_policy_template import (
     MAX_FULL_C6_POLICY_TEMPLATE_BYTES,
     FullC6TechnicalPolicyTemplate,
@@ -47,7 +48,6 @@ FULL_C6_POLICY_BOOTSTRAP_KIND = "full-c6-owner-policy-completion-request"
 FULL_C6_POLICY_BOOTSTRAP_DOMAIN = "rextio.full-c6-owner-policy-bootstrap.v2"
 FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = 2
 
-_FULL_C6_DISTRIBUTION_POLICY = "strict-evidence"
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _MAX_BOOTSTRAP_BYTES = MAX_FULL_C6_POLICY_TEMPLATE_BYTES + 256 * 1024
@@ -131,7 +131,7 @@ def resolve_full_c6_policy_lifecycle(config: RextioConfig) -> FullC6PolicyLifecy
     if type(config) is not RextioConfig:
         raise FullC6PolicyBootstrapError("Full C6 policy lifecycle requires typed config")
     build = config.build
-    if build.artifact_distribution_policy != _FULL_C6_DISTRIBUTION_POLICY:
+    if build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY:
         return FullC6PolicyLifecycle(
             status="disabled",
             bootstrap_allowed=False,

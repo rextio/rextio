@@ -859,14 +859,22 @@ external signature.
 
 Any mismatch or input/staged-output mutation detected before the final rename,
 missing/unsafe input, scope or platform drift, nonreproducible output, stale
-analysis, unexpected dependency, signature failure, path alias, or
-concurrent/pre-existing publication target fails closed. A later external
-mutation does not retroactively invalidate the completed transaction receipt,
-but the changed bytes no longer match that receipt or the publication manifest;
-consumers must treat that mismatching bundle as invalid. A request-only run has
-no distribution authority, and a signature cannot authorize bytes other than
-the exact request subject. The exact lifecycle success/failure report shapes
-and `rextio policy finalize --format json` shape are part of the
+analysis, unexpected dependency, signature failure, or path alias fails closed.
+An existing or concurrently created publication target also fails closed unless
+it qualifies for the sole existing-target success: an idempotent retry after
+the exact bundle was already committed. It must remain an owner-private
+mode-`0700` directory; every member and the manifest must equal the current
+independently verified bundle. Rextio safely recaptures every original bundle
+source and the trusted public key between repeated descriptor/name-binding and
+member-byte validation passes. A different, mutated, unsafe, or concurrently
+replaced target is never accepted or overwritten. A later external mutation
+does not retroactively invalidate
+the completed transaction receipt, but the changed bytes no longer match that
+receipt or the publication manifest; consumers must treat that mismatching
+bundle as invalid. A request-only run has no distribution authority, and a
+signature cannot authorize bytes other than the exact request subject. The
+exact lifecycle success/failure report shapes and the
+`rextio policy finalize --format json` shape are part of the
 [tooling contract](specs/tooling-contract.md), not inferred from prose.
 
 ## Artifact profile authority

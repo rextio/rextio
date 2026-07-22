@@ -5080,7 +5080,10 @@ def _open_directory_chain(
             child_fd = os.open(part, flags, dir_fd=current_fd)
             child = _stamp(os.fstat(child_fd))
             linked = _stamp(os.stat(part, dir_fd=current_fd, follow_symlinks=False))
-            if child != linked or not stat.S_ISDIR(child.mode):
+            if (
+                not _same_directory_chain_identity(child, linked)
+                or not stat.S_ISDIR(child.mode)
+            ):
                 os.close(child_fd)
                 raise ToolchainSupportLockError(
                     "toolchain support locator directory changed"
@@ -5103,13 +5106,16 @@ def _verify_directory_chain(
 ) -> None:
     for descriptor, parent_fd, name, expected in chain:
         actual = _stamp(os.fstat(descriptor))
-        if not _same_stable_stamp(actual, expected) or not stat.S_ISDIR(actual.mode):
+        if (
+            not _same_directory_chain_identity(actual, expected)
+            or not stat.S_ISDIR(actual.mode)
+        ):
             raise ToolchainSupportLockError(
                 "toolchain support locator directory changed during capture"
             )
         if parent_fd is not None and name is not None:
             linked = _stamp(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-            if linked != actual:
+            if not _same_directory_chain_identity(linked, actual):
                 raise ToolchainSupportLockError(
                     "toolchain support locator link changed during capture"
                 )
@@ -6442,6 +6448,41 @@ def _stamp(value: os.stat_result) -> _FilesystemStamp:
 
 def _same_stable_stamp(left: _FilesystemStamp, right: _FilesystemStamp) -> bool:
     return left == right
+
+
+def _same_directory_chain_identity(
+    left: _FilesystemStamp,
+    right: _FilesystemStamp,
+) -> bool:
+    """Compare the security identity of an already-open directory component.
+
+    Directory entry churn legitimately changes link count, size, timestamps,
+    and allocation metadata on shared absolute ancestors.  Those fields do
+    not identify the directory reached by the descriptor/name walk, so binding
+    the chain to them makes strict capture depend on unrelated sibling writes.
+
+    Device/inode and birth time bind object identity; mode, owner, group, and
+    platform flags retain the fail-closed permission and ownership checks.
+    Locator files, symlinks, and captured tree members continue to use the
+    complete :class:`_FilesystemStamp` comparison elsewhere.
+    """
+    return (
+        left.device,
+        left.inode,
+        left.mode,
+        left.uid,
+        left.gid,
+        left.flags,
+        left.birthtime_ns,
+    ) == (
+        right.device,
+        right.inode,
+        right.mode,
+        right.uid,
+        right.gid,
+        right.flags,
+        right.birthtime_ns,
+    )
 
 
 def _metadata_digest(value: _FilesystemStamp, *, kind: str) -> str:

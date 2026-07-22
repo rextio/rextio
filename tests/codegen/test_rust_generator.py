@@ -6,7 +6,11 @@ from pathlib import Path
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.codegen.rust.checked_arith import zero_division_messages
-from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
+from rextio.codegen.rust.generator import (
+    generate_rust_crate_module,
+    generate_rust_main_binary,
+    generate_rust_module,
+)
 from rextio.ir.lowering import lower_project
 
 # Stable suffix of a bounds-checked sequence access (pyo3 mode). The leading
@@ -48,6 +52,108 @@ def sum_squares(xs: list[float]) -> float:
     assert "fn _rextio_native(m: &Bound<'_, PyModule>) -> PyResult<()> {" in source
     assert "m.add_function(wrap_pyfunction!(app__square, m)?)?;" in source
     assert "m.add_function(wrap_pyfunction!(app__sum_squares, m)?)?;" in source
+
+
+def test_codegen_defensively_rejects_caller_constructed_symbol_collisions() -> None:
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.ir.nodes import BlockIR, FunctionIR, LiteralIR, ModuleIR, ReturnIR
+    from rextio.ir.types import RxtInt
+
+    functions = [
+        FunctionIR(
+            name="affine",
+            qualname=qualname,
+            module_name=module_name,
+            params=[],
+            return_type=RxtInt(),
+            body=BlockIR([ReturnIR(LiteralIR(1))]),
+        )
+        for qualname, module_name in (
+            ("demo.pkg.affine", "demo.pkg"),
+            ("demo__pkg.affine", "demo__pkg"),
+        )
+    ]
+    module_ir = ModuleIR(functions=functions)
+
+    for generator in (generate_rust_module, generate_rust_crate_module):
+        with pytest.raises(
+            RustCodegenError,
+            match=(
+                "native Rust symbol collision: 'demo.pkg.affine', "
+                "'demo__pkg.affine' all lower to 'demo__pkg__affine'"
+            ),
+        ):
+            generator(module_ir)
+
+
+def test_codegen_defensively_rejects_duplicate_qualnames() -> None:
+    import pytest
+
+    from rextio.codegen.rust.errors import RustCodegenError
+    from rextio.ir.nodes import BlockIR, FunctionIR, LiteralIR, ModuleIR, ReturnIR
+    from rextio.ir.types import RxtInt
+
+    function = FunctionIR(
+        name="affine",
+        qualname="app.affine",
+        module_name="app",
+        params=[],
+        return_type=RxtInt(),
+        body=BlockIR([ReturnIR(LiteralIR(1))]),
+    )
+    module_ir = ModuleIR(functions=[function, function])
+
+    for generator in (generate_rust_module, generate_rust_crate_module):
+        with pytest.raises(
+            RustCodegenError,
+            match=(
+                "native Rust symbol collision: 'app.affine', 'app.affine' "
+                "all lower to 'app__affine'"
+            ),
+        ):
+            generator(module_ir)
+
+
+def test_crate_and_host_executable_validate_only_emitted_symbol_set() -> None:
+    from rextio.ir.nodes import (
+        BlockIR,
+        FunctionIR,
+        LiteralIR,
+        ModuleIR,
+        ParamIR,
+        ReturnIR,
+    )
+    from rextio.ir.types import RxtInt, RxtList, RxtStr
+
+    entry = FunctionIR(
+        name="main",
+        qualname="demo.pkg.main",
+        module_name="demo.pkg",
+        params=[ParamIR("argv", RxtList(RxtStr()))],
+        return_type=RxtInt(),
+        body=BlockIR([ReturnIR(LiteralIR(0))]),
+    )
+    excluded_runtime_shim = FunctionIR(
+        name="main",
+        qualname="demo__pkg.main",
+        module_name="demo__pkg",
+        params=[],
+        return_type=RxtInt(),
+        body=BlockIR([ReturnIR(LiteralIR(1))]),
+        native_runtime_semantics=True,
+        runtime_fallback_module="demo__pkg",
+        runtime_attr_path=("0",),
+    )
+    module_ir = ModuleIR(functions=[entry, excluded_runtime_shim])
+
+    crate_source = generate_rust_crate_module(module_ir)
+    binary_source = generate_rust_main_binary(module_ir, entry.qualname)
+
+    assert crate_source.count("fn demo__pkg__main(") == 1
+    assert binary_source.count("fn demo__pkg__main(") == 1
+    assert "fn main()" in binary_source
 
 
 def test_embeds_internal_helper_only_when_enabled(tmp_path: Path) -> None:

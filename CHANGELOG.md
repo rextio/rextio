@@ -15,6 +15,19 @@ authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
   milestone-derived label to `strict-evidence`, and rename
   its serialized failure status to `strict-evidence-failed`. The old names are
   not accepted because this contract has not been released.
+- Preserve CPython source-order semantics for eager function annotations in
+  bounded module initialization, and fail closed on native-symbol collisions
+  (including duplicate qualnames) within each artifact's actual emitted set.
+  Defer external-source planner loading to remove the `analyzer.module_init` ↔
+  `source.external_analysis` import-order cycle, covered by clean-interpreter tests.
+- Make final Full C6 publication retries idempotent across an interruption after
+  the atomic no-replace rename commit. An existing target succeeds only when it
+  is still an owner-private mode-`0700` directory containing the exact closed
+  bundle independently expected by the current verified request. Recovery
+  safely recaptures every original payload and the trusted public key between
+  repeated target descriptor/name-binding and byte validation passes;
+  different, mutated, unsafe, or concurrently replaced targets remain
+  fail-closed collisions and are never overwritten.
 
 ### Full C6 support closure and production sandbox receipts (tooling contract 2.24.0)
 
@@ -46,9 +59,12 @@ authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
 - Remove inherited macOS executable-mapping allowances for mutable/data-volume
   roots by denying `file-map-executable` alongside read/write access under
   `/private/var`, `/private/etc`, `/Library`, `/dev`, `/cores`, and
-  `/System/Volumes/Preboot`. A real macOS arm64 control probe confirms that a
-  pre-opened `/Library/Apple/usr/lib` image maps under the inherited policy but
-  fails under the hardened profile, while sealed-system execution still works.
+  `/System/Volumes/Preboot`. A real macOS arm64 self-checking probe uses a
+  pre-opened Apple regular-file fixture and requires both unsandboxed mapping
+  and an explicit `read-execute` positive control before it accepts a hardened-
+  profile denial of the same executable mapping; hosts unable to establish the
+  unsandboxed control skip with an explicit reason. Sealed-system execution is
+  checked separately.
   Only paths already bound by an explicit `read-execute` rule, or a bound
   read-write directory capability, regain executable mapping and process
   execution; ambient mutable paths remain blocked.
@@ -901,8 +917,12 @@ does not authorize external-source packaging.
   `LIBCUDA_SO_NOT_FOUND` from `LIBCUDA_SO_LOAD_FAILED` without path/`dlerror`
   leakage, and fails closed otherwise. Loose and strict (`--require-device` /
   `REXTIO_LINUX_CUDA_REQUIRE_DEVICE=1`) Linux validation modes are documented;
-  ordinary e2e CI runs host `cargo test` on ubuntu/macOS and a loose Linux
-  validate plus aarch64 compile-only `cargo check`. Both OS paths share the
+  its provenance guard rejects writable canonical library leaves as well as
+  writable directory ancestry. Ordinary e2e CI runs host `cargo test` on
+  ubuntu/macOS and a loose Linux validate plus aarch64 compile-only `cargo
+  check`; a separate GPU-free Windows x64 lane compiles/tests the MSVC probe
+  and exercises the PowerShell wrapper and JSON non-claim contract. All
+  platform paths share the
   same six-symbol inventory surface, never create a context or launch a kernel,
   and always report `support_claim: false`; this is not CUDA support or
   certification.

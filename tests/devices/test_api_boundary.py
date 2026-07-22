@@ -227,6 +227,7 @@ def test_cuda_driver_probe_has_no_dependencies_and_only_the_reviewed_driver_symb
     assert "dlerror" not in code
     assert "canonicalize" in source
     assert "REVIEWED_SYSTEM_ROOTS" in source
+    assert "is_group_or_world_writable_regular_file" in source
     assert "has_group_or_world_writable_path_ancestry" in source
     assert "0o022" in source
     assert "[0_u8; 256]" in source or "0_u8; 256" in source
@@ -330,9 +331,14 @@ def test_cuda_driver_validation_scripts_and_ci_stay_non_support() -> None:
     assert "support_claim: true" not in linux
     assert "support_claim=true" not in linux
 
-    # Host cargo test on both ubuntu and macOS at Py3.11; loose Linux-only lane.
+    # Host cargo test on ubuntu/macOS and a GPU-free Windows compile/wrapper lane.
     assert "CUDA driver inventory probe cargo test (host; compile coverage)" in ci
     assert "CUDA driver inventory probe (loose Linux CI; not real-GPU evidence)" in ci
+    assert "CUDA driver inventory probe (Windows; GPU-free contract)" in ci
+    assert "windows-latest" in ci
+    assert "x86_64-pc-windows-msvc" in ci
+    assert "test_windows_cuda_probe_real_toolchain.py" in ci
+    assert "REXTIO_WINDOWS_CUDA_PROBE" in ci
     assert "tools/cuda-driver-probe/Cargo.toml" in ci
     assert "validate-linux-cuda.sh" in ci
     assert "aarch64-unknown-linux-gnu" in ci
@@ -354,6 +360,8 @@ def test_cuda_driver_validation_scripts_and_ci_stay_non_support() -> None:
     assert "DT_NEEDED" in docs
     assert "ubuntu-latest" in docs
     assert "macos-latest" in docs
+    assert "windows-latest" in docs
+    assert "x86_64-pc-windows-msvc" in docs
     assert "aarch64-unknown-linux-gnu" in docs
     assert "compile coverage" in docs.lower() or "compile-only" in docs.lower()
     assert "real-GPU evidence" in docs

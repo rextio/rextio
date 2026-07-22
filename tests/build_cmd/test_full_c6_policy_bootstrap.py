@@ -11,6 +11,7 @@ import stat
 import pytest
 
 import rextio.build.full_c6_policy_bootstrap as bootstrap_module
+from rextio.build.full_c6_pipeline import FULL_C6_DISTRIBUTION_POLICY
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
     artifact_policy_coverage_inventory_digest,
@@ -52,6 +53,11 @@ _SHA_2 = "2" * 64
 _SHA_3 = "3" * 64
 
 _POLICY = runpy.run_path(str(Path(__file__).with_name("test_full_c6_policy.py")))
+
+
+def test_policy_bootstrap_uses_canonical_distribution_policy_constant() -> None:
+    assert bootstrap_module.FULL_C6_DISTRIBUTION_POLICY is FULL_C6_DISTRIBUTION_POLICY
+    assert not hasattr(bootstrap_module, "_FULL_C6_DISTRIBUTION_POLICY")
 
 
 def _config_text(*, policy_sha256: bool, final_signature: bool = False) -> str:
