@@ -111,6 +111,10 @@ _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256 = (
 )
 _LINUX_MODE_DISPOSITION_RELATIVE_PATH = "utempter/utempter"
 _LINUX_MODE_DISPOSITION_MODE = 0o2755
+_LINUX_UNMAPPED_SYMLINK_ROOT = Path("/usr/lib/x86_64-linux-gnu")
+_LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256 = (
+    "8cb7b098c3bba9a6c8a0257da50a363ac54fbe6eb28b46be38a5231be7b5e80a"
+)
 _LOCK_FIELDS = {
     "kind",
     "schema_version",
@@ -480,6 +484,7 @@ class ToolchainSupportSymlinkDispositionReceipt:
         if self.disposition not in {
             "bind-external-manifest",
             "bind-external-support-root",
+            "deny-unmapped-virtual-target",
             "deny-isolated-site-packages",
             "normalize-in-root-alias",
         }:
@@ -539,7 +544,10 @@ class ToolchainSupportSymlinkDispositionReceipt:
                 and self.external_support_root_merkle_sha256 is not None
                 and self.resolved_relative_path is not None
             )
-        elif self.disposition == "deny-isolated-site-packages":
+        elif self.disposition in {
+            "deny-isolated-site-packages",
+            "deny-unmapped-virtual-target",
+        }:
             valid_shape = (
                 self.canonical_link_target is None
                 and self.external_manifest_role is None
@@ -1243,6 +1251,7 @@ class _FixedSymlinkDisposition:
     disposition: str
     canonical_link_target: str | None = None
     external_manifest_role: str | None = None
+    resolved_path_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1361,6 +1370,71 @@ _MACOS_XCODE_SDK_16_4_REGULAR_FILES = frozenset(
 )
 _MACOS_XCODE_SDK_MODERN_VARIANT = "modern"
 _MACOS_XCODE_SDK_16_4_VARIANT = "xcode-16.4"
+_LINUX_UNMAPPED_SYMLINK_DISPOSITIONS = (
+    _FixedSymlinkDisposition(
+        relative_path="libLLVM-18.so",
+        raw_link_target="libLLVM.so.18.1",
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "438f53d5024cec3f9b5be422a4dfc6e24c9c080cdcad0375d2c518c2f239b266"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="libLLVM.so.18.1",
+        raw_link_target="../llvm-18/lib/libLLVM.so.1",
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "438f53d5024cec3f9b5be422a4dfc6e24c9c080cdcad0375d2c518c2f239b266"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="libclang-cpp.so.16",
+        raw_link_target="../llvm-16/lib/libclang-cpp.so.16",
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "72e94f1b5b94780e49cd2c3379ddaba4472cb78febb35ee72e5a62aeb8bd4160"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="libclang-cpp.so.17",
+        raw_link_target="../llvm-17/lib/libclang-cpp.so.17",
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "15e5024198ecf325a8ab1f75411f16953c196961afec6f2e1977593a5420d161"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="libclang-cpp.so.18",
+        raw_link_target="../llvm-18/lib/libclang-cpp.so.18.1",
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "84f655ae7665283dae00379724674759314189a8391bade80d0d90abaeb1175f"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="libclang-cpp.so.18.1",
+        raw_link_target="../llvm-18/lib/libclang-cpp.so.18.1",
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "84f655ae7665283dae00379724674759314189a8391bade80d0d90abaeb1175f"
+        ),
+    ),
+    _FixedSymlinkDisposition(
+        relative_path="libpython3.12.a",
+        raw_link_target=(
+            "../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
+        ),
+        disposition="deny-unmapped-virtual-target",
+        resolved_path_sha256=(
+            "9757c5cb339432c22968634e3166747d7e8ce4a6e8351e89ccf3b648c7d1b7f0"
+        ),
+    ),
+)
+_LINUX_UNMAPPED_SYMLINK_DISPOSITION_PATHS = frozenset(
+    item.relative_path for item in _LINUX_UNMAPPED_SYMLINK_DISPOSITIONS
+)
+_LINUX_UNMAPPED_SYMLINK_MINIMAL_VARIANT = "minimal-host"
+_LINUX_UNMAPPED_SYMLINK_GITHUB_RUNNER_VARIANT = "github-runner"
 _FIXED_SYMLINK_DISPOSITIONS: dict[
     tuple[str, str],
     tuple[_FixedSymlinkDisposition, ...],
@@ -1373,6 +1447,10 @@ _FIXED_SYMLINK_DISPOSITIONS: dict[
         "aarch64-apple-darwin",
         "xcode-sdk",
     ): _MACOS_XCODE_SDK_DISPOSITIONS,
+    (
+        "x86_64-unknown-linux-gnu",
+        "linux-runtime-support",
+    ): _LINUX_UNMAPPED_SYMLINK_DISPOSITIONS,
 }
 
 
@@ -2051,20 +2129,35 @@ def _fixed_symlink_disposition_map(
             _validate_link_target(row.canonical_link_target)
         if row.external_manifest_role is not None:
             _validate_role(row.external_manifest_role)
+        if row.resolved_path_sha256 is not None:
+            _require_sha256(
+                row.resolved_path_sha256,
+                "fixed symlink disposition resolved path SHA-256",
+            )
         if row.disposition == "bind-external-manifest":
             valid_shape = (
                 row.canonical_link_target is not None
                 and row.external_manifest_role == "python-runtime-library"
+                and row.resolved_path_sha256 is None
             )
         elif row.disposition == "deny-isolated-site-packages":
             valid_shape = (
                 row.canonical_link_target is None
                 and row.external_manifest_role is None
+                and row.resolved_path_sha256 is None
+            )
+        elif row.disposition == "deny-unmapped-virtual-target":
+            valid_shape = (
+                row.canonical_link_target is None
+                and row.external_manifest_role is None
+                and row.resolved_path_sha256 is not None
+                and not PurePosixPath(row.raw_link_target).is_absolute()
             )
         elif row.disposition == "normalize-in-root-alias":
             valid_shape = (
                 row.canonical_link_target is not None
                 and row.external_manifest_role is None
+                and row.resolved_path_sha256 is None
                 and "//" in row.raw_link_target
                 and "//" not in row.canonical_link_target
             )
@@ -2134,6 +2227,20 @@ def _validate_lock_symlink_dispositions(
                 ):
                     raise ToolchainSupportLockError(
                         "toolchain support denied site-packages disposition is stale"
+                    )
+            elif policy.disposition == "deny-unmapped-virtual-target":
+                if (
+                    root.locator_path_sha256
+                    != _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256
+                    or receipt.external_manifest_merkle_sha256 is not None
+                    or receipt.external_support_root_role is not None
+                    or receipt.external_support_root_merkle_sha256 is not None
+                    or receipt.resolved_relative_path is not None
+                    or receipt.resolved_path_sha256
+                    != policy.resolved_path_sha256
+                ):
+                    raise ToolchainSupportLockError(
+                        "toolchain support unmapped virtual target disposition is stale"
                     )
             elif (
                 receipt.external_manifest_merkle_sha256 is not None
@@ -2317,6 +2424,18 @@ def _select_fixed_symlink_disposition_variant(
             return _MACOS_XCODE_SDK_MODERN_VARIANT
         if observed_paths == _MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS:
             return _MACOS_XCODE_SDK_16_4_VARIANT
+    elif (
+        target_triple == "x86_64-unknown-linux-gnu"
+        and logical_role == "linux-runtime-support"
+    ):
+        if expected_paths != _LINUX_UNMAPPED_SYMLINK_DISPOSITION_PATHS:
+            raise ToolchainSupportLockError(
+                "toolchain support Linux unmapped symlink policy is incomplete"
+            )
+        if observed_paths == _LINUX_UNMAPPED_SYMLINK_DISPOSITION_PATHS:
+            return _LINUX_UNMAPPED_SYMLINK_GITHUB_RUNNER_VARIANT
+        if not observed_paths:
+            return _LINUX_UNMAPPED_SYMLINK_MINIMAL_VARIANT
     elif observed_paths == expected_paths:
         return _FIXED_SYMLINK_DISPOSITION_VARIANT
     raise ToolchainSupportLockError(
@@ -2373,64 +2492,82 @@ def _finalize_symlink_dispositions(
             raise ToolchainSupportLockError(
                 "toolchain support fixed symlink disposition changed"
             )
-        link_path = root_path / PurePosixPath(relative_path)
-        try:
-            resolved = link_path.resolve(strict=True)
-        except OSError as exc:
-            raise ToolchainSupportLockError(
-                "toolchain support fixed symlink disposition is unresolved"
-            ) from exc
-        resolved_path_sha256 = _locator_path_digest(resolved)
         external_role: str | None = None
         external_merkle: str | None = None
         resolved_relative: str | None = None
-        if policy.disposition == "deny-isolated-site-packages":
-            try:
-                resolved.relative_to(root_path)
-            except ValueError:
-                pass
-            else:
-                raise ToolchainSupportLockError(
-                    "toolchain support denied Python site-packages alias entered the runtime root"
-                )
-        elif policy.disposition == "bind-external-manifest":
-            assert policy.external_manifest_role is not None
-            binding = manifest_bindings.get(policy.external_manifest_role)
-            if binding is None:
-                raise ToolchainSupportLockError(
-                    "toolchain support external symlink manifest is missing"
-                )
-            manifest_locator, manifest_receipt = binding
-            if resolved != manifest_locator._absolute_path:
-                raise ToolchainSupportLockError(
-                    "toolchain support external symlink resolution differs from its manifest"
-                )
-            if not hmac.compare_digest(
-                resolved_path_sha256,
-                manifest_receipt.locator_path_sha256,
+        if policy.disposition == "deny-unmapped-virtual-target":
+            if (
+                target_triple != "x86_64-unknown-linux-gnu"
+                or logical_role != "linux-runtime-support"
+                or root_path != _LINUX_UNMAPPED_SYMLINK_ROOT
+                or _locator_path_digest(root_path)
+                != _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256
             ):
                 raise ToolchainSupportLockError(
-                    "toolchain support external symlink path binding is stale"
+                    "toolchain support unmapped virtual target is outside the exact Linux profile"
                 )
-            external_role = policy.external_manifest_role
-            external_merkle = manifest_receipt.merkle_sha256
-        else:
-            assert policy.canonical_link_target is not None
-            try:
-                physical_relative = resolved.relative_to(root_path).as_posix()
-            except ValueError as exc:
-                raise ToolchainSupportLockError(
-                    "toolchain support normalized SDK alias escaped its root"
-                ) from exc
-            resolved_relative = _resolve_captured_link(
-                relative_path,
-                policy.canonical_link_target,
-                by_path,
+            resolved_path_sha256 = _unmapped_virtual_target_digest(
+                root_path=root_path,
+                initial_policy=policy,
+                expected=expected,
             )
-            if physical_relative != resolved_relative:
+        else:
+            link_path = root_path / PurePosixPath(relative_path)
+            try:
+                resolved = link_path.resolve(strict=True)
+            except OSError as exc:
                 raise ToolchainSupportLockError(
-                    "toolchain support normalized SDK alias resolution changed"
+                    "toolchain support fixed symlink disposition is unresolved"
+                ) from exc
+            resolved_path_sha256 = _locator_path_digest(resolved)
+        if policy.disposition != "deny-unmapped-virtual-target":
+            if policy.disposition == "deny-isolated-site-packages":
+                try:
+                    resolved.relative_to(root_path)
+                except ValueError:
+                    pass
+                else:
+                    raise ToolchainSupportLockError(
+                        "toolchain support denied Python site-packages alias entered the runtime root"
+                    )
+            elif policy.disposition == "bind-external-manifest":
+                assert policy.external_manifest_role is not None
+                binding = manifest_bindings.get(policy.external_manifest_role)
+                if binding is None:
+                    raise ToolchainSupportLockError(
+                        "toolchain support external symlink manifest is missing"
+                    )
+                manifest_locator, manifest_receipt = binding
+                if resolved != manifest_locator._absolute_path:
+                    raise ToolchainSupportLockError(
+                        "toolchain support external symlink resolution differs from its manifest"
+                    )
+                if not hmac.compare_digest(
+                    resolved_path_sha256,
+                    manifest_receipt.locator_path_sha256,
+                ):
+                    raise ToolchainSupportLockError(
+                        "toolchain support external symlink path binding is stale"
+                    )
+                external_role = policy.external_manifest_role
+                external_merkle = manifest_receipt.merkle_sha256
+            else:
+                assert policy.canonical_link_target is not None
+                try:
+                    physical_relative = resolved.relative_to(root_path).as_posix()
+                except ValueError as exc:
+                    raise ToolchainSupportLockError(
+                        "toolchain support normalized SDK alias escaped its root"
+                    ) from exc
+                resolved_relative = _resolve_captured_link(
+                    relative_path,
+                    policy.canonical_link_target,
+                    by_path,
                 )
+                if physical_relative != resolved_relative:
+                    raise ToolchainSupportLockError(
+                        "toolchain support normalized SDK alias resolution changed"
+                    )
         receipts.append(
             _new_symlink_disposition_receipt(
                 raw=raw,
@@ -2443,6 +2580,54 @@ def _finalize_symlink_dispositions(
             )
         )
     return tuple(receipts)
+
+
+def _unmapped_virtual_target_digest(
+    *,
+    root_path: Path,
+    initial_policy: _FixedSymlinkDisposition,
+    expected: Mapping[str, _FixedSymlinkDisposition],
+) -> str:
+    """Bind an exact escaping target without following or opening host bytes."""
+    current = initial_policy
+    visited: set[str] = set()
+    traversed: list[_FixedSymlinkDisposition] = []
+    for _hop in range(len(expected) + 1):
+        if (
+            current.relative_path in visited
+            or current.disposition != "deny-unmapped-virtual-target"
+            or current.resolved_path_sha256 is None
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support unmapped virtual target policy is cyclic or malformed"
+            )
+        visited.add(current.relative_path)
+        traversed.append(current)
+        candidate = _lexical_absolute_link_target(
+            root_path=root_path,
+            relative_path=current.relative_path,
+            link_target=current.raw_link_target,
+        )
+        try:
+            candidate_relative = candidate.relative_to(root_path).as_posix()
+        except ValueError:
+            digest = _locator_path_digest(candidate)
+            if any(
+                policy.resolved_path_sha256 != digest for policy in traversed
+            ):
+                raise ToolchainSupportLockError(
+                    "toolchain support unmapped virtual target resolution differs from policy"
+                )
+            return digest
+        next_policy = expected.get(candidate_relative)
+        if next_policy is None:
+            raise ToolchainSupportLockError(
+                "toolchain support unmapped virtual target entered an unbound in-root path"
+            )
+        current = next_policy
+    raise ToolchainSupportLockError(
+        "toolchain support unmapped virtual target exceeds the policy hop bound"
+    )
 
 
 def _new_symlink_disposition_receipt(
@@ -2822,7 +3007,7 @@ def _capture_tree_once(
             total_bytes=total_bytes,
             xattr_budget=xattr_budget,
         )
-        if not raw_entries:
+        if not raw_entries and not raw_dispositions:
             raise ToolchainSupportLockError("toolchain support root is empty")
         if hardlink_plan is not None and hardlink_plan.entries:
             raise ToolchainSupportLockError(

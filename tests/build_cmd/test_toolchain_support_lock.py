@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import pickle
 import stat
 import ctypes
 import sys
+from types import SimpleNamespace
 import unicodedata
 
 import pytest
@@ -245,6 +247,179 @@ def _linux_cross_root_inputs(
         ),
     ]
     return manifests, roots, gcc_root, runtime_root
+
+
+_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS = {
+    "libLLVM-18.so": "libLLVM.so.18.1",
+    "libLLVM.so.18.1": "../llvm-18/lib/libLLVM.so.1",
+    "libclang-cpp.so.16": "../llvm-16/lib/libclang-cpp.so.16",
+    "libclang-cpp.so.17": "../llvm-17/lib/libclang-cpp.so.17",
+    "libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.1",
+    "libclang-cpp.so.18.1": "../llvm-18/lib/libclang-cpp.so.18.1",
+    "libpython3.12.a": (
+        "../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
+    ),
+}
+_LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS = {
+    "libLLVM-18.so": "llvm-18/lib/libLLVM.so.1",
+    "libLLVM.so.18.1": "llvm-18/lib/libLLVM.so.1",
+    "libclang-cpp.so.16": "llvm-16/lib/libclang-cpp.so.16",
+    "libclang-cpp.so.17": "llvm-17/lib/libclang-cpp.so.17",
+    "libclang-cpp.so.18": "llvm-18/lib/libclang-cpp.so.18.1",
+    "libclang-cpp.so.18.1": "llvm-18/lib/libclang-cpp.so.18.1",
+    "libpython3.12.a": (
+        "python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
+    ),
+}
+
+
+def _linux_unmapped_virtual_target_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    included_paths: frozenset[str] | None = None,
+    raw_overrides: dict[str, str] | None = None,
+    extra_symlink: tuple[str, str] | None = None,
+) -> tuple[list[ToolchainSupportLocator], list[ToolchainSupportLocator], Path]:
+    manifest = tmp_path / "linux-toolchain.manifest"
+    manifest.write_bytes(b"ubuntu=24.04\nrunner=github-hosted\n")
+    runtime_root = tmp_path / "usr" / "lib" / "x86_64-linux-gnu"
+    runtime_root.mkdir(parents=True)
+    selected = (
+        frozenset(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
+        if included_paths is None
+        else included_paths
+    )
+    assert selected <= frozenset(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
+    for relative_path in sorted(selected):
+        raw_target = (raw_overrides or {}).get(
+            relative_path,
+            _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path],
+        )
+        (runtime_root / relative_path).symlink_to(raw_target)
+    if extra_symlink is not None:
+        extra_path, extra_target = extra_symlink
+        (runtime_root / extra_path).symlink_to(extra_target)
+
+    policy_key = ("x86_64-unknown-linux-gnu", "linux-runtime-support")
+    production_rows = support_lock._FIXED_SYMLINK_DISPOSITIONS[policy_key]
+    assert {
+        row.relative_path: row.raw_link_target for row in production_rows
+    } == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS
+    cloned_rows = tuple(
+        replace(
+            row,
+            resolved_path_sha256=support_lock._locator_path_digest(
+                runtime_root.parent
+                / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[row.relative_path]
+            ),
+        )
+        for row in production_rows
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_FIXED_SYMLINK_DISPOSITIONS",
+        {**support_lock._FIXED_SYMLINK_DISPOSITIONS, policy_key: cloned_rows},
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_LINUX_UNMAPPED_SYMLINK_ROOT",
+        runtime_root,
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256",
+        support_lock._locator_path_digest(runtime_root),
+    )
+    manifests = [
+        create_toolchain_support_locator(
+            logical_role="linux-toolchain-manifest",
+            path=manifest,
+            kind="file",
+        )
+    ]
+    roots = [
+        create_toolchain_support_locator(
+            logical_role="linux-runtime-support",
+            path=runtime_root,
+            kind="tree",
+        )
+    ]
+    return manifests, roots, runtime_root
+
+
+def _refresh_unmapped_forgery_merkles(
+    document: dict[str, object],
+    *,
+    runtime_root: Path,
+) -> bytes:
+    roots = document["roots"]
+    manifests = document["manifests"]
+    assert isinstance(roots, list) and len(roots) == 1
+    assert isinstance(manifests, list)
+    root = roots[0]
+    assert isinstance(root, dict)
+    dispositions = root["symlink_dispositions"]
+    assert isinstance(dispositions, list) and len(dispositions) == 7
+    for disposition in dispositions:
+        assert isinstance(disposition, dict)
+        receipt = SimpleNamespace(**disposition)
+        disposition["merkle_sha256"] = support_lock._symlink_disposition_merkle(
+            receipt
+        )
+
+    descriptor = os.open(runtime_root, os.O_RDONLY)
+    try:
+        root_xattrs = support_lock._capture_fd_xattrs(
+            descriptor,
+            budget=support_lock._XattrBudget(
+                remaining_count=support_lock.MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS,
+                remaining_bytes=(
+                    support_lock.MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES
+                ),
+            ),
+        )
+        _entries, root_merkle = support_lock._build_tree_merkle(
+            logical_role=root["logical_role"],
+            locator_path_sha256=root["locator_path_sha256"],
+            root_mode=root["root_mode"],
+            root_metadata_sha256=root["root_metadata_sha256"],
+            root_xattrs=root_xattrs,
+            entries=(),
+            symlink_dispositions=tuple(
+                SimpleNamespace(**item) for item in dispositions
+            ),
+        )
+    finally:
+        os.close(descriptor)
+    root["merkle_sha256"] = root_merkle
+    document["merkle_sha256"] = support_lock._sha256(
+        {
+            "domain": "rextio.full-c6-toolchain-support-aggregate.v2",
+            "scope": document["scope"],
+            "manifest_count": document["manifest_count"],
+            "root_count": document["root_count"],
+            "member_count": document["member_count"],
+            "total_bytes": document["total_bytes"],
+            "xattr_count": document["xattr_count"],
+            "xattr_bytes": document["xattr_bytes"],
+            "manifests": [
+                {
+                    "logical_role": item["logical_role"],
+                    "merkle_sha256": item["merkle_sha256"],
+                }
+                for item in manifests
+            ],
+            "roots": [
+                {
+                    "logical_role": item["logical_role"],
+                    "merkle_sha256": item["merkle_sha256"],
+                }
+                for item in roots
+            ],
+        }
+    )
+    return _canonical(document)
 
 
 def test_generation_is_canonical_path_free_aggregate_and_round_trips(
@@ -570,6 +745,325 @@ def test_linux_target_and_locator_order_are_deterministic(tmp_path: Path) -> Non
         "manifest-b",
     ]
     assert [item.logical_role for item in first.roots] == ["root-a", "root-b"]
+
+
+def test_linux_github_runner_unmapped_symlinks_are_denied_and_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    runtime = lock.roots[0]
+    assert runtime.logical_role == "linux-runtime-support"
+    assert runtime.symlink_count == 7
+    assert runtime.symlink_disposition_count == 7
+    assert runtime.member_count == 7
+    assert runtime.symlink_dispositions == tuple(
+        sorted(
+            runtime.symlink_dispositions,
+            key=lambda item: (item.relative_path.casefold(), item.relative_path),
+        )
+    )
+    receipts = {
+        item.relative_path: item for item in runtime.symlink_dispositions
+    }
+    assert set(receipts) == set(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
+    for relative_path, receipt in receipts.items():
+        assert receipt.disposition == "deny-unmapped-virtual-target"
+        assert (
+            receipt.raw_link_target
+            == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path]
+        )
+        assert receipt.canonical_link_target is None
+        assert receipt.external_manifest_role is None
+        assert receipt.external_manifest_merkle_sha256 is None
+        assert receipt.external_support_root_role is None
+        assert receipt.external_support_root_merkle_sha256 is None
+        assert receipt.resolved_relative_path is None
+        assert receipt.resolved_path_sha256 == support_lock._locator_path_digest(
+            runtime_root.parent
+            / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[relative_path]
+        )
+
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(
+        parsed,
+        manifests=manifests,
+        roots=roots,
+    )
+
+
+def test_linux_unmapped_symlink_policy_has_exact_production_targets() -> None:
+    rows = support_lock._FIXED_SYMLINK_DISPOSITIONS[
+        ("x86_64-unknown-linux-gnu", "linux-runtime-support")
+    ]
+    by_path = {row.relative_path: row for row in rows}
+    assert set(by_path) == set(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
+    for relative_path, row in by_path.items():
+        assert row.disposition == "deny-unmapped-virtual-target"
+        assert (
+            row.raw_link_target
+            == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path]
+        )
+        assert row.canonical_link_target is None
+        assert row.external_manifest_role is None
+        assert row.resolved_path_sha256 == support_lock._locator_path_digest(
+            Path("/usr/lib")
+            / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[relative_path]
+        )
+
+
+def test_linux_minimal_runtime_variant_needs_no_unmapped_disposition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+        included_paths=frozenset(),
+    )
+    (runtime_root / "ordinary-runtime.so").write_bytes(b"ordinary runtime\n")
+
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+
+    runtime = lock.roots[0]
+    assert runtime.member_count == 1
+    assert runtime.file_count == 1
+    assert runtime.symlink_count == 0
+    assert runtime.symlink_disposition_count == 0
+    assert runtime.symlink_dispositions == ()
+    assert verify_toolchain_support_lock(
+        lock,
+        manifests=manifests,
+        roots=roots,
+    )
+
+
+@pytest.mark.parametrize("included_count", range(1, 7))
+def test_linux_unmapped_symlink_partial_topologies_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    included_count: int,
+) -> None:
+    included = frozenset(
+        sorted(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)[:included_count]
+    )
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+        included_paths=included,
+    )
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+def test_linux_unmapped_symlink_extra_fixed_like_alias_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+        extra_symlink=(
+            "libclang-cpp.so.19",
+            "../llvm-19/lib/libclang-cpp.so.19",
+        ),
+    )
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+def test_linux_unmapped_symlink_raw_target_drift_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+        raw_overrides={
+            "libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.2"
+        },
+    )
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple="x86_64-unknown-linux-gnu",
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+@pytest.mark.parametrize("near_miss", ("target", "role", "root"))
+def test_linux_unmapped_symlinks_require_exact_profile_and_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    near_miss: str,
+) -> None:
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+    target_triple = "x86_64-unknown-linux-gnu"
+    candidate_roots = roots
+    if near_miss == "target":
+        target_triple = "aarch64-unknown-linux-gnu"
+    elif near_miss == "role":
+        candidate_roots = [
+            create_toolchain_support_locator(
+                logical_role="linux-runtime-other",
+                path=runtime_root,
+                kind="tree",
+            )
+        ]
+    else:
+        other_root = runtime_root.parent / "other-x86_64-linux-gnu"
+        other_root.mkdir()
+        for relative_path, raw_target in (
+            _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS.items()
+        ):
+            (other_root / relative_path).symlink_to(raw_target)
+        candidate_roots = [
+            create_toolchain_support_locator(
+                logical_role="linux-runtime-support",
+                path=other_root,
+                kind="tree",
+            )
+        ]
+
+    with pytest.raises(ToolchainSupportLockError):
+        generate_toolchain_support_lock(
+            target_triple=target_triple,
+            manifests=manifests,
+            roots=candidate_roots,
+        )
+
+
+def test_linux_unmapped_symlink_mutation_fails_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    alias = runtime_root / "libclang-cpp.so.17"
+    alias.unlink()
+    alias.symlink_to("../llvm-17/lib/libclang-cpp.so.17.1")
+
+    with pytest.raises(ToolchainSupportLockError):
+        verify_toolchain_support_lock(
+            lock,
+            manifests=manifests,
+            roots=roots,
+        )
+
+
+def test_parser_rejects_unmapped_resolved_digest_forgery_with_fresh_merkles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+    baseline = json.loads(lock.canonical_bytes)
+    assert (
+        _refresh_unmapped_forgery_merkles(
+            baseline,
+            runtime_root=runtime_root,
+        )
+        == lock.canonical_bytes
+    )
+
+    forged = json.loads(lock.canonical_bytes)
+    disposition = forged["roots"][0]["symlink_dispositions"][0]
+    disposition["resolved_path_sha256"] = "f" * 64
+    forged_bytes = _refresh_unmapped_forgery_merkles(
+        forged,
+        runtime_root=runtime_root,
+    )
+    assert forged["roots"][0]["merkle_sha256"] != lock.roots[0].merkle_sha256
+    assert forged["merkle_sha256"] != lock.merkle_sha256
+
+    with pytest.raises(ToolchainSupportLockError):
+        parse_toolchain_support_lock(
+            forged_bytes,
+            expected_raw_sha256=hashlib.sha256(forged_bytes).hexdigest(),
+        )
+
+
+def test_parser_rejects_unmapped_name_and_shape_forgery_with_fresh_merkles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+    lock = generate_toolchain_support_lock(
+        target_triple="x86_64-unknown-linux-gnu",
+        manifests=manifests,
+        roots=roots,
+    )
+
+    for mutation in ("name", "shape"):
+        forged = json.loads(lock.canonical_bytes)
+        disposition = forged["roots"][0]["symlink_dispositions"][0]
+        if mutation == "name":
+            disposition["disposition"] = "deny-isolated-site-packages"
+        else:
+            disposition["canonical_link_target"] = "libLLVM.so.18.1"
+        forged_bytes = _refresh_unmapped_forgery_merkles(
+            forged,
+            runtime_root=runtime_root,
+        )
+        assert (
+            forged["roots"][0]["merkle_sha256"]
+            != lock.roots[0].merkle_sha256
+        )
+        assert forged["merkle_sha256"] != lock.merkle_sha256
+
+        with pytest.raises(ToolchainSupportLockError):
+            parse_toolchain_support_lock(
+                forged_bytes,
+                expected_raw_sha256=hashlib.sha256(forged_bytes).hexdigest(),
+            )
 
 
 def test_linux_gcc_cross_root_symlink_is_bound_and_input_order_invariant(
