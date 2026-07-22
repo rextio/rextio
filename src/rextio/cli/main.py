@@ -18,6 +18,7 @@ from rextio.cli import (
     clean_cmd,
     generate_cmd,
     init_cmd,
+    policy_cmd,
 )
 
 
@@ -319,6 +320,61 @@ def build_parser() -> argparse.ArgumentParser:
     clean_parser.add_argument("project_root", nargs="?", default=".", help="Project root to clean.")
     _add_output_options(clean_parser)
     clean_parser.set_defaults(handler=clean_cmd.run)
+
+    policy_parser = subparsers.add_parser(
+        "policy",
+        help="Operate on strict Full C6 owner-policy handoff files.",
+    )
+    policy_subparsers = policy_parser.add_subparsers(
+        dest="policy_command",
+        required=True,
+    )
+    policy_finalize_parser = policy_subparsers.add_parser(
+        "finalize",
+        help=(
+            "Combine an exact Full C6 bootstrap and owner completion into a "
+            "non-authorizing policy manifest."
+        ),
+    )
+    policy_finalize_parser.add_argument(
+        "--bootstrap",
+        required=True,
+        help="Canonical Full C6 bootstrap request JSON.",
+    )
+    policy_finalize_parser.add_argument(
+        "--completion",
+        required=True,
+        help="Canonical owner-completion JSON.",
+    )
+    policy_finalize_parser.add_argument(
+        "--output",
+        required=True,
+        help="Create or exactly reuse this final owner-policy manifest.",
+    )
+    _add_output_options(policy_finalize_parser)
+    policy_finalize_parser.set_defaults(handler=policy_cmd.run_finalize)
+
+    policy_support_lock_parser = policy_subparsers.add_parser(
+        "bootstrap-support-lock",
+        help=(
+            "Create or exactly reuse the canonical Full C6 toolchain support "
+            "lock for this host."
+        ),
+    )
+    policy_support_lock_parser.add_argument(
+        "--project-root",
+        default=".",
+        help="Project root whose toolchain selection is bootstrapped.",
+    )
+    policy_support_lock_parser.add_argument(
+        "--output",
+        required=True,
+        help="Project-relative canonical support-lock output path.",
+    )
+    _add_output_options(policy_support_lock_parser)
+    policy_support_lock_parser.set_defaults(
+        handler=policy_cmd.run_bootstrap_support_lock
+    )
 
     return parser
 

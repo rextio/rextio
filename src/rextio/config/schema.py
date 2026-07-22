@@ -20,6 +20,30 @@ class BuildConfig:
     # blocking indefinitely.
     build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS
     artifact_evidence_policy: str = "best-effort"
+    # Final Full-C6 distribution is an independent, opt-in hard gate.  It does
+    # not promote the preview artifact-evidence policy by implication.
+    artifact_distribution_policy: str = "disabled"
+    # Full-C6 signing is deliberately split into an owner-signed SourceLock v2
+    # admission and a final artifact-authorization signature. Every path is
+    # project-relative; private signing keys are never accepted by Rextio.
+    artifact_source_lock_manifest: str | None = None
+    artifact_source_lock_signature: str | None = None
+    artifact_policy_manifest: str | None = None
+    artifact_policy_manifest_sha256: str | None = None
+    artifact_cargo_vendor: str | None = None
+    artifact_cargo_vendor_sha256: str | None = None
+    artifact_cargo_lock: str | None = None
+    artifact_cargo_lock_sha256: str | None = None
+    # Owner-prepared lock for every non-project toolchain/support input used
+    # by strict Full C6.  The lock is project-relative; its entries keep
+    # private host locators out of public evidence.
+    artifact_toolchain_support_lock: str | None = None
+    artifact_toolchain_support_lock_sha256: str | None = None
+    artifact_trusted_public_key: str | None = None
+    artifact_trusted_public_key_sha256: str | None = None
+    artifact_final_signature: str | None = None
+    artifact_signing_request_output: str | None = None
+    artifact_repeat_builds: int = 2
 
 
 @dataclass(frozen=True)
@@ -66,6 +90,10 @@ class ImportPackagePolicy:
     # Older try-native declarations intentionally remain metadata-only.
     distribution: str | None = None
     version: str | None = None
+    # Exact, project-owned source archive used by the strict Full-C6/C5.2
+    # profile.  The hard gate securely opens and revalidates these bytes.
+    source_archive: str | None = None
+    source_archive_sha256: str | None = None
 
 
 @dataclass(frozen=True)

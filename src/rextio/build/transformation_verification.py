@@ -10,17 +10,21 @@ returns ``None`` without perturbing the ordinary build path.
 from __future__ import annotations
 
 import ast
+import hashlib
+import hmac
 import os
+import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, SupportsIndex
 
 from rextio.analyzer.executable_identity import executable_ast_fingerprint
 from rextio.analyzer.models import FunctionAnalysis, ProjectAnalysis
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.evidence import (
     MAX_EVIDENCE_FILE_BYTES,
+    MAX_INPUT_FILES,
     MAX_SOURCE_TRANSFORMATIONS,
     EvidenceFileRef,
     SourceTransformationInventory,
@@ -31,15 +35,30 @@ from rextio.artifacts.evidence import (
     validate_logical_reference,
 )
 from rextio.artifacts.models import ArtifactKind
+from rextio.build.artifact_layout import ArtifactLayout
+from rextio.codegen.python_wrapper.wrapper_gen import render_wrapper_module
+from rextio.codegen.rust.cargo import render_cargo_toml
 from rextio.codegen.rust.generator import generate_rust_module
+from rextio.config.schema import RextioConfig
+from rextio.fallback.module_copy import (
+    fallback_module_path,
+    generated_module_path,
+    native_top_level_fallback_module_path,
+    render_native_top_level_fallback_module,
+)
 from rextio.ir.lowering import lower_project
-from rextio.partition.build_plan import BuildPlan
+from rextio.partition.build_plan import BuildPlan, create_build_plan
+from rextio.runtime.boundary_fallback import DEFAULT_BOUNDARY_FALLBACK_THRESHOLD
 from rextio.source.models import SourceModule, SourceOrigin
+from rextio.source.external_linkage import ExternalNativeRegistry, ExternalRuntimeGuard
 
 if TYPE_CHECKING:
+    from rextio.build.full_c6_host_inputs import FullC6AnalysisScope
     from rextio.build.supply_chain import EvidenceInputSnapshot
 
 _GENERATOR_BACKEND = "rextio-core-rust-pyo3-v1"
+_REPLAY_AUTHORITY_DOMAIN = "rextio.source-transformation-replay-authority.v1"
+_REPLAY_AUTHORITY_KEY = secrets.token_bytes(32)
 _FunctionIdentity = tuple[str, str, Path, int, int, int, int, str]
 
 
@@ -69,6 +88,115 @@ class _FileReceipt:
         return len(self.data)
 
 
+@dataclass(frozen=True, slots=True)
+class _ReplayResult:
+    verification: SourceTransformationVerification
+    generated_python: tuple[EvidenceFileRef, ...]
+    generated_cargo_toml: EvidenceFileRef
+
+
+class SourceTransformationReplayAuthority:
+    """Process-local proof that the exact C6.10 replay actually completed."""
+
+    __slots__ = (
+        "verification",
+        "generated_python",
+        "generated_cargo_toml",
+        "generated_python_tree_sha256",
+        "_authority_seal",
+        "_frozen",
+    )
+
+    verification: SourceTransformationVerification
+    generated_python: tuple[EvidenceFileRef, ...]
+    generated_cargo_toml: EvidenceFileRef
+    generated_python_tree_sha256: str
+    _authority_seal: bytes
+    _frozen: bool
+
+    def __init__(
+        self,
+        *,
+        verification: SourceTransformationVerification,
+        generated_python: tuple[EvidenceFileRef, ...],
+        generated_cargo_toml: EvidenceFileRef,
+        _authority_seal: bytes | None = None,
+    ) -> None:
+        if type(_authority_seal) is not bytes:
+            raise TypeError("source transformation replay authority requires its collector")
+        if type(verification) is not SourceTransformationVerification:
+            raise TypeError("source transformation replay verification is invalid")
+        _validate_generated_python_refs(generated_python)
+        _validate_generated_cargo_ref(generated_cargo_toml)
+        tree_sha256 = _generated_python_tree_digest(generated_python)
+        object.__setattr__(self, "verification", verification)
+        object.__setattr__(self, "generated_python", generated_python)
+        object.__setattr__(self, "generated_cargo_toml", generated_cargo_toml)
+        object.__setattr__(self, "generated_python_tree_sha256", tree_sha256)
+        object.__setattr__(self, "_authority_seal", _authority_seal)
+        object.__setattr__(self, "_frozen", True)
+        if not hmac.compare_digest(_authority_seal, _replay_authority_seal(self._payload())):
+            raise ValueError("source transformation replay authority seal is stale")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise TypeError("source transformation replay authority is immutable")
+
+    def __copy__(self) -> object:
+        raise TypeError("source transformation replay authority cannot be copied")
+
+    def __deepcopy__(self, _memo: object) -> object:
+        raise TypeError("source transformation replay authority cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("source transformation replay authority cannot be serialized")
+
+    def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
+        raise TypeError("source transformation replay authority cannot be serialized")
+
+    def __getstate__(self) -> object:
+        raise TypeError("source transformation replay authority cannot be serialized")
+
+    def __repr__(self) -> str:
+        return (
+            "SourceTransformationReplayAuthority("
+            f"digest={self.digest!r}, exact_outputs=<sealed>)"
+        )
+
+    @property
+    def digest(self) -> str:
+        """Return the path-bounded semantic identity protected by the seal."""
+        return sha256_hex(canonical_json_bytes(self._payload()))
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "domain": _REPLAY_AUTHORITY_DOMAIN,
+            "verification": self.verification.to_dict(),
+            "generated_python": [item.to_dict() for item in self.generated_python],
+            "generated_python_tree_sha256": self.generated_python_tree_sha256,
+            "generated_cargo_toml": self.generated_cargo_toml.to_dict(),
+        }
+
+
+def validate_source_transformation_replay_authority(
+    value: SourceTransformationReplayAuthority,
+) -> SourceTransformationReplayAuthority:
+    """Require an unmodified authority minted by this process's real collector."""
+    if type(value) is not SourceTransformationReplayAuthority:
+        raise TypeError("source transformation replay authority is missing")
+    _validate_generated_python_refs(value.generated_python)
+    _validate_generated_cargo_ref(value.generated_cargo_toml)
+    if (
+        value.generated_python_tree_sha256
+        != _generated_python_tree_digest(value.generated_python)
+        or not hmac.compare_digest(
+            value._authority_seal,
+            _replay_authority_seal(value._payload()),
+        )
+    ):
+        raise ValueError("source transformation replay authority is stale")
+    return value
+
+
 def collect_scoped_source_transformation_verification(
     *,
     project_root: Path,
@@ -76,28 +204,85 @@ def collect_scoped_source_transformation_verification(
     input_snapshot: EvidenceInputSnapshot,
     transformation_inventory: SourceTransformationInventory,
     embedding_enabled: bool,
+    boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+    external_native_registry: ExternalNativeRegistry | None = None,
+    external_runtime_guard: ExternalRuntimeGuard | None = None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
+    full_c6_config: RextioConfig | None = None,
 ) -> SourceTransformationVerification | None:
     """Replay one complete plugin-free project-native PyO3 closure, or ``None``."""
     try:
-        return _collect_scoped_source_transformation_verification(
+        return _collect_scoped_source_transformation_replay(
             project_root=project_root,
             plan=plan,
             input_snapshot=input_snapshot,
             transformation_inventory=transformation_inventory,
             embedding_enabled=embedding_enabled,
-        )
+            boundary_fallback_threshold=boundary_fallback_threshold,
+            external_native_registry=external_native_registry,
+            external_runtime_guard=external_runtime_guard,
+            full_c6_analysis_scope=full_c6_analysis_scope,
+            full_c6_config=full_c6_config,
+        ).verification
     except Exception:
         return None
 
 
-def _collect_scoped_source_transformation_verification(
+def collect_scoped_source_transformation_replay_authority(
     *,
     project_root: Path,
     plan: BuildPlan,
     input_snapshot: EvidenceInputSnapshot,
     transformation_inventory: SourceTransformationInventory,
     embedding_enabled: bool,
-) -> SourceTransformationVerification:
+    boundary_fallback_threshold: int = DEFAULT_BOUNDARY_FALLBACK_THRESHOLD,
+    external_native_registry: ExternalNativeRegistry | None = None,
+    external_runtime_guard: ExternalRuntimeGuard | None = None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None = None,
+    full_c6_config: RextioConfig | None = None,
+) -> SourceTransformationReplayAuthority | None:
+    """Replay exact C6.10 outputs and mint a process-local authority, or ``None``."""
+    try:
+        result = _collect_scoped_source_transformation_replay(
+            project_root=project_root,
+            plan=plan,
+            input_snapshot=input_snapshot,
+            transformation_inventory=transformation_inventory,
+            embedding_enabled=embedding_enabled,
+            boundary_fallback_threshold=boundary_fallback_threshold,
+            external_native_registry=external_native_registry,
+            external_runtime_guard=external_runtime_guard,
+            full_c6_analysis_scope=full_c6_analysis_scope,
+            full_c6_config=full_c6_config,
+        )
+        payload = _replay_authority_payload(
+            verification=result.verification,
+            generated_python=result.generated_python,
+            generated_cargo_toml=result.generated_cargo_toml,
+        )
+        return SourceTransformationReplayAuthority(
+            verification=result.verification,
+            generated_python=result.generated_python,
+            generated_cargo_toml=result.generated_cargo_toml,
+            _authority_seal=_replay_authority_seal(payload),
+        )
+    except Exception:
+        return None
+
+
+def _collect_scoped_source_transformation_replay(
+    *,
+    project_root: Path,
+    plan: BuildPlan,
+    input_snapshot: EvidenceInputSnapshot,
+    transformation_inventory: SourceTransformationInventory,
+    embedding_enabled: bool,
+    boundary_fallback_threshold: int,
+    external_native_registry: ExternalNativeRegistry | None,
+    external_runtime_guard: ExternalRuntimeGuard | None,
+    full_c6_analysis_scope: FullC6AnalysisScope | None,
+    full_c6_config: RextioConfig | None,
+) -> _ReplayResult:
     from rextio.build.supply_chain import EvidenceInputSnapshot as SnapshotModel
 
     if type(plan) is not BuildPlan:
@@ -108,6 +293,15 @@ def _collect_scoped_source_transformation_verification(
         raise TypeError("source transformation verification inventory is invalid")
     if type(embedding_enabled) is not bool or embedding_enabled:
         raise ValueError("source transformation verification embedding is out of scope")
+    if type(boundary_fallback_threshold) is not int or boundary_fallback_threshold < 0:
+        raise ValueError("source transformation verification fallback threshold is invalid")
+    if (external_native_registry is None) != (external_runtime_guard is None):
+        raise ValueError("source transformation verification external context is incomplete")
+    if external_native_registry is not None and (
+        type(external_native_registry) is not ExternalNativeRegistry
+        or type(external_runtime_guard) is not ExternalRuntimeGuard
+    ):
+        raise TypeError("source transformation verification external context is invalid")
     if input_snapshot.unavailable_reason is not None:
         raise ValueError("source transformation verification snapshot is unavailable")
 
@@ -115,6 +309,17 @@ def _collect_scoped_source_transformation_verification(
     analysis_root = Path(os.path.abspath(plan.analysis.project_root))
     if analysis_root != root:
         raise ValueError("source transformation verification project root disagrees")
+    replay_config = _require_replay_analysis_scope(
+        root=root,
+        plan=plan,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=full_c6_config,
+    )
+    if replay_config is not None and (
+        replay_config.build.fallback_threshold != boundary_fallback_threshold
+        or replay_config.embedding.enabled is not embedding_enabled
+    ):
+        raise ValueError("source transformation verification config disagrees")
     _require_pyo3_profile(plan)
 
     accepted = _accepted_function_map(plan.analysis)
@@ -142,6 +347,11 @@ def _collect_scoped_source_transformation_verification(
         raise ValueError("source transformation verification source snapshot coverage differs")
 
     generated_rust = _generated_rust_ref(input_snapshot, transformation_inventory)
+    generated_python = _generated_python_refs(input_snapshot)
+    generated_cargo_toml = _generated_cargo_ref(input_snapshot)
+    initial_python_paths = _walk_generated_python_paths(root)
+    if initial_python_paths != tuple(item.logical_path for item in generated_python):
+        raise ValueError("source transformation verification Python tree differs")
     initial_sources = {
         logical_path: _read_contained_file(root=root, logical_path=logical_path)
         for logical_path in sorted(source_inputs)
@@ -164,6 +374,23 @@ def _collect_scoped_source_transformation_verification(
         or initial_generated.size != generated_rust.size
     ):
         raise ValueError("source transformation verification generated receipt differs")
+    initial_python = {
+        item.logical_path: _read_contained_file(root=root, logical_path=item.logical_path)
+        for item in generated_python
+    }
+    for item in generated_python:
+        receipt = initial_python[item.logical_path]
+        if receipt.sha256 != item.sha256 or receipt.size != item.size:
+            raise ValueError("source transformation verification Python receipt differs")
+    initial_cargo = _read_contained_file(
+        root=root,
+        logical_path=generated_cargo_toml.logical_path,
+    )
+    if (
+        initial_cargo.sha256 != generated_cargo_toml.sha256
+        or initial_cargo.size != generated_cargo_toml.size
+    ):
+        raise ValueError("source transformation verification Cargo receipt differs")
 
     _verify_rederived_ast_records(
         root=root,
@@ -173,17 +400,36 @@ def _collect_scoped_source_transformation_verification(
         source_receipts=initial_sources,
     )
 
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=replay_config,
+    )
     replay_analysis = analyze_project(
         root,
-        boundary_warnings=True,
-        native_marker="auto",
+        boundary_warnings=(
+            True if replay_config is None else replay_config.policy.boundary_warnings
+        ),
+        native_marker=(
+            "auto" if replay_config is None else replay_config.policy.native_marker
+        ),
         target_language="rust",
-        native_top_level=False,
+        native_top_level=(
+            False if replay_config is None else replay_config.policy.native_top_level
+        ),
+        imports_config=None if replay_config is None else replay_config.imports,
         active_plugins=(),
         embedding_enabled=False,
         delegate_fallback=False,
         plugin_registry=None,
-        plugin_config=None,
+        plugin_config=replay_config,
+        external_native_registry=external_native_registry,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+    )
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=replay_config,
     )
     original_stub_inputs = plan.analysis._stub_inputs
     if original_stub_inputs is not None:
@@ -197,9 +443,20 @@ def _collect_scoped_source_transformation_verification(
         replay_analysis,
         include_embedding=False,
         plugin_types=None,
+        external_native_registry=external_native_registry,
     )
     ir_qualnames = tuple(function.qualname for function in module_ir.functions)
-    if ir_qualnames != tuple(sorted(accepted)):
+    external_qualnames = (
+        tuple(function.qualname for function in external_native_registry.private_functions)
+        if external_native_registry is not None
+        else ()
+    )
+    expected_ir_qualnames = (*accepted, *external_qualnames)
+    if (
+        len(set(expected_ir_qualnames)) != len(expected_ir_qualnames)
+        or len(ir_qualnames) != len(expected_ir_qualnames)
+        or set(ir_qualnames) != set(expected_ir_qualnames)
+    ):
         raise ValueError("source transformation verification lowered closure differs")
     if any(
         function.native_runtime_semantics
@@ -207,6 +464,7 @@ def _collect_scoped_source_transformation_verification(
         or function.has_boundary_calls
         or function.plugin_lowered
         for function in module_ir.functions
+        if function.qualname in accepted
     ):
         raise ValueError("source transformation verification lowered flags are out of scope")
     regenerated = generate_rust_module(
@@ -214,9 +472,30 @@ def _collect_scoped_source_transformation_verification(
         boundary_call_return_types={},
         plugin_providers={},
         plugin_types_by_key={},
+        external_runtime_guard=external_runtime_guard,
     ).encode("utf-8")
     if regenerated != initial_generated.data:
         raise ValueError("source transformation verification regenerated Rust differs")
+    replay_plan = create_build_plan(
+        replay_analysis,
+        "cpython",
+        artifact_profiles=plan.artifact_profiles,
+    )
+    regenerated_python = _regenerate_python_tree(
+        root=root,
+        plan=replay_plan,
+        boundary_fallback_threshold=boundary_fallback_threshold,
+    )
+    if tuple(regenerated_python) != tuple(item.logical_path for item in generated_python):
+        raise ValueError("source transformation verification regenerated Python tree differs")
+    if any(
+        regenerated_python[path] != initial_python[path].data
+        for path in regenerated_python
+    ):
+        raise ValueError("source transformation verification regenerated Python differs")
+    regenerated_cargo = render_cargo_toml(extra_dependencies=()).encode("utf-8")
+    if regenerated_cargo != initial_cargo.data:
+        raise ValueError("source transformation verification regenerated Cargo.toml differs")
 
     final_sources = {
         logical_path: _read_contained_file(root=root, logical_path=logical_path)
@@ -226,8 +505,28 @@ def _collect_scoped_source_transformation_verification(
         root=root,
         logical_path=generated_rust.logical_path,
     )
-    if final_sources != initial_sources or final_generated != initial_generated:
+    final_python_paths = _walk_generated_python_paths(root)
+    final_python = {
+        item.logical_path: _read_contained_file(root=root, logical_path=item.logical_path)
+        for item in generated_python
+    }
+    final_cargo = _read_contained_file(
+        root=root,
+        logical_path=generated_cargo_toml.logical_path,
+    )
+    if (
+        final_sources != initial_sources
+        or final_generated != initial_generated
+        or final_python_paths != initial_python_paths
+        or final_python != initial_python
+        or final_cargo != initial_cargo
+    ):
         raise ValueError("source transformation verification inputs changed during replay")
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=replay_config,
+    )
 
     inventory_digest = sha256_hex(canonical_json_bytes(transformation_inventory.to_dict()))
     canonical_source_inputs = tuple(
@@ -238,16 +537,70 @@ def _collect_scoped_source_transformation_verification(
     )
     module_ir_digest = sha256_hex(canonical_json_bytes(module_ir.to_dict()))
     regenerated_digest = sha256_hex(regenerated)
-    return SourceTransformationVerification(
-        source_transformation_inventory_sha256=inventory_digest,
-        source_input_set_sha256=source_input_set_digest,
-        module_ir_sha256=module_ir_digest,
-        function_qualnames=tuple(sorted(accepted)),
-        source_inputs=canonical_source_inputs,
-        generated_rust=generated_rust,
-        regenerated_rust_sha256=regenerated_digest,
-        regenerated_rust_size=len(regenerated),
-        generator_backend=_GENERATOR_BACKEND,
+    return _ReplayResult(
+        verification=SourceTransformationVerification(
+            source_transformation_inventory_sha256=inventory_digest,
+            source_input_set_sha256=source_input_set_digest,
+            module_ir_sha256=module_ir_digest,
+            function_qualnames=tuple(sorted(accepted)),
+            source_inputs=canonical_source_inputs,
+            generated_rust=generated_rust,
+            regenerated_rust_sha256=regenerated_digest,
+            regenerated_rust_size=len(regenerated),
+            generator_backend=_GENERATOR_BACKEND,
+        ),
+        generated_python=generated_python,
+        generated_cargo_toml=generated_cargo_toml,
+    )
+
+
+def _require_replay_analysis_scope(
+    *,
+    root: Path,
+    plan: BuildPlan,
+    full_c6_analysis_scope: FullC6AnalysisScope | None,
+    full_c6_config: RextioConfig | None,
+) -> RextioConfig | None:
+    """Bind strict replay to the analysis namespace that produced its plan."""
+    plan_scope = plan.analysis._full_c6_analysis_scope
+    if full_c6_analysis_scope is None or full_c6_config is None:
+        if (
+            full_c6_analysis_scope is not None
+            or full_c6_config is not None
+            or plan_scope is not None
+        ):
+            raise ValueError("source transformation verification Full C6 scope is incomplete")
+        return None
+    if type(full_c6_config) is not RextioConfig:
+        raise TypeError("source transformation verification Full C6 config is invalid")
+    if plan_scope is not full_c6_analysis_scope:
+        raise ValueError("source transformation verification Full C6 scope disagrees")
+    _revalidate_replay_analysis_scope(
+        root=root,
+        full_c6_analysis_scope=full_c6_analysis_scope,
+        full_c6_config=full_c6_config,
+    )
+    return full_c6_config
+
+
+def _revalidate_replay_analysis_scope(
+    *,
+    root: Path,
+    full_c6_analysis_scope: FullC6AnalysisScope | None,
+    full_c6_config: RextioConfig | None,
+) -> None:
+    if full_c6_analysis_scope is None:
+        if full_c6_config is not None:
+            raise ValueError("source transformation verification Full C6 scope is incomplete")
+        return
+    if type(full_c6_config) is not RextioConfig:
+        raise TypeError("source transformation verification Full C6 config is invalid")
+    from rextio.build.full_c6_host_inputs import require_full_c6_analysis_scope
+
+    require_full_c6_analysis_scope(
+        full_c6_analysis_scope,
+        project_root=root,
+        config=full_c6_config,
     )
 
 
@@ -374,6 +727,168 @@ def _generated_rust_ref(
     if any(record.generated_rust != expected for record in inventory.records):
         raise ValueError("source transformation verification Rust record binding differs")
     return expected
+
+
+def _generated_python_refs(
+    snapshot: EvidenceInputSnapshot,
+) -> tuple[EvidenceFileRef, ...]:
+    generated = tuple(snapshot.generated_python)
+    _validate_generated_python_refs(generated)
+    return generated
+
+
+def _validate_generated_python_refs(
+    generated: tuple[EvidenceFileRef, ...],
+) -> None:
+    if type(generated) is not tuple or not generated or len(generated) > MAX_INPUT_FILES:
+        raise ValueError("source transformation verification Python inputs are invalid")
+    if any(
+        type(item) is not EvidenceFileRef
+        or item.role != "generated-python-input"
+        or PurePosixPath(item.logical_path).suffix != ".py"
+        for item in generated
+    ):
+        raise ValueError("source transformation verification Python input is invalid")
+    paths = tuple(item.logical_path for item in generated)
+    if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+        raise ValueError("source transformation verification Python inputs are noncanonical")
+
+
+def _generated_cargo_ref(snapshot: EvidenceInputSnapshot) -> EvidenceFileRef:
+    generated = tuple(
+        item
+        for item in snapshot.generated_rust
+        if PurePosixPath(item.logical_path).parts[-2:] == ("rust", "Cargo.toml")
+    )
+    if len(generated) != 1:
+        raise ValueError("source transformation verification Cargo.toml is ambiguous")
+    _validate_generated_cargo_ref(generated[0])
+    return generated[0]
+
+
+def _validate_generated_cargo_ref(value: EvidenceFileRef) -> None:
+    if (
+        type(value) is not EvidenceFileRef
+        or value.role != "generated-rust-input"
+        or PurePosixPath(value.logical_path).parts[-2:] != ("rust", "Cargo.toml")
+    ):
+        raise ValueError("source transformation verification Cargo.toml is invalid")
+
+
+def _generated_python_tree_digest(generated: tuple[EvidenceFileRef, ...]) -> str:
+    return sha256_hex(canonical_json_bytes([item.to_dict() for item in generated]))
+
+
+def _replay_authority_payload(
+    *,
+    verification: SourceTransformationVerification,
+    generated_python: tuple[EvidenceFileRef, ...],
+    generated_cargo_toml: EvidenceFileRef,
+) -> dict[str, object]:
+    return {
+        "domain": _REPLAY_AUTHORITY_DOMAIN,
+        "verification": verification.to_dict(),
+        "generated_python": [item.to_dict() for item in generated_python],
+        "generated_python_tree_sha256": _generated_python_tree_digest(generated_python),
+        "generated_cargo_toml": generated_cargo_toml.to_dict(),
+    }
+
+
+def _replay_authority_seal(payload: object) -> bytes:
+    return hmac.new(
+        _REPLAY_AUTHORITY_KEY,
+        canonical_json_bytes(payload),
+        hashlib.sha256,
+    ).digest()
+
+
+def _regenerate_python_tree(
+    *,
+    root: Path,
+    plan: BuildPlan,
+    boundary_fallback_threshold: int,
+) -> dict[str, bytes]:
+    """Render the generated Python tree without consulting generated bytes."""
+    sentinel = Path("/__rextio_replayed_python__")
+    relative_files: dict[str, bytes] = {}
+    for module_plan in plan.fallback.modules:
+        module = module_plan.module
+        source = Path(module.file_path).read_bytes()
+        if not module_plan.needs_wrapper:
+            path = generated_module_path(sentinel, module)
+            relative_files[path.relative_to(sentinel).as_posix()] = source
+            continue
+        fallback_path = fallback_module_path(sentinel, module)
+        relative_files[fallback_path.relative_to(sentinel).as_posix()] = source
+        if module_plan.accepted_native_top_level is not None:
+            top_level_path = native_top_level_fallback_module_path(sentinel, module)
+            relative_files[top_level_path.relative_to(sentinel).as_posix()] = (
+                render_native_top_level_fallback_module(module).encode("utf-8")
+            )
+        wrapper_path = generated_module_path(sentinel, module)
+        relative_files[wrapper_path.relative_to(sentinel).as_posix()] = render_wrapper_module(
+            module,
+            boundary_fallback_threshold,
+        ).encode("utf-8")
+
+    # Match orchestrator._write_runtime_support exactly: its runtime copy
+    # replaces any project-generated subtree at rextio/runtime.
+    for relative_key in tuple(relative_files):
+        if relative_key == "rextio/runtime" or relative_key.startswith(
+            "rextio/runtime/"
+        ):
+            del relative_files[relative_key]
+    package_root = Path(__file__).resolve().parents[1]
+    relative_files["rextio/__init__.py"] = (package_root / "__init__.py").read_bytes()
+    relative_files["rextio/__about__.py"] = (package_root / "__about__.py").read_bytes()
+    runtime_root = package_root / "runtime"
+    for path in sorted(runtime_root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(runtime_root).as_posix()
+        relative_files[f"rextio/runtime/{relative}"] = path.read_bytes()
+
+    prefix = ArtifactLayout(root).python_dir.relative_to(root).as_posix()
+    return {
+        PurePosixPath(prefix, relative).as_posix(): data
+        for relative, data in sorted(relative_files.items())
+    }
+
+
+def _walk_generated_python_paths(root: Path) -> tuple[str, ...]:
+    """List the exact current generated ``.py`` tree without following links."""
+    python_root = ArtifactLayout(root).python_dir
+    linked_root = python_root.lstat()
+    if not stat.S_ISDIR(linked_root.st_mode) or python_root.is_symlink():
+        raise OSError("source transformation generated Python root is unsafe")
+    stack = [python_root]
+    found: list[str] = []
+    visited_directories = 0
+    while stack:
+        directory = stack.pop()
+        visited_directories += 1
+        if visited_directories > MAX_INPUT_FILES:
+            raise OSError("source transformation generated Python tree is too large")
+        entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        for entry in entries:
+            linked = entry.stat(follow_symlinks=False)
+            if stat.S_ISLNK(linked.st_mode):
+                raise OSError("source transformation generated Python tree contains a symlink")
+            path = Path(entry.path)
+            if stat.S_ISDIR(linked.st_mode):
+                stack.append(path)
+            elif stat.S_ISREG(linked.st_mode):
+                if path.suffix != ".py":
+                    raise OSError(
+                        "source transformation generated Python tree contains "
+                        "a non-Python file"
+                    )
+                found.append(path.relative_to(root).as_posix())
+                if len(found) > MAX_INPUT_FILES:
+                    raise OSError("source transformation generated Python tree is too large")
+            else:
+                raise OSError("source transformation generated Python tree is unsafe")
+    return tuple(sorted(found))
 
 
 def _verify_rederived_ast_records(
@@ -542,4 +1057,9 @@ def _read_contained_file(*, root: Path, logical_path: str) -> _FileReceipt:
                 pass
 
 
-__all__ = ["collect_scoped_source_transformation_verification"]
+__all__ = [
+    "SourceTransformationReplayAuthority",
+    "collect_scoped_source_transformation_replay_authority",
+    "collect_scoped_source_transformation_verification",
+    "validate_source_transformation_replay_authority",
+]

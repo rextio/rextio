@@ -2,8 +2,10 @@
 
 Status: **Unreleased Release Train C**, experimental. The latest published
 Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.19.0**; none of the
-surfaces on this page should be treated as already available from PyPI.
+branch emits the additive, unreleased tooling contract **2.24.0**; none of the
+surfaces on this page should be treated as already available from PyPI. The
+strict artifact authority described here does not authorize merging `0.1.5`
+into `main`, tagging a release, or uploading any package to PyPI.
 
 Train C introduces a fail-closed planning layer for host source, output
 artifacts, and native executable entry graphs. It also connects one deliberately
@@ -96,12 +98,15 @@ hashes/sizes, incomplete sections, and unavailable plans all reject. Rextio
 validates structure and binding only; it does not auto-approve licenses or
 give legal advice.
 
-Any available or unavailable plan still blocks `rextio build` before configured
+In ordinary preview mode, any available or unavailable plan still blocks
+`rextio build` before configured
 CPython/Nuitka/Cargo probes and artifact work. Missing/invalid authorization
 uses status `external-source-c6-blocked`. A **verified** SourceLock uses the
 distinct status `external-source-c5-not-implemented` because remaining C5.2
 call-site linkage, body lowerability, Rust codegen, and packaging are not
-implemented.
+authorized by the preview. The separate `full-c6-required` profile below
+reopens and revalidates the source wheel; it does not promote this report into
+build authority.
 
 The plan and CLI include a strong warning: dependency source translation or
 redistribution can create derivative-work obligations, GNU/copyleft terms need
@@ -256,7 +261,7 @@ Unsafe, unsupported, missing, ambiguous, changed, or over-bound candidates omit
 C6.8 and its dependent C6.9 graph; the corresponding observation is unavailable with
 `native-runtime-path-resolution-inventory-unavailable`. A malformed present
 model fails the full readiness reconstruction closed. At the provenance
-ceiling C6.14 is omitted first, then C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, and
+ceiling C6.15 is omitted first, then C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, and
 C6.6. A satisfied C6.8 check is
 still not `native-runtime-resolution-complete`: actual loader precedence and
 environment, complete transitive closure, system-library bytes, runtime
@@ -290,9 +295,12 @@ leave C6.8 intact. Policy version 5 reports
 `native-runtime-transitive-closure-complete` remains blocked.
 
 After recursive snapshot cleanup, C6.8 receipt refresh requires exact prior
-coverage and preserves file plus ancestor/descendant stamps. Only the generated
-root directory's size/ctime/mtime may differ; its device, inode, and mode remain
-fixed. Snapshot unlink/rmdir or final-absence failures make the observation
+coverage and preserves exact file plus generated-root/descendant stamps. For
+absolute ancestors strictly above the generated root, unrelated sibling churn
+may change only size/ctime/mtime; device, inode, and mode remain fixed. The
+separate bounded refresh may additionally admit only the generated root
+directory's expected size/ctime/mtime delta while keeping its device, inode, and
+mode fixed. Snapshot unlink/rmdir or final-absence failures make the observation
 unavailable and never replace an already-active inspection exception.
 
 Windows PE, runtime-bearing plugins,
@@ -331,8 +339,8 @@ unsigned provenance, with explicit observation-presence metadata. A replay or
 scope mismatch makes only `scoped-source-transformation-verified` unavailable
 and adds `scoped-source-transformation-verification-unavailable`; a malformed
 present model still collapses the readiness report to the closed
-all-`not-evaluated` shape. At the sidecar ceiling C6.14 is omitted first;
-C6.13, C6.12, and C6.11 follow, then C6.10, C6.9, C6.8, C6.7, and C6.6.
+all-`not-evaluated` shape. At the sidecar ceiling C6.15 is omitted first;
+C6.14, C6.13, C6.12, and C6.11 follow, then C6.10, C6.9, C6.8, C6.7, and C6.6.
 
 `complete_for_scope: true` is intentionally paired with `complete: false` and
 `global_provenance_complete: false`. C6.10 therefore does not satisfy
@@ -440,7 +448,7 @@ Readiness policy v9 has twelve observations and ten readiness checks. Missing
 C6.13 makes only `scoped-analysis-inputs-verified` unavailable and adds
 `scoped-analysis-input-verification-unavailable`; malformed or forged present
 receipts fail the readiness assessment closed. Deterministic omission order is
-C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, C6.6. Removing C6.10 also removes
+C6.15, C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8, C6.7, C6.6. Removing C6.10 also removes
 dependent C6.12 and C6.13.
 
 ### C6.14 artifact-policy coverage inventory
@@ -465,6 +473,401 @@ Readiness policy v10 adds `artifact-policy-coverage-bound` and the fixed
 makes every check `not-evaluated`; absence remains an additive unavailable
 observation. C6.14 is unsigned provenance metadata, never a material, and is
 the first omission at the sidecar ceiling.
+
+### C6.15 scoped artifact-class policy verification
+
+C6.15 adds `artifact_class_policy_verification` only when the complete exact
+C6.14 inventory is present. The strict root file
+`rextio.artifact-policy.lock.json` repeats the semantic C6.14 SHA-256 and
+canonical partition digest plus exactly thirteen ordered rows. Each row nests
+the complete C6.14 class/count/set/state/receipt binding and supplies one
+license and one transformation disposition from a deterministic closed matrix.
+Receipt-backed C6.10-C6.13 states must remain
+`prerequisite-receipt-bound`; they cannot be replaced by an owner declaration
+or not-applicable token.
+
+The shared descriptor-pinned, no-follow, single-link strict JSON reader rejects
+duplicate keys, non-finite/deep/oversized content, boolean-as-integer confusion,
+row changes/order/count mismatches, stale digests, links/races, and path aliases.
+Final collection recollects C6.10-C6.13, re-derives C6.14, and rereads the
+exact lock, requiring full equality. The lock is added exactly once as
+provenance material outside C6.14,
+which avoids a cyclic digest. Failure or count/sidecar pressure omits only
+C6.15; C6.15 is always removed before C6.14.
+
+Readiness policy v11 adds the fourteenth observation
+`scoped-artifact-class-policy-declaration-bound` and fixed blocker
+`scoped-artifact-class-policy-declaration-unavailable`. A malformed present
+receipt makes all readiness checks `not-evaluated`; an absent receipt is only
+the new unavailable observation. Attestor identity, SPDX, license/NOTICE files,
+obligations, compatibility, ownership/derivative rights, legal approval,
+technical provenance, global completion, signatures, and distribution
+authority remain false.
+
+## Full C6 + C5.2 bounded Alpha (contracts 2.21.0-2.24.0)
+
+Contracts through 2.20.0 above remain historical, observation-only preview
+contracts. Contract 2.21.0 adds separate strict authority, reproducible-build,
+signing, supply-chain, and atomic-publication primitives. Contract 2.22.0 adds
+bounded C5.2 linkage and the initial CLI coordinator. Contract 2.23.0 replaces
+the digest/count-only policy bootstrap with an exact public technical template
+and a separate explicit owner-completion/finalization handoff. Contract 2.24.0
+adds the public host support-lock bootstrap, the fixed support-closure binding,
+and path-free production sandbox/support receipt surfaces. None changes the
+meaning of `artifact_evidence` or the always-blocked
+`artifact_distribution_authorization` preview record.
+
+The first Alpha profile is frozen rather than general:
+
+| Dimension | Accepted scope |
+| --- | --- |
+| Host | CPython 3.11 exactly on macOS arm64 (`aarch64-apple-darwin`) or Linux x86_64 (`x86_64-unknown-linux-gnu`) |
+| Rextio installation | Non-editable, cache-free installed distribution; version/import origin and the complete `rextio/` tree must match the `rextio/` members of one bounded wheel `RECORD` inventory, with no missing, extra, changed, aliased, symlinked, hard-linked, `__pycache__`, or `.pyc` entry. The cumulative installed-tree input budget is 256 MiB: the declared `rextio/` RECORD-member size aggregate is rejected before walking, and the actual `stat`/read aggregate is rechecked while walking. Install with `pip --no-compile`; every strict process requires `PYTHONDONTWRITEBYTECODE=1` or `-B` |
+| Analysis namespace | Exact bounded, built-in-filtered project `.py` file/directory namespace; custom `.rextioignore`, nonignored links/special entries, or namespace drift are rejected |
+| Runtime/build | CPython fallback, PyO3 host extension, rustup-selected Cargo/rustc, verified target-specific linker binding, canonical support lock, platform production sandbox, exactly two isolated builds |
+| Cargo inputs | Owner-pinned SHA-256 `Cargo.lock` and vendored tree; `cargo build --release --locked --offline --frozen` only; this proves selected-input integrity, not registry/publisher origin |
+| External source | Exactly one imported, plugin-free, depth-1 pure-Python `py3-none-any` wheel with exact distribution/version/archive digest |
+| Linkage | Direct final-import calls to reached leaf functions; positional scalar `bool`/`float`/`int`/`str` signatures only |
+| Dependency runtime | Preserve exact `Requires-Dist`; verify installed identity/version/`RECORD` membership and reached source bytes without importing or introspecting the dependency module/callable |
+| Output license material | Project/Cargo license payloads plus exact SourceLock PEP 639 bytes below `.dist-info/licenses/external/<normalized-distribution>/<version>/`; at most 128 files and 64 MiB total |
+| Owner policy | Canonical bootstrap v2 technical facts + separate canonical owner completion + offline final policy manifest v2 |
+| Excluded | Plugins, host executables, rust-crate output, native top level, embedding, Windows, recursive promotion, dynamic/escaped/mutated calls |
+
+The cache-free installation rule protects the integrity of the build evidence
+collected by an already-running owner-controlled process. It is **not** a
+hostile-process secure-boot claim and does not defend against hostile same-UID
+concurrent replacement, a compromised kernel or operating
+system, or complete time/randomness/scheduling/CPU virtualization.
+
+`[build] artifact_distribution_policy = "full-c6-required"` requires
+`artifact_evidence_policy = "required"`, CPython fallback, Cargo/PyO3 with
+`rust.importable = false`, exactly one complete import declaration, a signed
+SourceLock v2 manifest, configured and SHA-256-pinned Cargo lock/vendor inputs,
+the configured `artifact_toolchain_support_lock` /
+`artifact_toolchain_support_lock_sha256` pair, an owner-policy output path, a
+SHA-256-pinned trusted public key, an exact signing-request output path, and
+`artifact_repeat_builds = 2`. The policy digest
+is intentionally absent only during policy bootstrap and mandatory thereafter.
+All authority-sensitive paths are normalized, distinct, project-relative
+paths. Rextio accepts public verification material only; it neither invents
+owner decisions nor accepts, creates, or retains a private signing key.
+
+Install the Rextio wheel with `python -m pip install --no-compile ...`, remove
+any pre-existing bytecode cache by using a fresh environment, and start each of
+the three `rextio build` processes with `PYTHONDONTWRITEBYTECODE=1` (or
+`python -B`). The process must already report `sys.dont_write_bytecode is True`.
+The complete `rextio/` RECORD-member inventory and physical package namespace
+reject every `__pycache__`/`.pyc` row or entry, unrecorded directory/member,
+unsafe alias or special entry, and an addition between the two inventory walks.
+Before the walk begins, the aggregate of all declared `rextio/` RECORD-member
+sizes must fit the 256 MiB installed-input budget. During the walk, the aggregate of actual
+member `stat` sizes and bounded reads is independently checked against the same
+limit, so forged declarations cannot expand the accepted tree.
+
+The configured Cargo lock/vendor digests freeze the exact bytes the owner chose.
+They are not a claim that Rextio authenticated a crates.io index, alternate
+registry, crate publisher, or upstream source origin. That provenance boundary
+remains outside this Alpha.
+
+Bootstrap the fixed host support closure before the first lifecycle build. The
+output parent must already be owner-owned mode `0700`:
+
+```text
+rextio policy bootstrap-support-lock \
+  --project-root . \
+  --output authority/rextio.toolchain-support.lock.json \
+  --format json
+```
+
+The command creates a canonical single-link mode-`0600` file, or exactly
+reuses identical bytes, and returns the exact
+`artifact_toolchain_support_lock` / `_sha256` config pair. Its public JSON is
+host-absolute-path-free, retains the project-relative config path, and also
+reports target, fixed manifest/root roles, raw lock SHA-256, and tree Merkle
+SHA-256. It authorizes neither a build nor
+distribution. The output must be disjoint from every configured lifecycle
+artifact: exact, ancestor, and descendant aliases are rejected after lexical
+NFC/case-folded path-part normalization, before output creation, including for
+every `imports.packages.*.source_archive` path whether or not it exists and not
+only the single strict package used by this Alpha.
+
+The lock joins those digests to one process-sealed discovery plan. Linux
+x86_64 admits the fixed GNU/Python/Rust closure and launches Cargo through
+`bwrap`, a sealed seccomp filter, the support-locked isolated CPython launcher,
+and Landlock. macOS arm64 launches Cargo through `sandbox-exec` and binds the
+exact full Xcode developer root, SDK/toolchain resources, required system
+sandbox profiles, and captured sealed-system-volume anchor. Its base profile
+removes inherited mutable/data-volume access, including
+`file-map-executable`, below `/private/var`, `/private/etc`, `/Library`, `/dev`,
+`/cores`, and `/System/Volumes/Preboot`, while retaining sealed-system
+execution. It adds executable mapping/process execution back only for a path
+with an explicit bound `read-execute` rule or a bound read-write directory;
+ambient mutable paths stay denied.
+
+Each strict `rextio build` invocation verifies the complete support tree three
+times: once during configured host-input collection and twice inside the native
+executor (entry and immediately before authority mint). Every owner-policy
+lifecycle stage repeats that sequence independently. External, production,
+internal, and per-build boundaries perform zero additional full walks; they
+revalidate the sealed plan, critical leaves, and exact plan/raw/Merkle digest
+identity. Both invocation receipts carry the closed sandbox-engine identifier
+plus path-free plan/profile digests and, on Linux, the sealed seccomp digest.
+`sandbox_profile_sha256` is
+the path-tokenized, engine-specific semantic profile contract and is identical
+for both builds and equivalent lifecycle runs. The raw rendered profile embeds
+private quarantine/PyO3 paths and is neither serialized as a public identity
+nor signed. Strict SBOM and SLSA material sets bind the support plan plus the
+raw-lock and Merkle identities.
+
+One local macOS arm64 observation covered roughly **104,645** members and
+**2.67 GB**, with about **45 seconds** per full verification. It is not a
+support limit, performance promise, or CI guarantee. The real installed-wheel
+lifecycle is intentionally excluded from automatic CI and does not confer CI
+certification. Validate one exact supported host and revision manually with:
+
+```bash
+python scripts/validate-full-c6-host.py
+```
+
+The optional `--preflight-only` flag checks CPython 3.11, the supported host
+target, Cargo 1.93.1, and Xcode/sandbox-exec or bubblewrap without building.
+The complete command requires a clean Git worktree and index, records the exact
+`HEAD` commit, exports only its tracked files into a fresh temporary source tree,
+builds the wheel there, installs it non-editably into a second clean environment,
+and runs the existing real-Cargo E2E harness outside the checkout. It neither
+uses nor removes existing local `build/` or `dist/` contents. These boundaries
+do not create a general hermetic-build claim or virtualize time, randomness,
+scheduling, or CPU behavior.
+
+The isolated executor does not broaden its scrubbed `PATH` to find ambient
+compiler tools. It binds the captured, identity-verified linker absolute path
+through exactly one active target variable:
+`CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER` or
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER`. The executor rechecks that exact
+value before each invocation and rejects caller prebinding, a missing or changed
+path, same-name shadowing, and presence of the inactive target variable.
+Cargo receives and is revalidated against those exact absolute paths. The
+semantic invocation receipt alone maps executor-owned `HOME`, `CARGO_HOME`, and
+`CARGO_TARGET_DIR` below `/rextio/build`, and maps the project/build sides of
+the two remap flags to `/rextio/project` and `/rextio/build`, so independently
+fresh lifecycle runs agree. Caller-controlled environment values remain exact.
+
+On macOS arm64 only, the executor also owns the exact linker flags that set
+`LC_ID_DYLIB` to `@rpath/lib_rextio_native.dylib`. It leaves the linker's
+default, content-derived deterministic `LC_UUID` in place because dyld requires
+that load command. Linux x86_64 linker flags are unchanged. Runtime inventory
+admits the stable identity only when it is the expected first self row and the
+bounded `otool -D` result independently verifies the complete name; an
+unverified, later, or lookalike `@rpath` row fails closed. In a dedicated real
+two-build experiment, the two unsigned wheels, native payloads, UUIDs, ad-hoc
+code signatures, and `RECORD` were byte-identical, contained no quarantine-root
+string, and the native extension loaded successfully. That experiment does not
+by itself certify the remaining owner-policy/signing/publication lifecycle. A
+later final local real-E2E at `f9eb5e6` did certify the complete three-stage
+installed-wheel path on macOS arm64 with CPython 3.11.15 and Cargo 1.93.1,
+including exact two-build execution per stage, final publication/authorization,
+fresh install, external license/metadata/RECORD bindings, runtime guard poison
+check, and a cache-free tree. The subsequent installed-input byte-budget change
+  is unit-tested. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
+  for the 2.24.0 support-lock/sandbox changes now requires the manual validation
+  command above and is not CI-certified.
+
+The macOS dyld shared-cache exception is closed rather than prefix-based. For
+the exact direct `/usr/lib/libSystem.B.dylib` dependency, it permits the
+observed one-hop singleton provider
+`/usr/lib/system/libcommonCrypto.dylib`; it does not admit arbitrary
+`/usr/lib/system/*` descendants. That exact provider must occur in the final
+platform-image snapshot, scoped and global lookup must resolve one identical
+address, and `dladdr` must map the address to the same provider path. An
+unobserved provider, a different address/path, or any other singleton fails
+closed. The final snapshot remains OS-build-bound and all existing native
+runtime authority checks remain in force. Provider identity probes must leave
+the final loaded-image snapshot byte-for-byte unchanged, and every later
+process-local native-runtime authority validation recollects that snapshot. A
+late loaded image taints the process and cannot mint or retain authority.
+
+The strict license-material collector has one closed compatibility rule for
+historical Cargo metadata: exact `MIT/Apache-2.0` is interpreted as the
+canonical policy expression `MIT OR Apache-2.0`. This semantic normalization
+does not rewrite the vendored manifest; the original `Cargo.toml` bytes,
+SHA-256, size, and workspace receipt remain evidence-bound. Whitespace variants,
+reversed operands, and all other slash spellings fail closed.
+
+The C5.2 preflight securely reopens the configured source wheel rather than
+trusting installed files or preview JSON. Because installers can rewrite
+`RECORD`, the installed plan's `RECORD` identity and the archive wheel's own
+`RECORD` identity are separately bound; every shared source, METADATA, WHEEL,
+and license-file identity must still match exactly. Preflight reconstructs
+source analyses, proves each direct project call against final import bindings
+and static scalar types, lowers only reached helpers as private Rust
+`FunctionIR`, then forces a fresh project analysis with a sealed
+same-transaction registry. The orchestrator rebuilds and compares the linkage,
+runtime guard, and complete source-wheel member contract before code generation.
+External functions never become project exports and their source is not
+vendored into the output wheel.
+
+The linkage proof also resolves capabilities through the complete project
+import/re-export graph. Direct, multi-hop, or package-initializer laundering of
+`importlib.import_module`, `globals`/`vars`, `sys.modules`, `__builtins__`,
+`__dict__`, loader state, or equivalent reflective namespace access fails
+closed, as do aliases, mutation, value escape, and dynamic call targets.
+
+The same process seal carries the exact bounded project Python namespace through
+initial analysis, C5.2 reanalysis, and C6 transformation replay. The scanner
+uses only its built-in exclusions plus the one verified Cargo vendor exclusion;
+a project `.rextioignore` is forbidden in this profile. File/directory identity,
+content, path, size, count, depth, and temporal bindings detect additions,
+removals, aliases, special entries, and analysis-time or replay-time mutation.
+If this scope cannot be established before analysis, the CLI emits only a
+sanitized `RXT060` on stderr: it creates no project report and does not follow or
+write through a possibly untrusted `.rextio` path.
+
+The output contract retains exactly
+`Requires-Dist: <distribution>==<version>`. Generated Rust uses
+`importlib.metadata` only to locate and identify the installed distribution. It
+does **not** import or introspect the external dependency module or callable:
+callable name/qualname/first-line identity was already proven by the signed
+source analysis. At extension admission the guard checks normalized
+distribution name, exact version, `RECORD` membership, canonical located path,
+and exact reached-module size/SHA-256. On macOS/Linux it opens `/`, then walks
+every absolute distribution-root and source-member component descriptor-
+relatively with `openat`, `O_NOFOLLOW`, `O_DIRECTORY`, and `O_CLOEXEC` as
+applicable. The final source open also uses `O_NONBLOCK`, after which the guard
+requires a single-link regular file, bounds the read, and compares pre/post
+device/inode/link/size/mtime/ctime metadata. Linked roots/ancestors, symlinks,
+hard links, FIFOs and other special files therefore fail closed without a
+blocking open. This preserves Python dependency installation semantics without
+executing external top-level Python before the guard has finished.
+
+The final wheel also contains the exact external source wheel's PEP 639 license
+payload bytes. Output METADATA declares each canonical
+`License-File: external/<normalized-distribution>/<version>/<relative-path>`, and
+the corresponding wheel member lives under `.dist-info/licenses/`. Derivation
+binds each payload to the SourceLock verification digest, external distribution
+and version, source subject identity/observation, output mapping, SHA-256 and
+size; final METADATA, `RECORD`, subject-wheel, two-build, policy, SBOM, and
+provenance checks therefore observe those members. The closed output set permits
+at most 128 license files and 64 MiB total. The current frozen real-PyO3 fixture
+uses 108 (project 1 + Cargo 106 + external 1); the macOS arm64 final local E2E
+confirmed that observation, while a current Linux x86_64 observation remains a
+manual host-validation task rather than a blocking CI job. A 129th file,
+noncanonical ordering/path, or alias fails closed. This copies required license
+material, not the dependency's Python source.
+
+### Public policy handoff
+
+The bootstrap is canonical schema/domain v2
+(`rextio.full-c6-owner-policy-bootstrap.v2`). It embeds a bounded technical
+template (`rextio.full-c6-owner-policy-template.v1`) containing the exact
+combined C6.14+C5.2 partition and rows, transformation records and set digest,
+fresh project/Cargo internal license observations, the independently verified
+external-wheel license observation, owner identity/key requirements, and input
+aggregate digests. License observations bind declared and independently detected
+SPDX strings, exact license-file logical path/SHA-256/size, and detector
+payload/receipt digests. The request is still a non-authorizing observation: it
+contains no source or license payload bytes, host path, owner decision, legal
+approval, signature, private key, or distribution authority.
+
+The owner authors a separate canonical completion
+(`rextio.full-c6-owner-policy-completion.v1`). It must explicitly `allow` every
+license-applicable row using the exact observed evidence, supply the closed owner
+declaration/key binding, and accept the exact transformation-set digest. Rextio
+does not infer any of those decisions. The offline command combines only the
+exact canonical pair:
+
+```text
+rextio policy finalize \
+  --bootstrap state/rextio.full-c6-policy.bootstrap.json \
+  --completion locks/rextio.full-c6-policy.completion.json \
+  --output locks/rextio.full-c6-policy.json
+```
+
+The finalizer atomically creates, or exactly reuses, canonical policy manifest
+schema/domain v2 (`rextio.full-c6-owner-policy-manifest.v2`). Its
+`bootstrap_request_sha256` makes the template lineage explicit. The command
+reports `signed: false` and `distribution_authorized: false`; it neither runs a
+build nor signs the file. Changed, noncanonical, aliased, linked, duplicated,
+deep, oversized, or mismatched input fails closed.
+
+The CLI lifecycle has exactly three stages:
+
+1. **Owner-policy completion bootstrap.** When the configured policy path has
+   no digest, the only lifecycle artifact is the canonical v2
+   `rextio.full-c6-policy.bootstrap.json` described above. The ordinary strict
+   `check.json` and `build.json` reports are also written. The bootstrap is
+   non-authorizing and cannot become a policy. The owner creates the separate
+   completion, runs `rextio policy finalize`, and pins the resulting manifest
+   SHA-256 before proceeding.
+2. **Pinned-policy signing request.** After the owner supplies the complete
+   canonical policy and its SHA-256, a new `rextio build` revalidates the full
+   graph. Its only lifecycle artifact is
+   `rextio.full-c6-final-authorization-request.json`; the strict `check.json`
+   and `build.json` reports are also written. No detached signature or
+   publication authority exists yet.
+3. **Detached-signature publication.** The owner signs the canonical request
+   outside Rextio, configures `artifact_final_signature`, and reruns. The exact
+   signed message is
+   `b"REXTIO-FULL-C6-ED25519-V1\0" + canonical_request_bytes`. The separately
+   configured public key is exactly 32 raw Ed25519 bytes, and the detached
+   signature is exactly 64 raw bytes encoded as canonical Base64 in this closed
+   seven-field, compact, sorted UTF-8 JSON envelope with no trailing newline.
+   The envelope is bounded to 16 KiB:
+
+   ```json
+   {"algorithm":"ed25519","domain":"rextio.full-c6-detached-signature.v1","kind":"full-c6-detached-signature","manifest_sha256":"<request-bytes-sha256>","public_key_sha256":"<raw-public-key-sha256>","schema_version":1,"signature":"<base64-raw-64-byte-signature>"}
+   ```
+
+   Signing the request bytes without the domain-separation prefix fails. Only
+   the publication run may revalidate every typed receipt/output, verify the
+   signature, mint the sealed distribution authorization, and atomically
+   publish the following seven-file bundle to the exact retained
+   `<project>/dist/<wheel-stem>.full-c6` destination:
+
+   - the subject wheel;
+   - `rextio.cyclonedx.json`;
+   - `rextio.slsa-provenance.json`;
+   - `rextio.full-c6-evidence.json`;
+   - `rextio.full-c6-signature.json`;
+   - `rextio.full-c6-authorization.json`; and
+   - `rextio.full-c6-manifest.json`, the seventh file that binds the other six
+     payloads.
+
+   The authorization request is limited to 64 KiB. The wheel, CycloneDX, and
+   SLSA payloads are each limited to 16 MiB; evidence and authorization are
+   each limited to 2 MiB; and the detached-signature envelope is limited to
+   16 KiB. The retained state directory must have mode `0700`.
+   Every temporary host-output and private-quarantine cleanup step completes
+   before the final no-replace directory rename. That successful rename is the
+   publication commit point.
+
+Each of those three `rextio build` stages performs the real bounded production
+collection again. Every run executes **two actual isolated**
+`cargo build --release --locked --offline --frozen` invocations, recreates the
+subject wheel and evidence from the private build quarantines, and reports
+`executor_invocation_count: 2`; no prior receipt substitutes for a current
+build. Signing and publication runs also rederive the bootstrap and technical
+template, reload manifest v2, and require exact bootstrap lineage plus fresh
+policy/row/transformation/internal-license/external-license equality.
+
+`FullC6ProductionAuthority` is the immutable process-local seal over that
+retained graph. It cannot be constructed by callers, copied, or serialized, and
+its public projection explicitly says `distribution_authorized: false`. It is
+production *evidence continuity* within one process, not a portable capability,
+signature, release approval, or distribution authority. Only the later hard
+gate can mint the separate sealed publication authorization after verifying the
+external signature.
+
+Any mismatch or input/staged-output mutation detected before the final rename,
+missing/unsafe input, scope or platform drift, nonreproducible output, stale
+analysis, unexpected dependency, signature failure, path alias, or
+concurrent/pre-existing publication target fails closed. A later external
+mutation does not retroactively invalidate the completed transaction receipt,
+but the changed bytes no longer match that receipt or the publication manifest;
+consumers must treat that mismatching bundle as invalid. A request-only run has
+no distribution authority, and a signature cannot authorize bytes other than
+the exact request subject. The exact lifecycle success/failure report shapes
+and `rextio policy finalize --format json` shape are part of the
+[tooling contract](specs/tooling-contract.md), not inferred from prose.
 
 ## Artifact profile authority
 
@@ -611,25 +1014,24 @@ enumerates a GPU. See
 
 ## Deferred work
 
-Train C through **2.19.0** does not yet provide:
+Train C through **2.24.0** does not yet provide:
 
 - multiple-module initializer execution or Python import-order emulation;
 - Rust-global publication or native reads of initialized module values;
 - arbitrary top-level statements, calls, annotations, or side effects in a
   Rust executable;
-- C5.2 project-call linkage, body lowerability, Rust lowering, packaging, or
-  recursive source-native promotion of installed pure-Python packages;
-- full/signed external-source authorization beyond the C6.1 prebuild lock
-  contract (cryptographic signatures);
-- complete standards SPDX/CycloneDX SBOM coverage (C6.2-C6.13 emit only a bounded
-  incomplete CycloneDX 1.6 preview for ordinary host-extension wheels, plus
-  unsigned in-toto/SLSA provenance and a macOS/Linux direct-linkage observation;
-  not complete or actual-loader path resolution, complete transitive closure, `dlopen`
-  discovery, or support for
-  Windows PE, runtime-bearing plugins, host-executable, rust-crate, Nuitka
-  sidecars, WASM, or external-package source-native builds);
-- signed, reproducible, hermetic, or complete artifact provenance for
-  packaged/redistributed hybrid outputs;
+- C5.2 beyond one exact package and direct typed scalar leaf calls, including
+  recursive promotion, general value flow, keyword/dynamic calls, or vendoring;
+- Full-C6 authority outside the frozen macOS-arm64/Linux-x86_64 CPython/PyO3/
+  Cargo host-extension profile;
+- complete standards SPDX/CycloneDX coverage for general hybrid outputs.
+  C6.2-C6.15 remain incomplete preview evidence. Even when every strict hard
+  gate succeeds, the signed Alpha's completeness claim is limited to its frozen
+  scope and does not cover actual-loader selection, complete transitive closure,
+  `dlopen`, Windows PE, runtime-bearing plugins, host-executable, rust-crate,
+  Nuitka sidecars, or WASM;
+- signed, reproducible, hermetic, or complete artifact provenance outside the
+  frozen strict profile;
 - device-provider discovery, privileged build/link contributions, CUDA
   execution, or CUDA certification;
 - WASM artifact profiles or packaging.

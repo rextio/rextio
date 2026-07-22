@@ -135,20 +135,28 @@ def _validated_lexical_root(expected_python_root: Path) -> Path:
         ) from exc
 
 
-def _refresh_directory_stamps_match(
+def _directory_stamps_match(
     *,
     previous: tuple[_FilesystemStamp, ...],
     current: tuple[_FilesystemStamp, ...],
     root: Path,
+    allow_root_metadata_delta: bool = False,
 ) -> bool:
-    """Allow only the generated root metadata delta caused by C6.9 snapshots."""
+    """Compare a receipt without binding unrelated ambient sibling changes.
+
+    Absolute ancestors strictly above the generated root remain bound to the
+    same directory objects and modes, but their size and timestamps may change
+    when unrelated sibling entries are created by the host.  The generated
+    root and every relative descendant remain exact unless the caller is the
+    bounded C6.9 refresh that intentionally changes root directory metadata.
+    """
     if len(previous) != len(current):
         return False
     root_index = len(root.parts) - 1
     if root_index < 0 or root_index >= len(previous):
         return False
     for index, (old_stamp, new_stamp) in enumerate(zip(previous, current, strict=True)):
-        if index == root_index:
+        if index < root_index or (allow_root_metadata_delta and index == root_index):
             if (
                 old_stamp.device != new_stamp.device
                 or old_stamp.inode != new_stamp.inode
@@ -158,6 +166,21 @@ def _refresh_directory_stamps_match(
         elif old_stamp != new_stamp:
             return False
     return True
+
+
+def _refresh_directory_stamps_match(
+    *,
+    previous: tuple[_FilesystemStamp, ...],
+    current: tuple[_FilesystemStamp, ...],
+    root: Path,
+) -> bool:
+    """Allow the generated-root delta caused by the bounded C6.9 snapshot."""
+    return _directory_stamps_match(
+        previous=previous,
+        current=current,
+        root=root,
+        allow_root_metadata_delta=True,
+    )
 
 
 def collect_native_runtime_path_resolution(
@@ -307,7 +330,11 @@ def verify_native_runtime_path_resolution(
         for receipt in observation.receipts:
             current = _read_candidate_secure(root=root, parts=receipt.parts)
             if (
-                current.directory_stamps != receipt.directory_stamps
+                not _directory_stamps_match(
+                    previous=receipt.directory_stamps,
+                    current=current.directory_stamps,
+                    root=root,
+                )
                 or not _same_stamp(current.file_stamp, receipt.file_stamp)
                 or current.sha256 != receipt.sha256
                 or current.size != receipt.size

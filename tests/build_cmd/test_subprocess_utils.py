@@ -34,6 +34,227 @@ def test_run_build_tool_captures_output(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("max_output_bytes", [None, 4096])
+def test_run_build_tool_gives_child_immediate_stdin_eof(
+    tmp_path: Path,
+    max_output_bytes: int | None,
+) -> None:
+    """An open parent input pipe must never become interactive build-tool input."""
+    read_fd, write_fd = os.pipe()
+    saved_stdin = os.dup(0)
+    try:
+        # Keep the write end open: inheriting this read end would make read(1)
+        # block until the build timeout instead of observing EOF.
+        os.dup2(read_fd, 0)
+        result = run_build_tool(
+            [
+                sys.executable,
+                "-c",
+                "import sys; print(sys.stdin.buffer.read(1) == b'')",
+            ],
+            cwd=tmp_path,
+            timeout=2.0,
+            max_output_bytes=max_output_bytes,
+        )
+    finally:
+        os.dup2(saved_stdin, 0)
+        os.close(saved_stdin)
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "True"
+
+
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
+@pytest.mark.skipif(os.name != "posix", reason="inheritable-FD regression is POSIX-specific")
+def test_run_build_tool_closes_intentionally_inheritable_parent_fd(
+    tmp_path: Path,
+    max_output_bytes: int | None,
+) -> None:
+    """Even an explicitly inheritable ambient descriptor is absent after exec."""
+    sentinel_path = tmp_path / "ambient-sentinel"
+    sentinel_path.write_bytes(b"sentinel")
+    with sentinel_path.open("rb") as sentinel:
+        fd = sentinel.fileno()
+        stat = os.fstat(fd)
+        was_inheritable = os.get_inheritable(fd)
+        os.set_inheritable(fd, True)
+        try:
+            result = run_build_tool(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os, sys\n"
+                        "fd, dev, ino = map(int, sys.argv[1:])\n"
+                        "try:\n"
+                        "    actual = os.fstat(fd)\n"
+                        "except OSError:\n"
+                        "    visible = False\n"
+                        "else:\n"
+                        "    visible = (actual.st_dev, actual.st_ino) == (dev, ino)\n"
+                        "print('visible' if visible else 'closed')\n"
+                    ),
+                    str(fd),
+                    str(stat.st_dev),
+                    str(stat.st_ino),
+                ],
+                cwd=tmp_path,
+                max_output_bytes=max_output_bytes,
+            )
+        finally:
+            os.set_inheritable(fd, was_inheritable)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "closed"
+
+
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
+@pytest.mark.skipif(os.name != "posix", reason="pass_fds is POSIX-specific")
+def test_run_build_tool_passes_only_exact_fd_and_releases_parent_lease_after_spawn(
+    tmp_path: Path,
+    max_output_bytes: int | None,
+) -> None:
+    capability = os.open(tmp_path / "capability", os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    ambient = os.open(tmp_path / "ambient", os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    capability_stat = os.fstat(capability)
+    ambient_stat = os.fstat(ambient)
+    os.set_inheritable(ambient, True)
+    releases: list[int] = []
+
+    def release() -> None:
+        releases.append(capability)
+        os.close(capability)
+
+    try:
+        result = run_build_tool(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os, sys\n"
+                    "def visible(fd, dev, ino):\n"
+                    "    try:\n"
+                    "        observed = os.fstat(fd)\n"
+                    "    except OSError:\n"
+                    "        return False\n"
+                    "    return (observed.st_dev, observed.st_ino) == (dev, ino)\n"
+                    "values = list(map(int, sys.argv[1:]))\n"
+                    "print(visible(*values[:3]))\n"
+                    "print(visible(*values[3:]))\n"
+                ),
+                str(capability),
+                str(capability_stat.st_dev),
+                str(capability_stat.st_ino),
+                str(ambient),
+                str(ambient_stat.st_dev),
+                str(ambient_stat.st_ino),
+            ],
+            cwd=tmp_path,
+            max_output_bytes=max_output_bytes,
+            pass_fds=(capability,),
+            after_spawn=release,
+        )
+        assert result.returncode == 0
+        assert result.stdout.splitlines() == ["True", "False"]
+        assert releases == [capability]
+        with pytest.raises(OSError):
+            os.fstat(capability)
+    finally:
+        try:
+            os.close(capability)
+        except OSError:
+            pass
+        os.close(ambient)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="pass_fds is POSIX-specific")
+def test_run_build_tool_rejects_noncanonical_or_closed_pass_fds(tmp_path: Path) -> None:
+    first, second = os.pipe()
+    os.close(second)
+    try:
+        invalid = ([first], (first, first), (first, 2), (second,))
+        for value in invalid:
+            with pytest.raises(ValueError, match="pass_fds"):
+                run_build_tool(
+                    [sys.executable, "-c", "pass"],
+                    cwd=tmp_path,
+                    pass_fds=value,  # type: ignore[arg-type]
+                )
+    finally:
+        os.close(first)
+
+
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
+def test_run_build_tool_releases_capability_when_spawn_fails(
+    tmp_path: Path,
+    max_output_bytes: int | None,
+) -> None:
+    calls: list[str] = []
+    with pytest.raises(OSError):
+        run_build_tool(
+            [str(tmp_path / "missing-tool")],
+            cwd=tmp_path,
+            max_output_bytes=max_output_bytes,
+            after_spawn=lambda: calls.append("released"),
+        )
+    assert calls == ["released"]
+
+
+def test_run_build_tool_terminates_spawned_process_when_release_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[subprocess.Popen[object]] = []
+    real_close = subprocess_utils._close_spawned_process
+
+    def close(process: subprocess.Popen[object]) -> None:
+        closed.append(process)
+        real_close(process)
+
+    monkeypatch.setattr(subprocess_utils, "_close_spawned_process", close)
+    with pytest.raises(RuntimeError, match="release failed"):
+        run_build_tool(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=tmp_path,
+            after_spawn=lambda: (_ for _ in ()).throw(RuntimeError("release failed")),
+        )
+    assert len(closed) == 1
+    assert closed[0].poll() is not None
+
+
+def test_run_build_tool_validation_failure_does_not_consume_capability_owner(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    with pytest.raises(ValueError, match="pass_fds"):
+        run_build_tool(
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            pass_fds=[3],  # type: ignore[arg-type]
+            after_spawn=lambda: calls.append("released"),
+        )
+    assert calls == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="fcntl defensive path is POSIX-specific")
+def test_run_build_tool_releases_capability_when_capped_spawn_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(subprocess_utils, "fcntl", None)
+    result = run_build_tool(
+        [sys.executable, "-c", "pass"],
+        cwd=tmp_path,
+        max_output_bytes=4096,
+        after_spawn=lambda: calls.append("released"),
+    )
+    assert result.returncode == subprocess_utils.OUTPUT_OVERFLOW_EXIT_CODE
+    assert calls == ["released"]
+
+
+@pytest.mark.parametrize("max_output_bytes", [None, 4096])
 def test_run_build_tool_can_replace_parent_environment_exactly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -266,8 +487,14 @@ def test_run_build_tool_forges_returncode_when_the_child_cannot_be_reaped(
     created: list[subprocess.Popen] = []
     real_start = subprocess_utils._start_process
 
-    def capturing_start(command, cwd, env=None, *, inherit_env=True):
-        proc = real_start(command, cwd, env, inherit_env=inherit_env)
+    def capturing_start(command, cwd, env=None, *, inherit_env=True, pass_fds=()):
+        proc = real_start(
+            command,
+            cwd,
+            env,
+            inherit_env=inherit_env,
+            pass_fds=pass_fds,
+        )
         created.append(proc)
         return proc
 

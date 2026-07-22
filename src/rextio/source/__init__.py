@@ -8,6 +8,14 @@ from rextio.source.graph import (
     resolve_import_from_base,
     source_module_graph_from_analysis,
 )
+from rextio.source.external_analysis import (
+    ExternalFunctionBinding,
+    ExternalScalarParameter,
+    ExternalSourceAnalysisError,
+    ExternalSourceNativePlan,
+    ExternalSourceSnapshot,
+    analyze_external_source_snapshot,
+)
 from rextio.source.models import (
     DistributionMetadata,
     ExternalImportReference,
@@ -27,6 +35,11 @@ from rextio.source.models import (
 __all__ = [
     "DistributionMetadata",
     "ExternalImportReference",
+    "ExternalFunctionBinding",
+    "ExternalScalarParameter",
+    "ExternalSourceAnalysisError",
+    "ExternalSourceNativePlan",
+    "ExternalSourceSnapshot",
     "ImportAlias",
     "ImportKind",
     "ImportOwnership",
@@ -42,6 +55,7 @@ __all__ = [
     "StronglyConnectedComponent",
     "build_source_module_graph",
     "build_source_module_graph_from_analysis",
+    "analyze_external_source_snapshot",
     "resolve_import_from_base",
     "source_module_graph_from_analysis",
 ]

@@ -15,6 +15,7 @@ from rextio.codegen.rust.errors import RustCodegenError
 from rextio.codegen.rust.keywords import RUST_RAWABLE_KEYWORDS
 from rextio.codegen.rust.subprocess_client import render_subprocess_client
 from rextio.codegen.rust.pyo3 import render_pyo3_module
+from rextio.codegen.rust.external_runtime_guard import render_external_runtime_guard
 from rextio.codegen.rust.rust_format import (
     block_always_returns as _block_always_returns,
 )
@@ -93,6 +94,7 @@ from rextio.ir.types import (
     RxtTuple,
     RxtType,
 )
+from rextio.source.external_linkage import ExternalRuntimeGuard
 
 
 # `RustCodegenError` is imported from .errors above and re-exported here for
@@ -117,6 +119,7 @@ def generate_rust_module(
     boundary_call_return_types: dict[str, str] | None = None,
     plugin_providers: dict[str, object] | None = None,
     plugin_types_by_key: Mapping[str, RxtType] | None = None,
+    external_runtime_guard: ExternalRuntimeGuard | None = None,
 ) -> str:
     """Generate the PyO3 extension-module Rust source for a lowered module.
 
@@ -183,10 +186,17 @@ def generate_rust_module(
     prelude.extend(sorted(plugin_uses))
     prelude.extend(plugin_helpers)
     prelude.extend(_checked_arith_helpers(used_helpers, "pyo3"))
+    if external_runtime_guard is not None:
+        prelude.append(render_external_runtime_guard(external_runtime_guard))
     return render_pyo3_module(
         rendered,
         exported_functions=exported,
         extra_prelude=prelude or None,
+        module_initializers=(
+            ["__rextio_verify_external_source(m.py())?;"]
+            if external_runtime_guard is not None
+            else None
+        ),
     )
 
 
@@ -280,9 +290,7 @@ def crate_emitted_qualnames(
     """
     excluded = _crate_excluded_qualnames(module_ir, standalone=standalone)
     return frozenset(
-        function.qualname
-        for function in module_ir.functions
-        if function.qualname not in excluded
+        function.qualname for function in module_ir.functions if function.qualname not in excluded
     )
 
 

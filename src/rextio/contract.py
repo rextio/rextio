@@ -81,5 +81,26 @@ from __future__ import annotations
 # Contract 2.19.0 adds C6.14's compact artifact-policy coverage partition and
 # policy-version-10 observation. Identity, license-policy, and transformation-
 # provenance states remain orthogonal, scoped, incomplete, and non-authorizing.
+# Contract 2.20.0 adds C6.15's exact owner artifact-class policy lock and
+# policy-version-11 observation. It binds closed dispositions to the full
+# C6.14 partition without completing global policy, provenance, signing, or
+# distribution authority.
+# Contract 2.21.0 adds the separate immutable strict Full-C6 final-evidence /
+# distribution-authorization contract and its opt-in frozen-profile config
+# shape. Preview C6.2-C6.15 evidence remains incomplete and non-authorizing.
+# Contract 2.22.0 adds the bounded C5.2 external-source linkage and initial
+# Full-C6 coordinator contracts. Contract 2.23.0 replaces the digest-only
+# policy bootstrap with an exact, canonical technical template and adds the
+# separately supplied owner completion/finalization handoff. The finalized
+# policy is pinned back to that bootstrap and fresh production recollection;
+# it remains unsigned and non-authorizing until the existing signing and
+# detached-signature publication stages succeed. Rextio neither
+# invents owner policy nor accepts, creates, or retains private signing keys.
+# Contract 2.24.0 adds the public Full-C6 support-lock bootstrap plus the
+# path-free production sandbox and toolchain-support receipt surfaces. These
+# additive records bind the supported toolchain authority and executed sandbox
+# evidence without weakening the existing fail-closed authorization chain.
+# The strict surface deliberately excludes the general external-source, plugin,
+# executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.19.0"
+TOOLING_CONTRACT_VERSION = "2.24.0"

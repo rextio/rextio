@@ -6,7 +6,7 @@ import math
 import re
 import tomllib
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping
 
 from rextio.__about__ import __version__
@@ -44,6 +44,22 @@ CONFIG_KEYS = {
         "fallback_threshold",
         "build_timeout_seconds",
         "artifact_evidence_policy",
+        "artifact_distribution_policy",
+        "artifact_source_lock_manifest",
+        "artifact_source_lock_signature",
+        "artifact_policy_manifest",
+        "artifact_policy_manifest_sha256",
+        "artifact_cargo_vendor",
+        "artifact_cargo_vendor_sha256",
+        "artifact_cargo_lock",
+        "artifact_cargo_lock_sha256",
+        "artifact_toolchain_support_lock",
+        "artifact_toolchain_support_lock_sha256",
+        "artifact_trusted_public_key",
+        "artifact_trusted_public_key_sha256",
+        "artifact_final_signature",
+        "artifact_signing_request_output",
+        "artifact_repeat_builds",
     },
     "rust": {"binding", "build_tool", "importable", "crate_name"},
     "fallback": {"nuitka"},
@@ -299,6 +315,70 @@ def _validate_config_values(
         maximum=MAX_BUILD_TIMEOUT_SECONDS,
     )
     _require_string("build", "artifact_evidence_policy", build["artifact_evidence_policy"])
+    _require_string(
+        "build", "artifact_distribution_policy", build["artifact_distribution_policy"]
+    )
+    for artifact_path in (
+        "artifact_source_lock_manifest",
+        "artifact_source_lock_signature",
+        "artifact_policy_manifest",
+        "artifact_cargo_vendor",
+        "artifact_cargo_lock",
+        "artifact_toolchain_support_lock",
+        "artifact_final_signature",
+    ):
+        _require_optional_project_relative_path(
+            "build",
+            artifact_path,
+            build[artifact_path],
+        )
+    _require_optional_project_relative_path(
+        "build",
+        "artifact_signing_request_output",
+        build["artifact_signing_request_output"],
+        suffix=".json",
+    )
+    signing_request_output = build["artifact_signing_request_output"]
+    if (
+        signing_request_output is not None
+        and PurePosixPath(signing_request_output).name
+        != "rextio.full-c6-final-authorization-request.json"
+    ):
+        raise ConfigError(
+            "[build].artifact_signing_request_output must use the exact basename "
+            "'rextio.full-c6-final-authorization-request.json'"
+        )
+    _require_optional_project_relative_path(
+        "build",
+        "artifact_trusted_public_key",
+        build["artifact_trusted_public_key"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_policy_manifest_sha256",
+        build["artifact_policy_manifest_sha256"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_cargo_vendor_sha256",
+        build["artifact_cargo_vendor_sha256"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_cargo_lock_sha256",
+        build["artifact_cargo_lock_sha256"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_toolchain_support_lock_sha256",
+        build["artifact_toolchain_support_lock_sha256"],
+    )
+    _require_optional_sha256(
+        "build",
+        "artifact_trusted_public_key_sha256",
+        build["artifact_trusted_public_key_sha256"],
+    )
+    _require_non_negative_int("build", "artifact_repeat_builds", build["artifact_repeat_builds"])
     _require_string("rust", "binding", rust["binding"])
     _require_string("rust", "build_tool", rust["build_tool"])
     _require_bool("rust", "importable", rust["importable"])
@@ -343,6 +423,12 @@ def _validate_config_values(
         build["artifact_evidence_policy"],
         {"best-effort", "required"},
     )
+    _require_value(
+        "build",
+        "artifact_distribution_policy",
+        build["artifact_distribution_policy"],
+        {"disabled", "full-c6-required"},
+    )
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
     _require_value("fallback", "nuitka", fallback["nuitka"], {"experimental"})
@@ -361,6 +447,219 @@ def _validate_config_values(
         raise ConfigError(f"{__version__} requires [policy] require_type_hints = true")
     if policy["allow_dynamic_features"] is not False:
         raise ConfigError(f"{__version__} does not support [policy] allow_dynamic_features = true")
+    _validate_full_c6_config(
+        build=build,
+        rust=rust,
+        plugins=plugins,
+        imports=imports,
+        embedding=embedding,
+        executable=executable,
+        policy=policy,
+    )
+
+
+def _validate_full_c6_config(
+    *,
+    build: dict[str, Any],
+    rust: dict[str, Any],
+    plugins: dict[str, Any],
+    imports: dict[str, Any],
+    embedding: dict[str, Any],
+    executable: dict[str, Any],
+    policy: dict[str, Any],
+) -> None:
+    """Validate the deliberately frozen first strict Full-C6 build profile."""
+    source_lock_manifest = build["artifact_source_lock_manifest"]
+    source_lock_signature = build["artifact_source_lock_signature"]
+    policy_manifest = build["artifact_policy_manifest"]
+    policy_manifest_sha256 = build["artifact_policy_manifest_sha256"]
+    cargo_vendor = build["artifact_cargo_vendor"]
+    cargo_vendor_sha256 = build["artifact_cargo_vendor_sha256"]
+    cargo_lock = build["artifact_cargo_lock"]
+    cargo_lock_sha256 = build["artifact_cargo_lock_sha256"]
+    toolchain_support_lock = build["artifact_toolchain_support_lock"]
+    toolchain_support_lock_sha256 = build[
+        "artifact_toolchain_support_lock_sha256"
+    ]
+    trusted_key = build["artifact_trusted_public_key"]
+    trusted_key_sha256 = build["artifact_trusted_public_key_sha256"]
+    final_signature = build["artifact_final_signature"]
+    signing_request_output = build["artifact_signing_request_output"]
+    strict_distribution = (
+        build["artifact_distribution_policy"] == "full-c6-required"
+    )
+
+    if (source_lock_manifest is None) != (source_lock_signature is None):
+        raise ConfigError(
+            "[build] artifact_source_lock_manifest and "
+            "artifact_source_lock_signature must be configured together"
+        )
+    if policy_manifest is None and policy_manifest_sha256 is not None:
+        raise ConfigError(
+            "[build] artifact_policy_manifest_sha256 requires "
+            "artifact_policy_manifest"
+        )
+    if (
+        policy_manifest is not None
+        and policy_manifest_sha256 is None
+        and not strict_distribution
+    ):
+        raise ConfigError(
+            "[build] artifact_policy_manifest and "
+            "artifact_policy_manifest_sha256 must be configured together outside "
+            "full-c6-required policy bootstrap"
+        )
+    if (cargo_vendor is None) != (cargo_vendor_sha256 is None):
+        raise ConfigError(
+            "[build] artifact_cargo_vendor and "
+            "artifact_cargo_vendor_sha256 must be configured together"
+        )
+    if (cargo_lock is None) != (cargo_lock_sha256 is None):
+        raise ConfigError(
+            "[build] artifact_cargo_lock and "
+            "artifact_cargo_lock_sha256 must be configured together"
+        )
+    if (toolchain_support_lock is None) != (
+        toolchain_support_lock_sha256 is None
+    ):
+        raise ConfigError(
+            "[build] artifact_toolchain_support_lock and "
+            "artifact_toolchain_support_lock_sha256 must be configured together"
+        )
+    if (trusted_key is None) != (trusted_key_sha256 is None):
+        raise ConfigError(
+            "[build] artifact_trusted_public_key and "
+            "artifact_trusted_public_key_sha256 must be configured together"
+        )
+    if (source_lock_signature is not None or final_signature is not None) and (
+        trusted_key is None or trusted_key_sha256 is None
+    ):
+        raise ConfigError(
+            "[build] signed Full C6 inputs require artifact_trusted_public_key "
+            "and artifact_trusted_public_key_sha256"
+        )
+    if final_signature is not None and signing_request_output is None:
+        raise ConfigError(
+            "[build] artifact_final_signature requires "
+            "artifact_signing_request_output"
+        )
+    if (
+        strict_distribution
+        and final_signature is not None
+        and policy_manifest_sha256 is None
+    ):
+        raise ConfigError(
+            "[build] artifact_final_signature requires a pinned "
+            "artifact_policy_manifest_sha256"
+        )
+
+    configured_paths = {
+        key: build[key]
+        for key in (
+            "artifact_source_lock_manifest",
+            "artifact_source_lock_signature",
+            "artifact_policy_manifest",
+            "artifact_cargo_vendor",
+            "artifact_cargo_lock",
+            "artifact_toolchain_support_lock",
+            "artifact_trusted_public_key",
+            "artifact_final_signature",
+            "artifact_signing_request_output",
+        )
+        if build[key] is not None
+    }
+    if len(set(configured_paths.values())) != len(configured_paths):
+        raise ConfigError("[build] Full C6 artifact paths must be distinct")
+    if cargo_vendor is not None:
+        vendor_path = PurePosixPath(cargo_vendor)
+        for key, configured in configured_paths.items():
+            if key == "artifact_cargo_vendor":
+                continue
+            configured_path = PurePosixPath(configured)
+            if vendor_path in configured_path.parents or configured_path in vendor_path.parents:
+                raise ConfigError(
+                    "[build] artifact_cargo_vendor must not overlap another Full C6 path"
+                )
+    if cargo_lock is not None:
+        lock_path = PurePosixPath(cargo_lock)
+        for key, configured in configured_paths.items():
+            if key == "artifact_cargo_lock":
+                continue
+            configured_path = PurePosixPath(configured)
+            if lock_path in configured_path.parents or configured_path in lock_path.parents:
+                raise ConfigError(
+                    "[build] artifact_cargo_lock must not overlap another Full C6 path"
+                )
+
+    if not strict_distribution:
+        return
+
+    failures: list[str] = []
+    if build["artifact_evidence_policy"] != "required":
+        failures.append('[build] artifact_evidence_policy = "required"')
+    if build["fallback_backend"] != "cpython":
+        failures.append('[build] fallback_backend = "cpython"')
+    if source_lock_manifest is None or source_lock_signature is None:
+        failures.append("SourceLock v2 manifest and detached signature paths")
+    if policy_manifest is None:
+        failures.append("one owner policy manifest path")
+    if cargo_vendor is None or cargo_vendor_sha256 is None:
+        failures.append("one owner-prepared Cargo vendor directory and tree SHA-256")
+    if cargo_lock is None or cargo_lock_sha256 is None:
+        failures.append("one owner-prepared Cargo.lock path and SHA-256")
+    if toolchain_support_lock is None or toolchain_support_lock_sha256 is None:
+        failures.append("one owner-prepared toolchain support lock and SHA-256")
+    if trusted_key is None or trusted_key_sha256 is None:
+        failures.append("one trusted public key path and SHA-256")
+    if signing_request_output is None:
+        failures.append("one signing-request output path")
+    if build["artifact_repeat_builds"] != 2:
+        failures.append("[build] artifact_repeat_builds = 2")
+    if (
+        rust["binding"] != "pyo3"
+        or rust["build_tool"] != "cargo"
+        or rust["importable"] is not False
+    ):
+        failures.append(
+            'a Cargo-built PyO3 host extension with [rust] importable = false'
+        )
+    if plugins["enabled"]:
+        failures.append("[plugins] enabled = []")
+    if embedding["enabled"] is not False:
+        failures.append("[embedding] enabled = false")
+    if executable["entrypoint"] is not None:
+        failures.append("no [executable] entrypoint")
+    if policy["native_top_level"] is not False:
+        failures.append("[policy] native_top_level = false")
+    if imports["default_external_policy"] != "fallback":
+        failures.append('[imports] default_external_policy = "fallback"')
+
+    packages = imports["packages"]
+    if len(packages) != 1:
+        failures.append("exactly one external package declaration")
+    else:
+        _, package_policy = next(iter(packages.items()))
+        if not isinstance(package_policy, dict):
+            failures.append("one table-form external package declaration")
+        elif not (
+            package_policy.get("policy") == "try-native"
+            and package_policy.get("max_depth") == 1
+            and package_policy.get("plugin") is None
+            and package_policy.get("distribution") is not None
+            and package_policy.get("version") is not None
+            and package_policy.get("source_archive") is not None
+            and package_policy.get("source_archive_sha256") is not None
+        ):
+            failures.append(
+                "one plugin-free try-native package at max_depth = 1 with exact "
+                "distribution, version, source archive, and archive SHA-256"
+            )
+
+    if failures:
+        raise ConfigError(
+            '[build] artifact_distribution_policy = "full-c6-required" requires '
+            + "; ".join(failures)
+        )
 
 
 def _require_string(section: str, key: str, value: Any) -> None:
@@ -371,6 +670,39 @@ def _require_string(section: str, key: str, value: Any) -> None:
 def _require_optional_string(section: str, key: str, value: Any) -> None:
     if value is not None and not isinstance(value, str):
         raise ConfigError(f"[{section}].{key} must be a string when set")
+
+
+def _require_optional_sha256(section: str, key: str, value: Any) -> None:
+    _require_optional_string(section, key, value)
+    if value is not None and re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ConfigError(f"[{section}].{key} must be 64 lowercase hexadecimal characters")
+
+
+def _require_optional_project_relative_path(
+    section: str,
+    key: str,
+    value: Any,
+    *,
+    suffix: str | None = None,
+) -> None:
+    _require_optional_string(section, key, value)
+    if value is None:
+        return
+    segments = value.split("/")
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > 4096
+        or "\\" in value
+        or any(ord(character) < 32 for character in value)
+        or any(segment in {"", ".", ".."} for segment in segments)
+        or PurePosixPath(value).is_absolute()
+        or PureWindowsPath(value).is_absolute()
+        or bool(PureWindowsPath(value).drive)
+    ):
+        raise ConfigError(f"[{section}].{key} must be a normalized project-relative path")
+    if suffix is not None and not value.endswith(suffix):
+        raise ConfigError(f"[{section}].{key} must end with {suffix!r}")
 
 
 def _require_bool(section: str, key: str, value: Any) -> None:
@@ -448,6 +780,8 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
                 "max_depth",
                 "distribution",
                 "version",
+                "source_archive",
+                "source_archive_sha256",
             }
             if unknown:
                 unknown_key = sorted(unknown)[0]
@@ -459,6 +793,8 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
             max_depth = raw_policy.get("max_depth", 0)
             distribution = raw_policy.get("distribution")
             version = raw_policy.get("version")
+            source_archive = raw_policy.get("source_archive")
+            source_archive_sha256 = raw_policy.get("source_archive_sha256")
         else:
             raise ConfigError(f"[{section}].{key}.{package} must be a string or table")
         _require_value(
@@ -473,6 +809,8 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
         if not isinstance(raw_policy, dict):
             distribution = None
             version = None
+            source_archive = None
+            source_archive_sha256 = None
         if distribution is not None:
             _require_string(f"{section}.{key}.{package}", "distribution", distribution)
             if not re.fullmatch(
@@ -499,6 +837,29 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
         if (distribution is None) != (version is None):
             raise ConfigError(
                 f"[{section}.{key}.{package}] source-native preview requires both "
+                "distribution and version"
+            )
+        if source_archive is not None:
+            _require_optional_project_relative_path(
+                f"{section}.{key}.{package}",
+                "source_archive",
+                source_archive,
+                suffix=".whl",
+            )
+        if source_archive_sha256 is not None:
+            _require_optional_sha256(
+                f"{section}.{key}.{package}",
+                "source_archive_sha256",
+                source_archive_sha256,
+            )
+        if (source_archive is None) != (source_archive_sha256 is None):
+            raise ConfigError(
+                f"[{section}.{key}.{package}] source_archive and "
+                "source_archive_sha256 must be configured together"
+            )
+        if source_archive is not None and (distribution is None or version is None):
+            raise ConfigError(
+                f"[{section}.{key}.{package}] exact source archive requires "
                 "distribution and version"
             )
         if distribution is not None and (policy != "try-native" or max_depth != 1):
@@ -676,6 +1037,8 @@ def _build_imports_config(imports: dict[str, Any]) -> ImportsConfig:
             max_depth=raw_policy.get("max_depth", 0),
             distribution=raw_policy.get("distribution"),
             version=raw_policy.get("version"),
+            source_archive=raw_policy.get("source_archive"),
+            source_archive_sha256=raw_policy.get("source_archive_sha256"),
         )
     return ImportsConfig(
         default_external_policy=imports["default_external_policy"],
@@ -693,6 +1056,8 @@ def _imports_asdict(imports: ImportsConfig) -> dict[str, Any]:
                 "max_depth": policy.max_depth,
                 "distribution": policy.distribution,
                 "version": policy.version,
+                "source_archive": policy.source_archive,
+                "source_archive_sha256": policy.source_archive_sha256,
             }
             for package, policy in imports.packages.items()
         },

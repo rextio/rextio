@@ -1,6 +1,6 @@
-"""C6.5-C6.14 distribution-authorization readiness assessment.
+"""C6.5-C6.15 distribution-authorization readiness assessment.
 
-This module deliberately sits between the C6.2-C6.14 preview evidence record
+This module deliberately sits between the C6.2-C6.15 preview evidence record
 and any future distribution authorization.  It converts only a validated
 ``ArtifactEvidence`` instance into a deterministic, closed-vocabulary report.
 The report is readiness information, never an authorization decision: every
@@ -11,9 +11,10 @@ static graph across recursively inspected packaged members. It does not
 implement actual loader selection, complete transitive dependency closure, runtime ``dlopen``
 observation, Windows PE inspection, runtime-bearing
 plugins, executables, Rust crates, Nuitka/WASM evidence, signatures, or final
-distribution authorization. C6.10-C6.14 add narrowly scoped source-replay,
-Cargo license-policy, project-source license-policy, analysis-input, and policy-coverage observations without
-satisfying their corresponding global readiness checks.
+distribution authorization. C6.10-C6.15 add narrowly scoped source-replay,
+Cargo license-policy, project-source license-policy, analysis-input,
+policy-coverage, and artifact-class policy observations without satisfying
+their corresponding global readiness checks.
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from rextio.artifacts.evidence import (
     REASON_EVIDENCE_INTERNAL,
     UNAVAILABLE_REASONS,
     ArtifactEvidence,
+    ArtifactClassPolicyDeclaration,
+    ArtifactClassPolicyVerification,
     ArtifactPolicyCoverageClass,
     ArtifactPolicyCoverageInventory,
     AnalysisInputRecord,
@@ -60,7 +63,7 @@ from rextio.artifacts.evidence import (
 
 ARTIFACT_AUTHORIZATION_KIND = "artifact-distribution-authorization"
 ARTIFACT_AUTHORIZATION_POLICY = ARTIFACT_EVIDENCE_SCOPE
-ARTIFACT_AUTHORIZATION_POLICY_VERSION = 10
+ARTIFACT_AUTHORIZATION_POLICY_VERSION = 11
 ARTIFACT_AUTHORIZATION_STATUS = "blocked"
 ARTIFACT_AUTHORIZATION_AUTHORITY = "readiness-assessment-only"
 
@@ -78,6 +81,7 @@ _OBSERVATION_CHECK_IDS: tuple[str, ...] = (
     "scoped-project-source-license-policy-verified",
     "scoped-analysis-inputs-verified",
     "artifact-policy-coverage-bound",
+    "scoped-artifact-class-policy-declaration-bound",
 )
 _READINESS_CHECK_IDS: tuple[str, ...] = (
     "component-license-policy-complete",
@@ -125,6 +129,9 @@ ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE = (
     "scoped-analysis-input-verification-unavailable"
 )
 ARTIFACT_AUTHORIZATION_POLICY_COVERAGE_UNAVAILABLE = "artifact-policy-coverage-unavailable"
+ARTIFACT_AUTHORIZATION_ARTIFACT_CLASS_POLICY_UNAVAILABLE = (
+    "scoped-artifact-class-policy-declaration-unavailable"
+)
 ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE = (
     "native-runtime-path-resolution-inventory-unavailable"
 )
@@ -143,13 +150,14 @@ _ALLOWED_BLOCKERS = frozenset(
         ARTIFACT_AUTHORIZATION_PROJECT_SOURCE_LICENSE_POLICY_VERIFICATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_ANALYSIS_INPUTS_VERIFICATION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_POLICY_COVERAGE_UNAVAILABLE,
+        ARTIFACT_AUTHORIZATION_ARTIFACT_CLASS_POLICY_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_PATH_RESOLUTION_UNAVAILABLE,
         ARTIFACT_AUTHORIZATION_RUNTIME_CLOSURE_UNAVAILABLE,
     }
 )
 _OBSERVATION_COUNT = len(_OBSERVATION_CHECK_IDS)
 _READINESS_COUNT = len(_READINESS_CHECK_IDS)
-_OPTIONAL_OBSERVATION_COUNT = 9
+_OPTIONAL_OBSERVATION_COUNT = 10
 _MANDATORY_OBSERVATION_COUNT = _OBSERVATION_COUNT - _OPTIONAL_OBSERVATION_COUNT
 _CHECK_STATUSES = frozenset({"satisfied", "blocked", "unavailable", "not-evaluated"})
 _REQUIRED_INPUT_ROLES = frozenset(
@@ -182,7 +190,7 @@ class ArtifactAuthorizationCheck:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDistributionAuthorizationAssessment:
-    """Immutable, fail-closed C6.5-C6.14 distribution-readiness report.
+    """Immutable, fail-closed C6.5-C6.15 distribution-readiness report.
 
     Callers should use :meth:`from_evidence`.  The public fields remain
     validate-on-construction so malformed, reordered, duplicated, or
@@ -281,6 +289,10 @@ class ArtifactDistributionAuthorizationAssessment:
                         "artifact-policy-coverage-bound",
                         ARTIFACT_AUTHORIZATION_POLICY_COVERAGE_UNAVAILABLE,
                     ),
+                    (
+                        "scoped-artifact-class-policy-declaration-bound",
+                        ARTIFACT_AUTHORIZATION_ARTIFACT_CLASS_POLICY_UNAVAILABLE,
+                    ),
                 ):
                     status = statuses_by_id[check_id]
                     if status == "unavailable":
@@ -300,6 +312,7 @@ class ArtifactDistributionAuthorizationAssessment:
                     statuses_by_id["scoped-project-source-license-policy-verified"],
                     statuses_by_id["scoped-analysis-inputs-verified"],
                     statuses_by_id["artifact-policy-coverage-bound"],
+                    statuses_by_id["scoped-artifact-class-policy-declaration-bound"],
                     *("blocked" for _ in _READINESS_CHECK_IDS),
                 )
         else:
@@ -332,7 +345,7 @@ class ArtifactDistributionAuthorizationAssessment:
         cls,
         evidence: ArtifactEvidence,
     ) -> ArtifactDistributionAuthorizationAssessment:
-        """Return the total, no-throw C6.5-C6.14 evaluation for ``evidence``."""
+        """Return the total, no-throw C6.5-C6.15 evaluation for ``evidence``."""
         return evaluate_artifact_distribution_authorization(evidence)
 
     def to_dict(self) -> dict[str, object]:
@@ -357,7 +370,7 @@ class ArtifactDistributionAuthorizationAssessment:
 def evaluate_artifact_distribution_authorization(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Evaluate C6.5-C6.14 without changing the surrounding build outcome.
+    """Evaluate C6.5-C6.15 without changing the surrounding build outcome.
 
     A structurally invalid preview remains reported as preview evidence, but
     no readiness check is claimed: the closed fallback shape contains only
@@ -379,6 +392,7 @@ def evaluate_artifact_distribution_authorization(
                 project_source_license_policy_verification_bound,
                 analysis_inputs_bound,
                 policy_coverage_bound,
+                artifact_class_policy_bound,
             ) = _validate_preview_observations(trusted)
             optional_statuses = (
                 "satisfied" if path_resolution_bound else "unavailable",
@@ -394,6 +408,7 @@ def evaluate_artifact_distribution_authorization(
                 ),
                 "satisfied" if analysis_inputs_bound else "unavailable",
                 "satisfied" if policy_coverage_bound else "unavailable",
+                "satisfied" if artifact_class_policy_bound else "unavailable",
             )
             optional_blockers = tuple(
                 blocker
@@ -430,6 +445,10 @@ def evaluate_artifact_distribution_authorization(
                     (
                         policy_coverage_bound,
                         ARTIFACT_AUTHORIZATION_POLICY_COVERAGE_UNAVAILABLE,
+                    ),
+                    (
+                        artifact_class_policy_bound,
+                        ARTIFACT_AUTHORIZATION_ARTIFACT_CLASS_POLICY_UNAVAILABLE,
                     ),
                 )
                 if not available
@@ -550,6 +569,11 @@ def _reconstruct_evidence(evidence: ArtifactEvidence) -> ArtifactEvidence:
         ),
         artifact_policy_coverage_inventory=(
             _copy_artifact_policy_coverage_inventory(evidence.artifact_policy_coverage_inventory)
+        ),
+        artifact_class_policy_verification=(
+            _copy_artifact_class_policy_verification(
+                evidence.artifact_class_policy_verification
+            )
         ),
         component_license_inventory=_copy_component_license_inventory(
             evidence.component_license_inventory
@@ -965,6 +989,98 @@ def _copy_artifact_policy_coverage_inventory(
     return rebuilt
 
 
+def _copy_artifact_class_policy_verification(
+    value: ArtifactClassPolicyVerification | None,
+) -> ArtifactClassPolicyVerification | None:
+    """Deeply rebuild the complete bounded C6.15 owner-policy receipt."""
+    if value is None:
+        return None
+    if type(value) is not ArtifactClassPolicyVerification:
+        raise TypeError("artifact class policy verification model is invalid")
+    if type(value.classes) is not tuple or type(value.action_scopes) is not tuple:
+        raise TypeError("artifact class policy verification collections must be tuples")
+    if len(value.classes) != len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS):
+        raise ValueError("artifact class policy declaration count is invalid")
+    rebuilt = ArtifactClassPolicyVerification(
+        artifact_policy_coverage_inventory_sha256=(
+            value.artifact_policy_coverage_inventory_sha256
+        ),
+        canonical_partition_sha256=value.canonical_partition_sha256,
+        classes=tuple(
+            ArtifactClassPolicyDeclaration(
+                coverage=ArtifactPolicyCoverageClass(
+                    class_id=item.coverage.class_id,
+                    observed_count=item.coverage.observed_count,
+                    canonical_identity_set_sha256=(
+                        item.coverage.canonical_identity_set_sha256
+                    ),
+                    identity_state=item.coverage.identity_state,
+                    license_policy_state=item.coverage.license_policy_state,
+                    transformation_provenance_state=(
+                        item.coverage.transformation_provenance_state
+                    ),
+                    license_policy_receipt_kind=(
+                        item.coverage.license_policy_receipt_kind
+                    ),
+                    license_policy_receipt_sha256=(
+                        item.coverage.license_policy_receipt_sha256
+                    ),
+                    transformation_provenance_receipt_kind=(
+                        item.coverage.transformation_provenance_receipt_kind
+                    ),
+                    transformation_provenance_receipt_sha256=(
+                        item.coverage.transformation_provenance_receipt_sha256
+                    ),
+                ),
+                license_policy_disposition=item.license_policy_disposition,
+                transformation_provenance_disposition=(
+                    item.transformation_provenance_disposition
+                ),
+            )
+            for item in value.classes
+            if type(item) is ArtifactClassPolicyDeclaration
+            and type(item.coverage) is ArtifactPolicyCoverageClass
+        ),
+        lock_file=_copy_file_ref(value.lock_file),
+        policy_snapshot_sha256=value.policy_snapshot_sha256,
+        attestor=value.attestor,
+        attestor_kind=value.attestor_kind,
+        attestor_relationship=value.attestor_relationship,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        scope=value.scope,
+        policy=value.policy,
+        decision=value.decision,
+        action_scopes=tuple(value.action_scopes),
+        acknowledgement=value.acknowledgement,
+        owner_attestation_bound=value.owner_attestation_bound,
+        attestor_identity_verified=value.attestor_identity_verified,
+        declarations_only=value.declarations_only,
+        spdx_verified=value.spdx_verified,
+        license_files_verified=value.license_files_verified,
+        notice_files_verified=value.notice_files_verified,
+        obligations_verified=value.obligations_verified,
+        license_compatibility_verified=value.license_compatibility_verified,
+        source_ownership_verified=value.source_ownership_verified,
+        derivative_work_rights_verified=value.derivative_work_rights_verified,
+        legal_approval_verified=value.legal_approval_verified,
+        technical_provenance_verified=value.technical_provenance_verified,
+        complete_for_observed_classes=value.complete_for_observed_classes,
+        scope_complete=value.scope_complete,
+        global_license_policy_complete=value.global_license_policy_complete,
+        global_transformation_provenance_complete=(
+            value.global_transformation_provenance_complete
+        ),
+        complete=value.complete,
+        signed=value.signed,
+        distribution_authorized=value.distribution_authorized,
+        authority=value.authority,
+    )
+    if len(rebuilt.classes) != len(value.classes) or rebuilt != value:
+        raise ValueError("artifact class policy verification is noncanonical")
+    return rebuilt
+
+
 def _copy_component_license_inventory(
     value: ComponentLicenseInventory | None,
 ) -> ComponentLicenseInventory | None:
@@ -1094,12 +1210,12 @@ def _copy_project_source_license_policy_verification(
 
 def _validate_preview_observations(
     evidence: ArtifactEvidence,
-) -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Require structural/model bindings before marking observations satisfied.
 
     This intentionally does not reopen or re-inspect output bytes. C6.2-C6.4
-    own those observations; C6.5-C6.14 validates closed model invariants and
-    exact evidence-reference bindings only. The C6.10-C6.13 collectors
+    own those observations; C6.5-C6.15 validates closed model invariants and
+    exact evidence-reference bindings only. The C6.10-C6.15 collectors
     performed source replay and owner-lock verification before evidence
     construction; this later readiness pass validates only the immutable
     scoped receipt bindings.
@@ -1191,7 +1307,7 @@ def _validate_preview_observations(
         raise ValueError("preview authorization target/runtime binding is invalid")
     if runtime.architecture != _target_architecture(evidence.target_triple):
         raise ValueError("preview authorization target architecture is invalid")
-    # C6.6-C6.14 are intentionally independent of C6.3 evidence satisfaction.
+    # C6.6-C6.15 are intentionally independent of C6.3 evidence satisfaction.
     # Absence is a fixed per-observation unavailable result, while present
     # models have been reconstructed and cross-bound to their exact underlying
     # evidence. Neither is complete provenance/license-policy verification.
@@ -1232,6 +1348,7 @@ def _validate_preview_observations(
         and evidence.analysis_input_verification is not None
     )
     policy_coverage_bound = evidence.artifact_policy_coverage_inventory is not None
+    artifact_class_policy_bound = evidence.artifact_class_policy_verification is not None
     return (
         path_resolution_bound,
         runtime_graph_bound,
@@ -1242,6 +1359,7 @@ def _validate_preview_observations(
         project_source_license_policy_verification_bound,
         analysis_inputs_bound,
         policy_coverage_bound,
+        artifact_class_policy_bound,
     )
 
 
