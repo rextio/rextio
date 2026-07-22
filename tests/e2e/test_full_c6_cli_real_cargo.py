@@ -1644,6 +1644,91 @@ def test_support_lock_diagnostic_rerun_is_generation_only(
     assert list(tmp_path.iterdir()) == []
 
 
+def test_support_lock_diagnostic_compares_two_path_free_generation_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load_harness_module()
+    from rextio.build import full_c6_toolchain_support as support
+    from rextio.build.toolchain_support_lock import (
+        create_toolchain_support_locator,
+        generate_toolchain_support_lock,
+    )
+
+    manifest = tmp_path / "version.plist"
+    manifest.write_bytes(b"fixed manifest\n")
+    root = tmp_path / "runtime"
+    root.mkdir()
+    member = root / "member"
+    member.write_bytes(b"first\n")
+    manifests = [
+        create_toolchain_support_locator(
+            logical_role="xcode-version-plist",
+            path=manifest,
+            kind="file",
+        )
+    ]
+    roots = [
+        create_toolchain_support_locator(
+            logical_role="rust-sysroot",
+            path=root,
+            kind="tree",
+        )
+    ]
+    first = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+    member.write_bytes(b"second\n")
+    second = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+    plan = object()
+    generated = iter((first, second))
+    observed: list[object] = []
+
+    monkeypatch.setattr(
+        support,
+        "_load_full_c6_support_bootstrap_config",
+        lambda *_args, **_kwargs: (object(), None),
+    )
+    monkeypatch.setattr(
+        support,
+        "_discover_full_c6_bootstrap_plan",
+        lambda **_kwargs: plan,
+    )
+
+    def generate(candidate: object) -> object:
+        observed.append(candidate)
+        return next(generated)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("diagnostic attempted output materialization")
+
+    monkeypatch.setattr(support, "generate_full_c6_toolchain_support_lock", generate)
+    monkeypatch.setattr(support, "materialize_full_c6_toolchain_support_lock", forbidden)
+    monkeypatch.setattr(support, "bootstrap_full_c6_toolchain_support_lock", forbidden)
+
+    diagnostic = harness._diagnose_support_lock_generation(
+        tmp_path,
+        inherited_environment={},
+    )
+
+    assert observed == [plan, plan]
+    assert diagnostic == (
+        "[full-c6-e2e] support-lock diagnostic: verification-recapture-drift "
+        "manifests=0 roots=1 kind=root role=rust-sysroot "
+        f"before={first.roots[0].merkle_sha256} "
+        f"after={second.roots[0].merkle_sha256} "
+        "hardlink_before=- hardlink_after=-"
+    )
+    assert str(tmp_path) not in diagnostic
+    assert len(diagnostic.encode("ascii")) <= 512
+
+
 @pytest.mark.parametrize("failure_stage", ["load", "discover"])
 def test_support_lock_diagnostic_preserves_preplan_failure(
     tmp_path: Path,

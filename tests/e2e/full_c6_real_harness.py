@@ -2516,6 +2516,81 @@ def _format_support_lock_diagnostic(error: BaseException) -> str:
     return diagnostic
 
 
+def _format_support_lock_rewalk_difference(first: object, second: object) -> str:
+    """Describe only the first path-free receipt delta across two captures."""
+    from rextio.build.toolchain_support_lock import ToolchainSupportLock
+
+    if type(first) is not ToolchainSupportLock or type(second) is not ToolchainSupportLock:
+        raise ValueError("support-lock diagnostic requires exact typed locks")
+    if first.scope != second.scope:
+        raise ValueError("support-lock diagnostic scope changed")
+    if (
+        len(first.manifests) != len(second.manifests)
+        or len(first.roots) != len(second.roots)
+    ):
+        raise ValueError("support-lock diagnostic role count changed")
+
+    manifest_differences = tuple(
+        (left, right)
+        for left, right in zip(first.manifests, second.manifests, strict=True)
+        if left != right
+    )
+    root_differences = tuple(
+        (left, right)
+        for left, right in zip(first.roots, second.roots, strict=True)
+        if left != right
+    )
+    if not manifest_differences and not root_differences:
+        return (
+            "[full-c6-e2e] support-lock diagnostic: "
+            "generation-and-immediate-verification-recapture succeeded"
+        )
+
+    kind = "manifest" if manifest_differences else "root"
+    left, right = (
+        manifest_differences[0] if manifest_differences else root_differences[0]
+    )
+    if (
+        left.logical_role != right.logical_role
+        or left.logical_role
+        not in {
+            role
+            for manifest_roles, root_roles in _SUPPORT_LOCK_ROLES.values()
+            for role in (*manifest_roles, *root_roles)
+        }
+        or not _is_sha256(left.merkle_sha256)
+        or not _is_sha256(right.merkle_sha256)
+    ):
+        raise ValueError("support-lock diagnostic receipt identity changed")
+
+    hardlink_before = "-"
+    hardlink_after = "-"
+    if kind == "root":
+        for receipt, label in ((left, "before"), (right, "after")):
+            dispositions = receipt.hardlink_dispositions
+            if len(dispositions) > 1:
+                raise ValueError("support-lock diagnostic hardlink count changed")
+            if dispositions:
+                observation = dispositions[0].observation_merkle_sha256
+                if not _is_sha256(observation):
+                    raise ValueError("support-lock diagnostic hardlink digest changed")
+                if label == "before":
+                    hardlink_before = observation
+                else:
+                    hardlink_after = observation
+
+    diagnostic = (
+        "[full-c6-e2e] support-lock diagnostic: verification-recapture-drift "
+        f"manifests={len(manifest_differences)} roots={len(root_differences)} "
+        f"kind={kind} role={left.logical_role} "
+        f"before={left.merkle_sha256} after={right.merkle_sha256} "
+        f"hardlink_before={hardlink_before} hardlink_after={hardlink_after}"
+    )
+    assert diagnostic.isascii()
+    assert len(diagnostic.encode("ascii")) <= 512
+    return diagnostic
+
+
 def _diagnose_support_lock_generation(
     project: Path,
     *,
@@ -2535,7 +2610,11 @@ def _diagnose_support_lock_generation(
             config=config,
             inherited_environment=inherited_environment,
         )
-        support.generate_full_c6_toolchain_support_lock(plan)
+        first = support.generate_full_c6_toolchain_support_lock(plan)
+        # Verification's host-dependent step is the same complete receipt
+        # capture.  A second generation preserves both typed sides of that
+        # comparison so the failure diagnostic can identify a path-free drift.
+        second = support.generate_full_c6_toolchain_support_lock(plan)
     except Exception as exc:
         # A generic Xcode hardlink rejection cannot safely expose its source
         # path.  For that exact failure only, replace it with a bounded,
@@ -2556,7 +2635,7 @@ def _diagnose_support_lock_generation(
                 ToolchainSupportLockError(xcode_topology)
             )
         return _format_support_lock_diagnostic(exc)
-    return "[full-c6-e2e] support-lock diagnostic: generation-only rerun succeeded"
+    return _format_support_lock_rewalk_difference(first, second)
 
 
 def _assert_exact_two_cargo_pids(stage: str, cargo_pids: set[int]) -> None:
