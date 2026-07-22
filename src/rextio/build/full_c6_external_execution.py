@@ -426,7 +426,7 @@ def _require_strict_external_config(
         and math.isfinite(build.build_timeout_seconds)
         and build.build_timeout_seconds > 0
         and build.artifact_evidence_policy == "required"
-        and build.artifact_distribution_policy == "full-c6-required"
+        and build.artifact_distribution_policy == "strict-evidence"
         and build.artifact_source_lock_manifest is not None
         and build.artifact_source_lock_signature is not None
         and build.artifact_trusted_public_key is not None

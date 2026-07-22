@@ -673,14 +673,15 @@ authority, subject to every later hard gate.
 
 ### Bounded Full C6 + C5.2 Alpha (unreleased)
 
-`artifact_distribution_policy = "full-c6-required"` selects a separate
-fail-closed profile. Its configuration is deliberately redundant and exact:
+`artifact_distribution_policy = "strict-evidence"` selects the separate
+strict evidence distribution profile. It fails closed, and its configuration
+is deliberately redundant and exact:
 
 ```toml
 [build]
 fallback_backend = "cpython"
 artifact_evidence_policy = "required"
-artifact_distribution_policy = "full-c6-required"
+artifact_distribution_policy = "strict-evidence"
 artifact_source_lock_manifest = "locks/rextio.source-lock.v2.json"
 artifact_source_lock_signature = "locks/rextio.source-lock.v2.signature.json"
 artifact_policy_manifest = "locks/rextio.full-c6-policy.json"

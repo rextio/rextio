@@ -1196,15 +1196,15 @@ def build_hybrid_artifact(
     blocked_plan = analysis.external_source_plan or executable_analysis.external_source_plan
     strict_distribution = artifact_distribution_policy == FULL_C6_DISTRIBUTION_POLICY
     if artifact_distribution_policy not in {"disabled", FULL_C6_DISTRIBUTION_POLICY}:
-        raise ValueError("artifact_distribution_policy must be disabled or full-c6-required")
+        raise ValueError("artifact_distribution_policy must be disabled or strict-evidence")
     if strict_distribution:
         if full_c6_external_context is None:
             raise FullC6PipelineError(
-                "RXT060 full-c6-required build lacks a same-transaction strict C5.2 context"
+                "RXT060 strict evidence distribution policy lacks a same-transaction strict C5.2 context"
             )
         if blocked_plan is None:
             raise FullC6PipelineError(
-                "RXT060 full-c6-required build lacks an exact external source plan"
+                "RXT060 strict evidence distribution policy lacks an exact external source plan"
             )
         validate_full_c6_external_context(full_c6_external_context, analysis)
         strict_scope_failures = (
@@ -1217,7 +1217,7 @@ def build_hybrid_artifact(
         )
         if strict_scope_failures:
             raise FullC6PipelineError(
-                "RXT060 full-c6-required is frozen to Cargo/PyO3 host-extension + "
+                "RXT060 strict evidence distribution policy is frozen to Cargo/PyO3 host-extension + "
                 "CPython fallback, required evidence, no executable/importable crate, "
                 "and no helper embedding"
             )
@@ -1258,7 +1258,7 @@ def build_hybrid_artifact(
         target_plan.spec.language != "rust" or target_plan.plugins.active
     ):
         raise FullC6PipelineError(
-            "RXT060 full-c6-required is frozen to Rust with no active plugins"
+            "RXT060 strict evidence distribution policy is frozen to Rust with no active plugins"
         )
     layout = ArtifactLayout(project_root)
     artifact_profiles = _build_artifact_profiles(

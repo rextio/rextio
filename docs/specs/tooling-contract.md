@@ -2356,7 +2356,7 @@ serialized.
 A post-analysis lifecycle failure writes `build.json` with exactly
 `analysis`, `contract_version`, `distribution_authorized: false`,
 `error: {code, domain, message}`, `fallback`, `lifecycle: "failed"`, `stage`,
-and `status: "full-c6-required-failed"`. A scope failure before trusted
+and `status: "strict-evidence-failed"`. A scope failure before trusted
 analysis emits sanitized stderr only and writes no report, because even the
 project `.rextio` path is not yet trusted.
 
@@ -2369,7 +2369,7 @@ process-local evidence seal. Its projection remains unsigned and explicitly
 non-authorizing; only the later signature hard gate can mint the separate
 publication authorization.
 
-`[build] artifact_distribution_policy = "full-c6-required"` is the only opt-in.
+`[build] artifact_distribution_policy = "strict-evidence"` is the only opt-in.
 It also requires `artifact_evidence_policy = "required"`, CPython fallback,
 Cargo/PyO3, two builds, one exact import declaration/source archive, signed
 SourceLock v2 material, SHA-256-pinned Cargo lock/vendor inputs, an owner-policy

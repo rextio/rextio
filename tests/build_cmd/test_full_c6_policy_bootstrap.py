@@ -68,7 +68,7 @@ def _config_text(*, policy_sha256: bool, final_signature: bool = False) -> str:
     return f"""
 [build]
 artifact_evidence_policy = "required"
-artifact_distribution_policy = "full-c6-required"
+artifact_distribution_policy = "strict-evidence"
 artifact_source_lock_manifest = "locks/source-lock.v2.json"
 artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
 artifact_policy_manifest = "locks/rextio.full-c6-policy.json"

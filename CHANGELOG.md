@@ -11,6 +11,11 @@ feature PRs target the `0.1.5` integration branch; `main` stays at the published
 0.1.4 commit until the final authorized release PR. Nothing in this Alpha
 authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
 
+- Rename the unreleased public artifact distribution policy from its internal
+  milestone-derived label to `strict-evidence`, and rename
+  its serialized failure status to `strict-evidence-failed`. The old names are
+  not accepted because this contract has not been released.
+
 ### Full C6 support closure and production sandbox receipts (tooling contract 2.24.0)
 
 - Add `rextio policy bootstrap-support-lock --project-root . --output

@@ -137,7 +137,7 @@ license-files = ["LICENSE"]
     _scope_lock, scope_workspace = _cargo_workspace(project)
     build_values: dict[str, object] = {
         "artifact_evidence_policy": "required",
-        "artifact_distribution_policy": "full-c6-required",
+        "artifact_distribution_policy": "strict-evidence",
         "artifact_source_lock_manifest": signed.lock_path.relative_to(project).as_posix(),
         "artifact_source_lock_signature": signed.signature_path.relative_to(project).as_posix(),
         "artifact_trusted_public_key": signed.key_path.relative_to(project).as_posix(),

@@ -47,7 +47,7 @@ FULL_C6_POLICY_BOOTSTRAP_KIND = "full-c6-owner-policy-completion-request"
 FULL_C6_POLICY_BOOTSTRAP_DOMAIN = "rextio.full-c6-owner-policy-bootstrap.v2"
 FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = 2
 
-_FULL_C6_DISTRIBUTION_POLICY = "full-c6-required"
+_FULL_C6_DISTRIBUTION_POLICY = "strict-evidence"
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _MAX_BOOTSTRAP_BYTES = MAX_FULL_C6_POLICY_TEMPLATE_BYTES + 256 * 1024
@@ -144,7 +144,7 @@ def resolve_full_c6_policy_lifecycle(config: RextioConfig) -> FullC6PolicyLifecy
     final_signature = build.artifact_final_signature
     if type(manifest) is not str or not manifest:
         raise FullC6PolicyBootstrapError(
-            "full-c6-required lifecycle lacks an owner policy manifest path"
+            "strict evidence distribution policy lacks an owner policy manifest path"
         )
     if manifest_sha256 is None:
         if final_signature is not None:

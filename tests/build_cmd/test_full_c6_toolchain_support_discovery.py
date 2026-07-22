@@ -65,7 +65,7 @@ def _write_strict_bootstrap_config(
                 "[build]",
                 'fallback_backend = "cpython"',
                 'artifact_evidence_policy = "required"',
-                'artifact_distribution_policy = "full-c6-required"',
+                'artifact_distribution_policy = "strict-evidence"',
                 'artifact_source_lock_manifest = "authority/source-lock.json"',
                 'artifact_source_lock_signature = "authority/source-lock.sig.json"',
                 'artifact_policy_manifest = "authority/policy.json"',

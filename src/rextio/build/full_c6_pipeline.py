@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     )
 
 
-FULL_C6_DISTRIBUTION_POLICY = "full-c6-required"
+FULL_C6_DISTRIBUTION_POLICY = "strict-evidence"
 FULL_C6_SIGNING_REQUEST_FILENAME = "rextio.full-c6-final-authorization-request.json"
 _MAX_PRIVATE_MATERIAL_BYTES = 16 * 1024 * 1024
 _CONTEXT_SEAL = object()
@@ -201,7 +201,7 @@ def prepare_full_c6_external_build(
     if config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY:
         raise FullC6PipelineError(
             "RXT060 strict external-source build requires "
-            'artifact_distribution_policy = "full-c6-required"'
+            'artifact_distribution_policy = "strict-evidence"'
         )
     root = Path(project_root).resolve()
     if initial_analysis.project_root.resolve() != root:
@@ -499,7 +499,7 @@ def finalize_configured_full_c6_distribution(
         config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY
     ):
         raise FullC6PipelineError(
-            "RXT060 configured finalization requires full-c6-required policy"
+            "RXT060 configured finalization requires the strict evidence distribution policy"
         )
     material = _validated_full_c6_finalization_material(authority)
     root = Path(project_root).resolve()
@@ -548,7 +548,7 @@ def load_configured_full_c6_policy(
         config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY
     ):
         raise FullC6PipelineError(
-            "RXT060 configured owner policy requires full-c6-required mode"
+            "RXT060 configured owner policy requires the strict evidence distribution policy"
         )
     policy_path = config.build.artifact_policy_manifest
     policy_sha256 = config.build.artifact_policy_manifest_sha256

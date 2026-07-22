@@ -427,7 +427,7 @@ def _validate_config_values(
         "build",
         "artifact_distribution_policy",
         build["artifact_distribution_policy"],
-        {"disabled", "full-c6-required"},
+        {"disabled", "strict-evidence"},
     )
     _require_value("rust", "binding", rust["binding"], {"pyo3"})
     _require_value("rust", "build_tool", rust["build_tool"], {"cargo", "maturin"})
@@ -486,7 +486,7 @@ def _validate_full_c6_config(
     final_signature = build["artifact_final_signature"]
     signing_request_output = build["artifact_signing_request_output"]
     strict_distribution = (
-        build["artifact_distribution_policy"] == "full-c6-required"
+        build["artifact_distribution_policy"] == "strict-evidence"
     )
 
     if (source_lock_manifest is None) != (source_lock_signature is None):
@@ -507,7 +507,7 @@ def _validate_full_c6_config(
         raise ConfigError(
             "[build] artifact_policy_manifest and "
             "artifact_policy_manifest_sha256 must be configured together outside "
-            "full-c6-required policy bootstrap"
+            "strict-evidence policy bootstrap"
         )
     if (cargo_vendor is None) != (cargo_vendor_sha256 is None):
         raise ConfigError(
@@ -657,7 +657,7 @@ def _validate_full_c6_config(
 
     if failures:
         raise ConfigError(
-            '[build] artifact_distribution_policy = "full-c6-required" requires '
+            '[build] artifact_distribution_policy = "strict-evidence" requires '
             + "; ".join(failures)
         )
 

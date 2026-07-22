@@ -389,7 +389,7 @@ configured toolchain or artifact work: missing/invalid authorization is
 `external-source-c5-not-implemented` block because the preview itself cannot
 authorize C5.2.
 
-The `full-c6-required` Alpha is the sole narrow exception. On macOS arm64 or
+The `strict-evidence` Alpha is the sole narrow exception. On macOS arm64 or
 Linux x86_64 with CPython 3.11/PyO3/Cargo, it requires a non-editable
 RECORD-verified, cache-free Rextio install, no project `.rextioignore`, a sealed
 bounded project Python namespace, and owner-pinned Cargo lock/vendor inputs for

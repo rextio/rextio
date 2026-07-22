@@ -171,7 +171,7 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     config = RextioConfig(
         build=BuildConfig(
             artifact_evidence_policy="required",
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_source_lock_manifest=signed.lock_path.relative_to(project).as_posix(),
             artifact_source_lock_signature=signed.signature_path.relative_to(project).as_posix(),
             artifact_trusted_public_key=signed.key_path.relative_to(project).as_posix(),
@@ -326,7 +326,7 @@ def test_direct_orchestrator_requires_strict_context_and_policy_pair(tmp_path: P
             preflight.analysis,
             "cpython",
             artifact_evidence_policy="required",
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
         )
     with pytest.raises(FullC6PipelineError, match="ordinary or preview"):
         build_hybrid_artifact(
@@ -401,7 +401,7 @@ def test_finalization_material_accepts_exact_resolved_host_path_type(
     policy_path, policy_sha256 = _write_policy_manifest(tmp_path, arguments["policy"])
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="owner.pub",
@@ -437,7 +437,7 @@ def test_finalization_material_rejects_path_subclass_and_noncanonical_root(
     policy_path, policy_sha256 = _write_policy_manifest(tmp_path, arguments["policy"])
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="owner.pub",
@@ -485,7 +485,7 @@ def test_unsigned_pipeline_writes_only_request_and_never_publication(tmp_path: P
 
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="owner.pub",
@@ -523,7 +523,7 @@ def test_configured_signed_publication_reuses_exact_unsigned_request(
     state.chmod(0o700)
     request_output = f"state/{FULL_C6_SIGNING_REQUEST_FILENAME}"
     common_build = {
-        "artifact_distribution_policy": "full-c6-required",
+        "artifact_distribution_policy": "strict-evidence",
         "artifact_policy_manifest": policy_path,
         "artifact_policy_manifest_sha256": policy_sha256,
         "artifact_trusted_public_key": "state/owner.pub",
@@ -603,7 +603,7 @@ def test_configured_finalization_rejects_equal_but_distinct_config(
     policy_path, policy_sha256 = _write_policy_manifest(tmp_path, arguments["policy"])
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="state/owner.pub",
@@ -637,7 +637,7 @@ def test_configured_policy_loader_rejects_stale_pin_and_key_mismatch(tmp_path: P
     trusted_key_sha256 = arguments["expected_public_key_sha256"]
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="state/owner.pub",
@@ -652,7 +652,7 @@ def test_configured_policy_loader_rejects_stale_pin_and_key_mismatch(tmp_path: P
 
     stale = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256="0" * 64,
             artifact_trusted_public_key="state/owner.pub",
@@ -664,7 +664,7 @@ def test_configured_policy_loader_rejects_stale_pin_and_key_mismatch(tmp_path: P
 
     wrong_key = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="state/owner.pub",
@@ -680,7 +680,7 @@ def test_policy_bootstrap_does_not_weaken_the_strict_policy_loader(
 ) -> None:
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest="policy/rextio.full-c6-policy.json",
             artifact_policy_manifest_sha256=None,
             artifact_trusted_public_key="state/owner.pub",
@@ -705,7 +705,7 @@ def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: 
     request_path = state / FULL_C6_SIGNING_REQUEST_FILENAME
     unsigned_config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="state/owner.pub",
@@ -735,7 +735,7 @@ def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: 
     publication_root.mkdir()
     signed_config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_policy_manifest=policy_path,
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_trusted_public_key="state/owner.pub",

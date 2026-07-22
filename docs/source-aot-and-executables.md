@@ -104,7 +104,7 @@ CPython/Nuitka/Cargo probes and artifact work. Missing/invalid authorization
 uses status `external-source-c6-blocked`. A **verified** SourceLock uses the
 distinct status `external-source-c5-not-implemented` because remaining C5.2
 call-site linkage, body lowerability, Rust codegen, and packaging are not
-authorized by the preview. The separate `full-c6-required` profile below
+authorized by the preview. The separate `strict-evidence` profile below
 reopens and revalidates the source wheel; it does not promote this report into
 build authority.
 
@@ -539,7 +539,7 @@ hostile-process secure-boot claim and does not defend against hostile same-UID
 concurrent replacement, a compromised kernel or operating
 system, or complete time/randomness/scheduling/CPU virtualization.
 
-`[build] artifact_distribution_policy = "full-c6-required"` requires
+`[build] artifact_distribution_policy = "strict-evidence"` requires
 `artifact_evidence_policy = "required"`, CPython fallback, Cargo/PyO3 with
 `rust.importable = false`, exactly one complete import declaration, a signed
 SourceLock v2 manifest, configured and SHA-256-pinned Cargo lock/vendor inputs,

@@ -234,7 +234,7 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     config = RextioConfig(
         build=BuildConfig(
-            artifact_distribution_policy="full-c6-required",
+            artifact_distribution_policy="strict-evidence",
             artifact_cargo_lock=lock.relative_to(project).as_posix(),
             artifact_cargo_lock_sha256=hashlib.sha256(lock.read_bytes()).hexdigest(),
             artifact_cargo_vendor=vendor.relative_to(project).as_posix(),
