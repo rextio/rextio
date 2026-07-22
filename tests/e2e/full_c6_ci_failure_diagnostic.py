@@ -36,6 +36,7 @@ MAX_REPORT_ENTRIES = 512
 MAX_RELEVANT_INODES = 1_024
 MAX_ALIAS_PATHS = 16
 MAX_SCAN_DEPTH = 128
+MAX_DIRECTORY_ENTRIES = 65_536
 MAX_PATH_BYTES = 8_192
 MAX_LINE_BYTES = 8_192
 MAX_OUTPUT_BYTES = 256 * 1_024
@@ -143,7 +144,11 @@ def _open_directory_chain(
             if not stat.S_ISDIR(linked.st_mode):
                 raise RuntimeError("fixed-root-kind")
             child_fd = os.open(component, flags, dir_fd=parent_fd)
-            opened_stamp = _stable_stamp(os.fstat(child_fd))
+            try:
+                opened_stamp = _stable_stamp(os.fstat(child_fd))
+            except BaseException:
+                os.close(child_fd)
+                raise
             if opened_stamp != _stable_stamp(linked):
                 os.close(child_fd)
                 raise RuntimeError("fixed-root-changed")
@@ -173,6 +178,16 @@ def _verify_directory_chain(
             raise RuntimeError("fixed-root-changed")
 
 
+def _bounded_directory_names(descriptor: int, *, maximum: int) -> list[str]:
+    names: list[str] = []
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            names.append(entry.name)
+            if len(names) > maximum:
+                raise _ScanBoundExceeded("directory-entry-bound")
+    return names
+
+
 def _walk_nofollow(root: Path, *, entry_limit: int) -> Iterator[_CapturedEntry]:
     handles = _open_directory_chain(root)
     observed_count = 0
@@ -180,7 +195,13 @@ def _walk_nofollow(root: Path, *, entry_limit: int) -> Iterator[_CapturedEntry]:
     def walk(directory_fd: int, *, relative: PurePosixPath) -> Iterator[_CapturedEntry]:
         nonlocal observed_count
         directory_before = _stable_stamp(os.fstat(directory_fd))
-        names = os.listdir(directory_fd)
+        remaining = entry_limit - observed_count
+        if remaining < 0:
+            raise _ScanBoundExceeded("entry-bound")
+        names = _bounded_directory_names(
+            directory_fd,
+            maximum=min(MAX_DIRECTORY_ENTRIES, remaining),
+        )
         for name in names:
             _bounded_text(name)
             if name in {"", ".", ".."} or os.sep in name:
@@ -237,7 +258,10 @@ def _walk_nofollow(root: Path, *, entry_limit: int) -> Iterator[_CapturedEntry]:
                     != linked_stamp
                 ):
                     raise RuntimeError("entry-changed")
-        after_names = os.listdir(directory_fd)
+        after_names = _bounded_directory_names(
+            directory_fd,
+            maximum=min(MAX_DIRECTORY_ENTRIES, len(ordered) + 1),
+        )
         if sorted(after_names, key=os.fsencode) != ordered:
             raise RuntimeError("directory-inventory-changed")
         if _stable_stamp(os.fstat(directory_fd)) != directory_before:
@@ -307,20 +331,6 @@ def _diagnose_macos(
         if len(paths) < MAX_ALIAS_PATHS + 1:
             paths.append(entry.relative_path)
 
-    for label, relative, app_relative, inode, link_count in records:
-        aliases = sorted(path for path in alias_paths[inode] if path != app_relative)[
-            :MAX_ALIAS_PATHS
-        ]
-        alias_count = max(0, alias_counts[inode] - 1)
-        reporter.emit(
-            "macos-shared-regular-file",
-            root=label,
-            relative_path=relative,
-            nlink=link_count,
-            alias_count=alias_count,
-            alias_paths=aliases,
-            alias_paths_truncated=alias_count > len(aliases),
-        )
     complete_alias_group_count = sum(
         alias_counts[inode] == link_count for inode, link_count in relevant_inodes.items()
     )
@@ -336,6 +346,20 @@ def _diagnose_macos(
         reports_truncated=shared_member_count > len(records),
         xcode_app_scan_entries=app_scan_entries,
     )
+    for label, relative, app_relative, inode, link_count in records:
+        aliases = sorted(path for path in alias_paths[inode] if path != app_relative)[
+            :MAX_ALIAS_PATHS
+        ]
+        alias_count = max(0, alias_counts[inode] - 1)
+        reporter.emit(
+            "macos-shared-regular-file",
+            root=label,
+            relative_path=relative,
+            nlink=link_count,
+            alias_count=alias_count,
+            alias_paths=aliases,
+            alias_paths_truncated=alias_count > len(aliases),
+        )
 
 
 def _diagnose_linux(
@@ -344,7 +368,7 @@ def _diagnose_linux(
     root: Path = LINUX_RUNTIME_ROOT,
 ) -> None:
     offender_count = 0
-    reported_count = 0
+    records: list[dict[str, object]] = []
     scan_entries = 0
     for entry in _walk_nofollow(root, entry_limit=MAX_ROOT_SCAN_ENTRIES):
         scan_entries += 1
@@ -367,25 +391,27 @@ def _diagnose_linux(
         if not lexical_leaves_root and not resolved_leaves_root:
             continue
         offender_count += 1
-        if reported_count >= MAX_REPORT_ENTRIES:
+        if len(records) >= MAX_REPORT_ENTRIES:
             continue
-        reporter.emit(
-            "linux-escaping-symlink",
-            relative_path=entry.relative_path,
-            raw_target=raw_target,
-            resolved_target=_bounded_text(os.fspath(resolved_target)),
-            lstat_mode=oct(observed.st_mode),
-            lexical_leaves_root=lexical_leaves_root,
-            resolved_leaves_root=resolved_leaves_root,
+        records.append(
+            {
+                "relative_path": entry.relative_path,
+                "raw_target": raw_target,
+                "resolved_target": _bounded_text(os.fspath(resolved_target)),
+                "lstat_mode": oct(observed.st_mode),
+                "lexical_leaves_root": lexical_leaves_root,
+                "resolved_leaves_root": resolved_leaves_root,
+            }
         )
-        reported_count += 1
     reporter.emit(
         "linux-diagnostic-summary",
         scan_entries=scan_entries,
         offender_count=offender_count,
-        reported_count=reported_count,
-        reports_truncated=offender_count > reported_count,
+        reported_count=len(records),
+        reports_truncated=offender_count > len(records),
     )
+    for record in records:
+        reporter.emit("linux-escaping-symlink", **record)
 
 
 def main() -> int:
