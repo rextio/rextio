@@ -118,27 +118,39 @@ def _fixed_plan(
     tmp_path: Path,
     *,
     target_triple: str = LINUX,
+    xcode_clang_matches_linker: bool = True,
 ) -> support.FullC6ToolchainSupportPlan:
     manifests, roots = support.expected_full_c6_toolchain_support_roles(
         target_triple
     )
     material = tmp_path / "material"
+    python = _file(material / "tools" / "python3.11", executable=True)
+    linker = _file(material / "tools" / "linker", executable=True)
+    inspector = _file(material / "tools" / "inspector", executable=True)
     manifest_locators = tuple(
         create_toolchain_support_locator(
             logical_role=role,
-            path=_file(
-                material
-                / "manifests"
-                / (
-                    (
-                        support.LINUX_PYTHON_RUNTIME_LIBRARY_NAME
-                        if target_triple == LINUX
-                        else "Python"
-                    )
-                    if role == "python-runtime-library"
-                    else role
-                ),
-                role.encode("utf-8"),
+            path=(
+                linker
+                if (
+                    target_triple == MACOS
+                    and role == "xcode-clang"
+                    and xcode_clang_matches_linker
+                )
+                else _file(
+                    material
+                    / "manifests"
+                    / (
+                        (
+                            support.LINUX_PYTHON_RUNTIME_LIBRARY_NAME
+                            if target_triple == LINUX
+                            else "Python"
+                        )
+                        if role == "python-runtime-library"
+                        else role
+                    ),
+                    role.encode("utf-8"),
+                )
             ),
             kind="file",
         )
@@ -152,7 +164,6 @@ def _fixed_plan(
         )
         for role in roots
     )
-    python = _file(material / "tools" / "python3.11", executable=True)
     rust_sysroot = next(
         item._absolute_path
         for item in root_locators
@@ -160,8 +171,6 @@ def _fixed_plan(
     )
     cargo = _file(rust_sysroot / "bin" / "cargo", executable=True)
     rustc = _file(rust_sysroot / "bin" / "rustc", executable=True)
-    linker = _file(material / "tools" / "linker", executable=True)
-    inspector = _file(material / "tools" / "inspector", executable=True)
     runtime_leaf = _file(material / "runtime" / "libc.so.6")
     anchor = (
         MacOSPlatformAnchor(
@@ -255,6 +264,51 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
         "toolchain-cargo"
     )
     assert plan.macos_platform_anchor is None
+
+
+def test_macos_xcode_clang_evidence_has_one_linker_namespace_owner(
+    tmp_path: Path,
+) -> None:
+    plan = _fixed_plan(tmp_path, target_triple=MACOS)
+    xcode_clang = tuple(
+        locator
+        for locator in plan.manifest_locators
+        if locator.logical_role == "xcode-clang"
+    )
+    linker_mappings = tuple(
+        mapping
+        for mapping in plan.namespace_mappings
+        if mapping.logical_role == "toolchain-linker"
+    )
+
+    assert len(xcode_clang) == 1
+    assert xcode_clang[0]._absolute_path == plan.linker_path
+    assert "xcode-clang" in {
+        locator.logical_role for locator in plan.manifest_locators
+    }
+    assert len(linker_mappings) == 1
+    assert linker_mappings[0].host_path == plan.linker_path
+    assert len({mapping.host_path for mapping in plan.namespace_mappings}) == len(
+        plan.namespace_mappings
+    )
+    assert all(
+        mapping.logical_role != "support-xcode-clang"
+        for mapping in plan.namespace_mappings
+    )
+
+
+def test_macos_plan_rejects_xcode_clang_evidence_for_another_linker(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="Xcode clang evidence differs from the selected linker",
+    ):
+        _fixed_plan(
+            tmp_path,
+            target_triple=MACOS,
+            xcode_clang_matches_linker=False,
+        )
 
 
 def test_bootstrap_materializes_canonical_lock_and_exactly_reuses(

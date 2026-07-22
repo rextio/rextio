@@ -1603,6 +1603,22 @@ def _new_plan(
         )
     else:
         platform_anchored_tools = ()
+    xcode_clang_locator = next(
+        (item for item in manifests if item.logical_role == "xcode-clang"),
+        None,
+    )
+    if target_triple.endswith("apple-darwin"):
+        if (
+            xcode_clang_locator is None
+            or xcode_clang_locator._absolute_path != linker
+        ):
+            raise FullC6ToolchainSupportError(
+                "Full C6 Xcode clang evidence differs from the selected linker"
+            )
+    elif xcode_clang_locator is not None:
+        raise FullC6ToolchainSupportError(
+            "Full C6 Linux support unexpectedly contains Xcode clang evidence"
+        )
     rust_sysroot_locator = next(
         (item for item in roots if item.logical_role == "rust-sysroot"),
         None,
@@ -1674,6 +1690,12 @@ def _new_plan(
             role = "toolchain-ld"
         elif locator.logical_role in {"linux-ranlib", "xcode-ranlib"}:
             role = "toolchain-ranlib"
+        elif locator.logical_role == "xcode-clang":
+            if target_triple != "aarch64-apple-darwin":
+                raise FullC6ToolchainSupportError(
+                    "Full C6 Xcode clang namespace target is invalid"
+                )
+            continue
         elif locator.logical_role == "rust-sysroot":
             role = "toolchain-rust-sysroot"
         else:
@@ -1699,9 +1721,22 @@ def _new_plan(
             ),
         )
     )
-    if len({item.logical_role for item in mappings}) != len(mappings) or len(
-        {item.virtual_path for item in mappings}
-    ) != len(mappings):
+    linker_mappings = tuple(
+        item for item in mappings if item.logical_role == "toolchain-linker"
+    )
+    if (
+        len(linker_mappings) != 1
+        or linker_mappings[0].host_path != linker
+        or linker_mappings[0].kind != "file"
+    ):
+        raise FullC6ToolchainSupportError(
+            "Full C6 selected linker has no exact namespace owner"
+        )
+    if (
+        len({item.logical_role for item in mappings}) != len(mappings)
+        or len({item.virtual_path for item in mappings}) != len(mappings)
+        or len({item.host_path for item in mappings}) != len(mappings)
+    ):
         raise FullC6ToolchainSupportError(
             "Full C6 support namespace mappings are ambiguous"
         )
