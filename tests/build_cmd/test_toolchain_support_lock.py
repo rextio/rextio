@@ -590,8 +590,10 @@ def test_verification_drift_records_only_bounded_path_free_receipt_fields(
     assert drift.after_merkle_sha256 != drift.before_merkle_sha256
     assert drift.hardlink_before_observation_sha256 is None
     assert drift.hardlink_after_observation_sha256 is None
+    assert drift.tree_changed_fields == ("total_bytes", "merkle")
+    assert drift.tree_changed_field_mask == "2040"
     assert str(drift) == drift.diagnostic
-    assert "hbefore=none,hafter=none" in drift.diagnostic
+    assert "hbefore=none,hafter=none,fields=2040" in drift.diagnostic
     assert str(tmp_path) not in drift.diagnostic
     assert str(manifest) not in drift.diagnostic
     assert len(drift.diagnostic.encode("ascii")) <= 512
@@ -607,9 +609,39 @@ def test_verification_drift_diagnostic_worst_case_stays_bounded() -> None:
         after_merkle_sha256="b" * 64,
         hardlink_before_observation_sha256="c" * 64,
         hardlink_after_observation_sha256="d" * 64,
+        tree_changed_fields=(),
     )
 
-    assert len(drift.diagnostic.encode("ascii")) == 498
+    assert len(drift.diagnostic.encode("ascii")) == 510
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        ("private_metadata",),
+        ("merkle", "root_mode"),
+        ("merkle", "merkle"),
+        (),
+    ],
+)
+def test_verification_drift_rejects_noncanonical_tree_field_masks(
+    fields: tuple[str, ...],
+) -> None:
+    with pytest.raises(
+        ToolchainSupportLockError,
+        match="changed-field mask is invalid",
+    ):
+        ToolchainSupportVerificationDriftError(
+            manifest_difference_count=0,
+            root_difference_count=1,
+            first_difference_kind="root",
+            first_logical_role="rust-sysroot",
+            before_merkle_sha256="a" * 64,
+            after_merkle_sha256="b" * 64,
+            hardlink_before_observation_sha256=None,
+            hardlink_after_observation_sha256=None,
+            tree_changed_fields=fields,
+        )
 
 
 def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(

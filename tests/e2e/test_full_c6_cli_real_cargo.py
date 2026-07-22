@@ -1911,7 +1911,8 @@ def test_fresh_rextio_reuses_valid_initial_support_lock_diagnostic(
     diagnostic = (
         "toolchain support verification differs "
         "(manifests=0,roots=1,kind=root,role=rust-sysroot,"
-        f"before={'a' * 64},after={'b' * 64},hbefore=none,hafter=none)"
+        f"before={'a' * 64},after={'b' * 64},hbefore=none,hafter=none,"
+        "fields=2000)"
     )
 
     def forbidden(*_args: object, **_kwargs: object) -> str:
@@ -1954,7 +1955,8 @@ def test_fresh_rextio_rejects_forged_initial_diagnostic_and_reruns(
     forged = (
         "toolchain support verification differs "
         f"(manifests=0,roots=1,kind=root,role={forged_role},"
-        f"before={'a' * 64},after={'b' * 64},hbefore=none,hafter=none)"
+        f"before={'a' * 64},after={'b' * 64},hbefore=none,hafter=none,"
+        "fields=2000)"
     )
     observed: list[Path] = []
 

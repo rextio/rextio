@@ -843,6 +843,8 @@ def test_changed_deep_support_bytes_are_detected_by_explicit_rewalk(
     assert cause.first_difference_kind == "root"
     assert cause.first_logical_role == "rust-sysroot"
     assert cause.before_merkle_sha256 != cause.after_merkle_sha256
+    assert cause.tree_changed_fields == ("total_bytes", "merkle")
+    assert cause.tree_changed_field_mask == "2040"
 
 
 def test_plan_access_is_cheap_but_stage_revalidation_detects_tool_mutation(

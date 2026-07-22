@@ -164,6 +164,7 @@ def _support_lock_verification_diagnostic(error: BaseException) -> str | None:
                     hardlink_after_observation_sha256=(
                         current.hardlink_after_observation_sha256
                     ),
+                    tree_changed_fields=current.tree_changed_fields,
                 )
             except ToolchainSupportLockError:
                 return None

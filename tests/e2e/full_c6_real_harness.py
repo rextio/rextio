@@ -232,7 +232,8 @@ _SUPPORT_LOCK_VERIFICATION_DIAGNOSTIC_RE = re.compile(
     r"before=(?P<before>[0-9a-f]{64}),"
     r"after=(?P<after>[0-9a-f]{64}),"
     r"hbefore=(?P<hbefore>none|[0-9a-f]{64}),"
-    r"hafter=(?P<hafter>none|[0-9a-f]{64})\)"
+    r"hafter=(?P<hafter>none|[0-9a-f]{64}),"
+    r"fields=(?P<fields>[0-9a-f]{4})\)"
 )
 
 
@@ -2828,6 +2829,7 @@ def _initial_support_lock_verification_diagnostic(stderr: str) -> str | None:
         manifests = int(match.group("manifests"))
         roots = int(match.group("roots"))
         kind = match.group("kind")
+        changed_field_mask = int(match.group("fields"), 16)
         if (
             not 0 <= manifests <= 64
             or not 0 <= roots <= 64
@@ -2835,6 +2837,15 @@ def _initial_support_lock_verification_diagnostic(stderr: str) -> str | None:
             or (kind == "manifest" and manifests == 0)
             or (kind == "root" and roots == 0)
             or match.group("role") not in _SUPPORT_LOCK_FIXED_ROLES
+            or (kind == "manifest" and changed_field_mask != 0)
+            or (
+                kind == "root"
+                and not 0 < changed_field_mask <= 0x3FFF
+            )
+            or (
+                kind == "root"
+                and changed_field_mask & (1 << 13) == 0
+            )
         ):
             continue
         matches.append(candidate)

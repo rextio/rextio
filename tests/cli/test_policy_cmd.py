@@ -337,6 +337,7 @@ def test_policy_bootstrap_support_lock_emits_only_exact_typed_drift(
         after_merkle_sha256="b" * 64,
         hardlink_before_observation_sha256="c" * 64,
         hardlink_after_observation_sha256="d" * 64,
+        tree_changed_fields=("merkle",),
     )
 
     def reject(**_kwargs: object) -> object:
@@ -386,6 +387,7 @@ def test_policy_bootstrap_support_lock_rejects_forged_typed_drift_role(
         after_merkle_sha256="b" * 64,
         hardlink_before_observation_sha256=None,
         hardlink_after_observation_sha256=None,
+        tree_changed_fields=("merkle",),
     )
 
     def reject(**_kwargs: object) -> object:

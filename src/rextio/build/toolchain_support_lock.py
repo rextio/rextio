@@ -260,6 +260,24 @@ class ToolchainSupportLockError(ValueError):
     """A toolchain support locator, tree, or lock is unsafe or noncanonical."""
 
 
+_TREE_VERIFICATION_CHANGED_FIELDS = (
+    "root_metadata",
+    "root_mode",
+    "member_count",
+    "file_count",
+    "directory_count",
+    "symlink_count",
+    "total_bytes",
+    "xattr_count",
+    "xattr_bytes",
+    "symlink_disposition_summary",
+    "hardlink_disposition_summary",
+    "mode_disposition_summary",
+    "casefold_disposition_summary",
+    "merkle",
+)
+
+
 class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
     """One bounded, path-free expected/observed receipt difference."""
 
@@ -273,6 +291,8 @@ class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
         "hardlink_before_observation_sha256",
         "manifest_difference_count",
         "root_difference_count",
+        "tree_changed_fields",
+        "tree_changed_field_mask",
     )
 
     def __init__(
@@ -286,6 +306,7 @@ class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
         after_merkle_sha256: str,
         hardlink_before_observation_sha256: str | None,
         hardlink_after_observation_sha256: str | None,
+        tree_changed_fields: tuple[str, ...],
     ) -> None:
         if (
             type(manifest_difference_count) is not int
@@ -325,13 +346,38 @@ class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
             hardlink_after_observation_sha256,
             label="support verification hardlink-after observation SHA-256",
         )
+        if (
+            type(tree_changed_fields) is not tuple
+            or any(type(field) is not str for field in tree_changed_fields)
+            or tree_changed_fields
+            != tuple(
+                field
+                for field in _TREE_VERIFICATION_CHANGED_FIELDS
+                if field in tree_changed_fields
+            )
+            or (first_difference_kind == "manifest" and tree_changed_fields)
+            or (first_difference_kind == "root" and not tree_changed_fields)
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support verification changed-field mask is invalid"
+            )
+        changed_field_mask = sum(
+            1 << index
+            for index, field in enumerate(_TREE_VERIFICATION_CHANGED_FIELDS)
+            if field in tree_changed_fields
+        )
+        if not 0 <= changed_field_mask < 1 << 16:
+            raise ToolchainSupportLockError(
+                "toolchain support verification changed-field mask is invalid"
+            )
         diagnostic = (
             "toolchain support verification differs "
             f"(manifests={manifest_difference_count},"
             f"roots={root_difference_count},kind={first_difference_kind},"
             f"role={role},before={before},after={after},"
             f"hbefore={hardlink_before or 'none'},"
-            f"hafter={hardlink_after or 'none'})"
+            f"hafter={hardlink_after or 'none'},"
+            f"fields={changed_field_mask:04x})"
         )
         if not diagnostic.isascii() or len(diagnostic.encode("ascii")) > 512:
             raise ToolchainSupportLockError(
@@ -345,6 +391,8 @@ class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
         self.after_merkle_sha256 = after
         self.hardlink_before_observation_sha256 = hardlink_before
         self.hardlink_after_observation_sha256 = hardlink_after
+        self.tree_changed_fields = tree_changed_fields
+        self.tree_changed_field_mask = f"{changed_field_mask:04x}"
         self.diagnostic = diagnostic
         super().__init__(diagnostic)
 
@@ -2373,6 +2421,56 @@ def _verification_hardlink_observation(
     return dispositions[0].observation_merkle_sha256
 
 
+def _tree_verification_changed_fields(
+    before: ToolchainSupportTreeReceipt,
+    after: ToolchainSupportTreeReceipt,
+) -> tuple[str, ...]:
+    comparisons = (
+        ("root_metadata", before.root_metadata_sha256, after.root_metadata_sha256),
+        ("root_mode", before.root_mode, after.root_mode),
+        ("member_count", before.member_count, after.member_count),
+        ("file_count", before.file_count, after.file_count),
+        ("directory_count", before.directory_count, after.directory_count),
+        ("symlink_count", before.symlink_count, after.symlink_count),
+        ("total_bytes", before.total_bytes, after.total_bytes),
+        ("xattr_count", before.xattr_count, after.xattr_count),
+        ("xattr_bytes", before.xattr_bytes, after.xattr_bytes),
+        (
+            "symlink_disposition_summary",
+            (before.symlink_disposition_count, before.symlink_dispositions),
+            (after.symlink_disposition_count, after.symlink_dispositions),
+        ),
+        (
+            "hardlink_disposition_summary",
+            (before.hardlink_disposition_count, before.hardlink_dispositions),
+            (after.hardlink_disposition_count, after.hardlink_dispositions),
+        ),
+        (
+            "mode_disposition_summary",
+            (before.mode_disposition_count, before.mode_dispositions),
+            (after.mode_disposition_count, after.mode_dispositions),
+        ),
+        (
+            "casefold_disposition_summary",
+            (before.casefold_disposition_count, before.casefold_dispositions),
+            (after.casefold_disposition_count, after.casefold_dispositions),
+        ),
+        ("merkle", before.merkle_sha256, after.merkle_sha256),
+    )
+    changed = tuple(name for name, left, right in comparisons if left != right)
+    if (
+        not changed
+        or changed
+        != tuple(
+            field for field in _TREE_VERIFICATION_CHANGED_FIELDS if field in changed
+        )
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support verification changed-field accounting is inconsistent"
+        )
+    return changed
+
+
 def _verification_drift_error(
     *,
     before_manifests: tuple[ToolchainSupportFileReceipt, ...],
@@ -2406,6 +2504,7 @@ def _verification_drift_error(
         after_merkle_sha256 = manifest_after.merkle_sha256
         hardlink_before = None
         hardlink_after = None
+        tree_changed_fields: tuple[str, ...] = ()
     elif root_differences:
         root_before, root_after = root_differences[0]
         if root_before.logical_role != root_after.logical_role:
@@ -2418,6 +2517,10 @@ def _verification_drift_error(
         after_merkle_sha256 = root_after.merkle_sha256
         hardlink_before = _verification_hardlink_observation(root_before)
         hardlink_after = _verification_hardlink_observation(root_after)
+        tree_changed_fields = _tree_verification_changed_fields(
+            root_before,
+            root_after,
+        )
     else:
         raise ToolchainSupportLockError(
             "toolchain support verification drift accounting is inconsistent"
@@ -2431,6 +2534,7 @@ def _verification_drift_error(
         after_merkle_sha256=after_merkle_sha256,
         hardlink_before_observation_sha256=hardlink_before,
         hardlink_after_observation_sha256=hardlink_after,
+        tree_changed_fields=tree_changed_fields,
     )
 
 
