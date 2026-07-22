@@ -75,8 +75,12 @@ MACOS_SANDBOX_RESOURCE_FAMILIES = (
     "dev-stdin",
     "dev-stdout",
     "dev-stderr",
+    "dev-autofs-nowait",
+    "dev-dtracehelper",
     "dev-other",
-    "library-preferences",
+    "library-preferences-global",
+    "library-preferences-global-m",
+    "library-preferences-other",
     "library-developer",
     "library-other",
     "private-etc-localtime",
@@ -84,10 +88,15 @@ MACOS_SANDBOX_RESOURCE_FAMILIES = (
     "private-etc-group",
     "private-etc-hosts",
     "private-etc-resolv",
-    "private-etc-ssl",
+    "private-etc-ssl-cert-pem",
+    "private-etc-ssl-other",
     "private-etc-other",
     "private-var-db-timezone",
-    "private-var-db",
+    "private-var-db-detached-signatures",
+    "private-var-db-system-policy",
+    "private-var-db-mds",
+    "private-var-db-receipts",
+    "private-var-db-other",
     "private-var-dyld",
     "private-var-run",
     "private-var-folders",
@@ -99,12 +108,19 @@ MACOS_SANDBOX_RESOURCE_FAMILIES = (
     "users-runner-cargo",
     "users-runner-rustup",
     "users-runner-library",
+    "users-runner-cf-user-text-encoding",
+    "users-runner-gitconfig",
+    "users-runner-netrc",
     "users-runner-other",
     "host-temp",
     "xcode",
     "sysctl-hw-ncpu",
     "sysctl-hw",
-    "sysctl-kern",
+    "sysctl-kern-osrelease",
+    "sysctl-kern-osversion",
+    "sysctl-kern-version",
+    "sysctl-kern-hostname",
+    "sysctl-kern-other",
     "sysctl-machdep",
     "sysctl-proc-translated",
     "sysctl-other",
@@ -273,6 +289,21 @@ def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
         ("/dev/stdin", "dev-stdin"),
         ("/dev/stdout", "dev-stdout"),
         ("/dev/stderr", "dev-stderr"),
+        ("/dev/autofs_nowait", "dev-autofs-nowait"),
+        ("/dev/dtracehelper", "dev-dtracehelper"),
+        (
+            "/Library/Preferences/.GlobalPreferences.plist",
+            "library-preferences-global",
+        ),
+        (
+            "/Library/Preferences/.GlobalPreferences_m.plist",
+            "library-preferences-global-m",
+        ),
+        ("/private/etc/ssl/cert.pem", "private-etc-ssl-cert-pem"),
+        ("/etc/ssl/cert.pem", "private-etc-ssl-cert-pem"),
+        ("/Users/runner/.CFUserTextEncoding", "users-runner-cf-user-text-encoding"),
+        ("/Users/runner/.gitconfig", "users-runner-gitconfig"),
+        ("/Users/runner/.netrc", "users-runner-netrc"),
     ):
         if resource == exact:
             return family
@@ -285,7 +316,7 @@ def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
         if _resource_is_within(resource, root):
             return "host-temp"
     for roots, family in (
-        (("/Library/Preferences",), "library-preferences"),
+        (("/Library/Preferences",), "library-preferences-other"),
         (("/Library/Developer",), "library-developer"),
         (("/Library",), "library-other"),
         (("/private/etc/localtime", "/etc/localtime"), "private-etc-localtime"),
@@ -293,11 +324,30 @@ def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
         (("/private/etc/group", "/etc/group"), "private-etc-group"),
         (("/private/etc/hosts", "/etc/hosts"), "private-etc-hosts"),
         (("/private/etc/resolv.conf", "/etc/resolv.conf"), "private-etc-resolv"),
-        (("/private/etc/ssl", "/etc/ssl"), "private-etc-ssl"),
+        (("/private/etc/ssl", "/etc/ssl"), "private-etc-ssl-other"),
         (("/private/etc", "/etc"), "private-etc-other"),
         (("/private/var/db/timezone", "/var/db/timezone"), "private-var-db-timezone"),
         (("/private/var/db/dyld", "/var/db/dyld"), "private-var-dyld"),
-        (("/private/var/db", "/var/db"), "private-var-db"),
+        (
+            (
+                "/private/var/db/DetachedSignatures",
+                "/var/db/DetachedSignatures",
+            ),
+            "private-var-db-detached-signatures",
+        ),
+        (
+            (
+                "/private/var/db/SystemPolicyConfiguration",
+                "/var/db/SystemPolicyConfiguration",
+            ),
+            "private-var-db-system-policy",
+        ),
+        (("/private/var/db/mds", "/var/db/mds"), "private-var-db-mds"),
+        (
+            ("/private/var/db/receipts", "/var/db/receipts"),
+            "private-var-db-receipts",
+        ),
+        (("/private/var/db", "/var/db"), "private-var-db-other"),
         (("/private/var/run", "/var/run"), "private-var-run"),
         (("/private/var/folders", "/var/folders"), "private-var-folders"),
         (("/private/var", "/var"), "private-var-other"),
@@ -325,9 +375,17 @@ def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
             return "sysctl-hw-ncpu"
         if resource == "sysctl.proc_translated":
             return "sysctl-proc-translated"
+        for exact, family in (
+            ("kern.osrelease", "sysctl-kern-osrelease"),
+            ("kern.osversion", "sysctl-kern-osversion"),
+            ("kern.version", "sysctl-kern-version"),
+            ("kern.hostname", "sysctl-kern-hostname"),
+        ):
+            if resource == exact:
+                return family
         for prefix, family in (
             ("hw.", "sysctl-hw"),
-            ("kern.", "sysctl-kern"),
+            ("kern.", "sysctl-kern-other"),
             ("machdep.", "sysctl-machdep"),
         ):
             if resource.startswith(prefix):

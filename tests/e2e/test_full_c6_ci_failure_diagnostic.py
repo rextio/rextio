@@ -103,7 +103,7 @@ def test_macos_sandbox_log_parser_emits_only_closed_count_families() -> None:
         "ranlib": 1,
         "build-script-build": 1,
     }
-    assert summary["resource_counts"]["private-var-db"] == 1
+    assert summary["resource_counts"]["private-var-db-other"] == 1
     assert summary["resource_counts"]["private-var-folders"] == 1
     assert summary["resource_counts"]["private-etc-other"] == 1
     assert sum(row["count"] for row in summary["denial_rows"]) == 9
@@ -188,7 +188,17 @@ def test_macos_sandbox_log_parser_preserves_closed_operation_resource_pairs() ->
         ("/dev/stdin", "dev-stdin"),
         ("/dev/stdout", "dev-stdout"),
         ("/dev/stderr", "dev-stderr"),
-        ("/Library/Preferences/private", "library-preferences"),
+        ("/dev/autofs_nowait", "dev-autofs-nowait"),
+        ("/dev/dtracehelper", "dev-dtracehelper"),
+        (
+            "/Library/Preferences/.GlobalPreferences.plist",
+            "library-preferences-global",
+        ),
+        (
+            "/Library/Preferences/.GlobalPreferences_m.plist",
+            "library-preferences-global-m",
+        ),
+        ("/Library/Preferences/private", "library-preferences-other"),
         ("/Library/Developer/private", "library-developer"),
         ("/Library/private", "library-other"),
         ("/private/etc/localtime", "private-etc-localtime"),
@@ -196,11 +206,22 @@ def test_macos_sandbox_log_parser_preserves_closed_operation_resource_pairs() ->
         ("/private/etc/group", "private-etc-group"),
         ("/private/etc/hosts", "private-etc-hosts"),
         ("/private/etc/resolv.conf", "private-etc-resolv"),
-        ("/private/etc/ssl/private", "private-etc-ssl"),
+        ("/private/etc/ssl/private", "private-etc-ssl-other"),
+        ("/private/etc/ssl/cert.pem", "private-etc-ssl-cert-pem"),
         ("/private/etc/private", "private-etc-other"),
         ("/private/var/db/timezone/private", "private-var-db-timezone"),
         ("/private/var/db/dyld/private", "private-var-dyld"),
-        ("/private/var/db/private", "private-var-db"),
+        ("/private/var/db/private", "private-var-db-other"),
+        (
+            "/private/var/db/DetachedSignatures/private",
+            "private-var-db-detached-signatures",
+        ),
+        (
+            "/private/var/db/SystemPolicyConfiguration/private",
+            "private-var-db-system-policy",
+        ),
+        ("/private/var/db/mds/private", "private-var-db-mds"),
+        ("/private/var/db/receipts/private", "private-var-db-receipts"),
         ("/private/var/run/private", "private-var-run"),
         ("/private/var/folders/private", "private-var-folders"),
         ("/private/var/private", "private-var-other"),
@@ -210,6 +231,9 @@ def test_macos_sandbox_log_parser_preserves_closed_operation_resource_pairs() ->
         ("/Users/runner/.rustup/private", "users-runner-rustup"),
         ("/Users/runner/Library/private", "users-runner-library"),
         ("/Users/runner/private", "users-runner-other"),
+        ("/Users/runner/.CFUserTextEncoding", "users-runner-cf-user-text-encoding"),
+        ("/Users/runner/.gitconfig", "users-runner-gitconfig"),
+        ("/Users/runner/.netrc", "users-runner-netrc"),
     ),
 )
 def test_macos_sandbox_resource_family_uses_only_closed_subfamilies(
@@ -230,7 +254,11 @@ def test_macos_sandbox_resource_family_uses_only_closed_subfamilies(
     (
         ("hw.ncpu", "sysctl-hw-ncpu"),
         ("hw.private", "sysctl-hw"),
-        ("kern.private", "sysctl-kern"),
+        ("kern.private", "sysctl-kern-other"),
+        ("kern.osrelease", "sysctl-kern-osrelease"),
+        ("kern.osversion", "sysctl-kern-osversion"),
+        ("kern.version", "sysctl-kern-version"),
+        ("kern.hostname", "sysctl-kern-hostname"),
         ("machdep.private", "sysctl-machdep"),
         ("sysctl.proc_translated", "sysctl-proc-translated"),
         ("private.owner", "sysctl-other"),
@@ -247,6 +275,40 @@ def test_macos_sandbox_sysctl_family_uses_only_closed_subfamilies(
         )
         == expected
     )
+
+
+def test_macos_sandbox_exact_candidate_rows_never_emit_raw_resources() -> None:
+    resources = (
+        "/dev/autofs_nowait",
+        "/Library/Preferences/.GlobalPreferences.plist",
+        "/private/etc/ssl/cert.pem",
+        "/private/var/db/DetachedSignatures/private-owner",
+        "/Users/runner/.gitconfig",
+    )
+    messages = [
+        f"Sandbox: cargo({index}) deny({index}) file-read-data {resource}"
+        for index, resource in enumerate(resources, start=1)
+    ]
+    messages.append("Sandbox: rustc(9) deny(9) sysctl-read kern.osrelease")
+    document = [
+        {
+            "subsystem": "com.apple.sandbox.reporting",
+            "eventMessage": message,
+            "privateIgnoredField": "/must/not/escape",
+        }
+        for message in messages
+    ]
+
+    summary = DIAGNOSTIC._parse_macos_sandbox_log_json(
+        json.dumps(document).encode("utf-8")
+    )
+
+    assert summary["accepted_count"] == len(messages)
+    encoded = json.dumps(summary, sort_keys=True)
+    assert all(resource not in encoded for resource in resources)
+    assert "kern.osrelease" not in encoded
+    assert "private-owner" not in encoded
+    assert "/must/not/escape" not in encoded
 
 
 def test_macos_sandbox_summary_pairs_closed_process_operation_and_resource() -> None:
@@ -289,13 +351,13 @@ def test_macos_sandbox_summary_pairs_closed_process_operation_and_resource() -> 
         {
             "process": "cargo",
             "operation": "sysctl-read",
-            "resource": "sysctl-kern",
+            "resource": "sysctl-kern-other",
             "count": 1,
         },
         {
             "process": "rustc",
             "operation": "file-read",
-            "resource": "library-preferences",
+            "resource": "library-preferences-other",
             "count": 1,
         },
         {
