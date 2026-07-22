@@ -164,11 +164,14 @@ _RESERVED_ENV = frozenset(
         "RUSTC",
         "RUSTFLAGS",
         "SOURCE_DATE_EPOCH",
+        "TMPDIR",
         "TZ",
     }
 ) | _NATIVE_LINKER_ENV_NAMES
 _EXECUTOR_ENV_ALLOWLIST = (
-    STRICT_BUILD_ENV_ALLOWLIST | frozenset({"HOME"}) | _PYO3_ENV_NAMES
+    STRICT_BUILD_ENV_ALLOWLIST
+    | frozenset({"HOME", "TMPDIR"})
+    | _PYO3_ENV_NAMES
 )
 _FORBIDDEN_ENV = frozenset(
     {
@@ -2307,6 +2310,11 @@ def execute_full_c6_two_build(
             project_root,
             environment_seed,
             source_date_epoch=source_date_epoch,
+            macos_native_tmpdir=(
+                native_orchestrator
+                and native_manifest is not None
+                and native_manifest.target_triple == "aarch64-apple-darwin"
+            ),
         )
         pyo3_config_path: Path | None = None
         if native_orchestrator:
@@ -2451,6 +2459,10 @@ def execute_full_c6_two_build(
             else:
                 argv = host_argv
                 invocation_environment = dict(environment)
+                _verify_macos_native_tmpdir(
+                    invocation_environment,
+                    build_root=build_root,
+                )
                 try:
                     launch = prepare_full_c6_sandbox_launch(
                         sandbox_plan,
@@ -2511,6 +2523,11 @@ def execute_full_c6_two_build(
                 assert pyo3_support_root is not None
                 assert pyo3_support_root_identity is not None
                 assert pyo3_config_file_identity is not None
+                if native_manifest.target_triple == "aarch64-apple-darwin":
+                    _verify_macos_native_tmpdir(
+                        invocation_environment,
+                        build_root=build_root,
+                    )
                 _require_native_toolchain_support_critical(
                     trusted_support_plan,
                     toolchain_support_lock,
@@ -4114,12 +4131,15 @@ def _build_environment(
     seed: dict[str, str],
     *,
     source_date_epoch: int,
+    macos_native_tmpdir: bool = False,
 ) -> dict[str, str]:
     directories = {
         "HOME": root / "home",
         "CARGO_HOME": root / "cargo-home",
         "CARGO_TARGET_DIR": root / "target",
     }
+    if macos_native_tmpdir:
+        directories["TMPDIR"] = root / "tmp"
     for path in directories.values():
         path.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
         os.chmod(path, _CANONICAL_DIRECTORY_MODE)
@@ -4142,7 +4162,32 @@ def _build_environment(
             "TZ": "UTC",
         }
     )
+    if macos_native_tmpdir:
+        environment["TMPDIR"] = str(directories["TMPDIR"])
     return environment
+
+
+def _verify_macos_native_tmpdir(
+    environment: Mapping[str, str],
+    *,
+    build_root: Path,
+) -> None:
+    """Require the executor-owned private macOS native temporary directory."""
+    expected = build_root / "tmp"
+    try:
+        observed = os.lstat(expected)
+    except OSError as exc:
+        raise FullC6ExecutorError(
+            "Full C6 macOS native temporary directory is unavailable"
+        ) from exc
+    if (
+        environment.get("TMPDIR") != os.fspath(expected)
+        or not stat.S_ISDIR(observed.st_mode)
+        or stat.S_IMODE(observed.st_mode) != _CANONICAL_DIRECTORY_MODE
+    ):
+        raise FullC6ExecutorError(
+            "Full C6 macOS native temporary directory changed"
+        )
 
 
 def _validate_base_environment(value: Mapping[str, str] | None) -> dict[str, str]:
@@ -4329,6 +4374,11 @@ def _canonical_invocation_environment(
             f"{_BUILD_ROOT_TOKEN}/target",
         ),
     }
+    if "TMPDIR" in canonical and canonical.get("TMPDIR") != "/tmp":
+        owned_paths["TMPDIR"] = (
+            build_root / "tmp",
+            f"{_BUILD_ROOT_TOKEN}/tmp",
+        )
     if "PYO3_CONFIG_FILE" in canonical:
         if pyo3_config_path is None:
             raise FullC6ExecutorError(

@@ -967,6 +967,9 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         assert env["PYO3_ENVIRONMENT_SIGNATURE"] == _pyo3_identity().digest
         assert env["RUSTC"] == str(native_tools.rustc)
         assert f"linker={native_tools.linker}" in env["CARGO_ENCODED_RUSTFLAGS"]
+        tmpdir = Path(env["TMPDIR"])
+        assert tmpdir == Path(cwd).parent / "tmp"
+        assert stat.S_IMODE(tmpdir.stat().st_mode) == 0o700
         artifact = (
             Path(cwd).parent
             / "target"
@@ -994,6 +997,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert captures == ["aarch64-apple-darwin"]
     assert all(item[0] == STRICT_BUILD and item[3] is False for item in runs)
     assert runs[0][4] != runs[1][4]
+    assert runs[0][2]["TMPDIR"] != runs[1][2]["TMPDIR"]
     assert receipt.execution_driver == executor.FULL_C6_NATIVE_EXECUTION_DRIVER
     assert receipt.execution_driver == "rextio-native-orchestrator-v1"
     assert receipt.postprocessor == executor.FULL_C6_NATIVE_POSTPROCESSOR
@@ -1002,6 +1006,14 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert receipt.pyo3_config_size == _pyo3_identity().size
     assert receipt.pyo3_config_profile_sha256 == _pyo3_identity().digest
     assert receipt.invocations[0].environment == receipt.invocations[1].environment
+    tmpdir_binding = next(
+        item
+        for item in receipt.invocations[0].environment
+        if item.name == "TMPDIR"
+    )
+    assert tmpdir_binding.value_sha256 == hashlib.sha256(
+        b"/rextio/build/tmp"
+    ).hexdigest()
     for invocation in receipt.invocations:
         assert invocation.sandbox_engine == "macos-sandbox-exec-v1"
         assert invocation.sandbox_plan_sha256 == "7" * 64
@@ -1460,6 +1472,38 @@ def test_native_orchestrator_rejects_caller_linker_environment_override(
         )
 
 
+def test_executor_rejects_caller_tmpdir_override(tmp_path: Path) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    source = _project(tmp_path)
+    with pytest.raises(executor.FullC6ExecutorError, match="cannot override"):
+        executor.execute_full_c6_two_build(
+            source,
+            *_roots(tmp_path),
+            build=lambda request: _outputs(request.context.build_root),
+            cargo_command=STRICT_BUILD,
+            base_environment={"TMPDIR": "/private/owner/tmp"},
+            source_date_epoch=1,
+        )
+
+
+def test_macos_native_tmpdir_requires_exact_private_directory_mode(
+    tmp_path: Path,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    build_root = tmp_path / "build"
+    build_root.mkdir(mode=0o700)
+    tmpdir = build_root / "tmp"
+    tmpdir.mkdir(mode=0o700)
+    environment = {"TMPDIR": str(tmpdir)}
+
+    executor._verify_macos_native_tmpdir(environment, build_root=build_root)
+    tmpdir.chmod(0o755)
+    with pytest.raises(executor.FullC6ExecutorError, match="directory changed"):
+        executor._verify_macos_native_tmpdir(environment, build_root=build_root)
+
+
 @pytest.mark.parametrize(
     ("target_triple", "active", "inactive"),
     (
@@ -1575,6 +1619,7 @@ def test_linux_payload_environment_projects_receipted_runtime_topology(
         "/rextio/support/gcc-toolchain",
         "/x86_64-linux-gnu",
     ]
+    assert projected["TMPDIR"] == "/tmp"
     assert all(
         "/rextio/support/runtime-libs" not in value
         for value in projected.values()
