@@ -244,6 +244,39 @@ def test_macos_topology_reports_relevant_inode_truncation(
     assert topology["policy_merkle_sha256"] is None
 
 
+@pytest.mark.parametrize(
+    ("member_count", "expected_complete"),
+    ((128, True), (129, False)),
+)
+def test_macos_topology_member_bound_is_fail_closed(
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    member_count: int,
+    expected_complete: bool,
+) -> None:
+    assert DIAGNOSTIC.MAX_TOPOLOGY_MEMBERS_PER_GROUP == 128
+    app = tmp_path / "Xcode.app"
+    sdk = app / "sdk"
+    clang = app / "clang"
+    sdk.mkdir(parents=True)
+    clang.mkdir(parents=True)
+    first = sdk / "member-000"
+    first.write_bytes(b"shared")
+    for index in range(1, member_count):
+        os.link(first, sdk / f"member-{index:03d}")
+
+    events = _run_macos(capfd, app=app, sdk=sdk, clang=clang)
+    topology = _topology(events, "xcode-sdk")
+
+    assert topology["group_count"] == 1
+    assert topology["support_member_count"] == member_count
+    assert topology["alias_count"] == member_count
+    assert topology["max_members_per_group"] == member_count
+    assert topology["topology_truncated"] is not expected_complete
+    assert topology["policy_complete"] is expected_complete
+    assert (topology["policy_merkle_sha256"] is not None) is expected_complete
+
+
 def test_macos_topology_keeps_explicit_scan_and_inode_bounds(
     tmp_path: Path,
     capfd: pytest.CaptureFixture[str],
