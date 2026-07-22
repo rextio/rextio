@@ -213,13 +213,18 @@ def test_exact_two_cargo_pid_policy_accepts_two_distinct_pids() -> None:
     harness._assert_exact_two_cargo_pids("build/test", {101, 102})
 
 
-def _full_c6_failure_report(**extra: object) -> dict[str, object]:
+def _full_c6_failure_report(
+    *,
+    reason_code: str = "linux-launcher-exit-125",
+    **extra: object,
+) -> dict[str, object]:
     return {
         "distribution_authorized": False,
         "error": {
             "code": "RXT060",
             "domain": "FullC6ProductionError",
             "message": "RXT060 strict Full C6 production-authority failed closed.",
+            "reason_code": reason_code,
         },
         "lifecycle": "failed",
         "stage": "production-authority",
@@ -258,6 +263,7 @@ def test_build_failure_report_diagnostic_emits_only_allowlisted_scalars(
         '{"distribution_authorized":false,"error_code":"RXT060",'
         '"error_domain":"FullC6ProductionError",'
         '"event":"full-c6-build-failure-report","lifecycle":"failed",'
+        '"reason_code":"linux-launcher-exit-125",'
         '"stage":"production-authority",'
         '"status":"full-c6-required-failed"}\n'
     )
@@ -270,6 +276,21 @@ def test_build_failure_report_diagnostic_is_fixed_when_report_is_missing(
     assert _emit_failure_report_line(tmp_path, capsys) == (
         '{"event":"full-c6-build-failure-report-unavailable"}\n'
     )
+
+
+def test_build_failure_report_diagnostic_rejects_unknown_reason_code(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _failure_report_path(tmp_path).write_text(
+        json.dumps(_full_c6_failure_report(reason_code="private/path/detail")),
+        encoding="utf-8",
+    )
+
+    line = _emit_failure_report_line(tmp_path, capsys)
+
+    assert line == '{"event":"full-c6-build-failure-report-unavailable"}\n'
+    assert "private" not in line
 
 
 def test_build_failure_report_diagnostic_rejects_symlink(

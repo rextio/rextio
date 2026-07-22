@@ -64,6 +64,38 @@ _FULL_C6_BUILD_FAILURE_STAGES = frozenset(
         "host-cleanup",
     }
 )
+_FULL_C6_BUILD_FAILURE_REASON_CODES = frozenset(
+    {
+        "executor-pyo3-profile",
+        "executor-sandbox-execution",
+        "executor-sandbox-launch",
+        "executor-sandbox-plan",
+        "executor-seccomp-setup",
+        "executor-toolchain-support",
+        "external-reanalysis-mismatch",
+        "external-toolchain-support",
+        "linux-launcher-exit-125",
+        "native-build-exit-1",
+        "production-authority-unclassified",
+        "production-cargo-workspace-mismatch",
+        "production-collection-failed",
+        "production-config-noncanonical",
+        "production-lifecycle-disabled",
+        "production-preflight-invalid",
+        "production-prerequisites-invalid",
+        "production-project-root-mismatch",
+        "production-toolchain-support",
+        "production-toolchain-support-invalid",
+        "production-toolchain-support-replaced",
+        "pyo3-cpython-version-mismatch",
+        "pyo3-target-mismatch",
+        "sandbox-bubblewrap-unavailable",
+        "sandbox-bubblewrap-unsafe",
+        "sandbox-path-unavailable",
+        "sandbox-seccomp-unavailable",
+        "toolchain-critical-path-changed",
+    }
+)
 _FULL_C6_BUILD_FAILURE_UNAVAILABLE = (
     '{"event":"full-c6-build-failure-report-unavailable"}'
 )
@@ -2621,6 +2653,7 @@ def _read_full_c6_build_failure_report(project: Path) -> str:
             raise ValueError("Full C6 failure report lacks an error object")
         error_code = error.get("code")
         error_domain = error.get("domain")
+        reason_code = error.get("reason_code")
         stage = document.get("stage")
         status_value = document.get("status")
         lifecycle = document.get("lifecycle")
@@ -2630,6 +2663,8 @@ def _read_full_c6_build_failure_report(project: Path) -> str:
             or error_code != "RXT060"
             or type(error_domain) is not str
             or error_domain not in _FULL_C6_BUILD_FAILURE_DOMAINS
+            or type(reason_code) is not str
+            or reason_code not in _FULL_C6_BUILD_FAILURE_REASON_CODES
             or type(stage) is not str
             or stage not in _FULL_C6_BUILD_FAILURE_STAGES
             or type(status_value) is not str
@@ -2646,6 +2681,7 @@ def _read_full_c6_build_failure_report(project: Path) -> str:
                 "error_domain": error_domain,
                 "event": "full-c6-build-failure-report",
                 "lifecycle": lifecycle,
+                "reason_code": reason_code,
                 "stage": stage,
                 "status": status_value,
             },

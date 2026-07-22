@@ -890,6 +890,122 @@ def test_publication_domain_failures_are_redacted_and_fail_closed(
     assert "key bytes" not in serialized
     assert stdout.getvalue() == ""
     assert "wrong signature" not in stderr.getvalue()
+    assert report["error"]["reason_code"] == "production-authority-unclassified"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "Full C6 production authority collection failed closed",
+            "production-collection-failed",
+        ),
+        (
+            "Full C6 production toolchain support authority is invalid",
+            "production-toolchain-support-invalid",
+        ),
+        (
+            "Full C6 production toolchain support authority failed closed",
+            "production-toolchain-support",
+        ),
+        (
+            "Full C6 production prerequisites are invalid",
+            "production-prerequisites-invalid",
+        ),
+        (
+            "toolchain and Cargo workspace differ",
+            "production-cargo-workspace-mismatch",
+        ),
+        (
+            "Full C6 production toolchain support authority was replaced",
+            "production-toolchain-support-replaced",
+        ),
+        (
+            "Full C6 effective config is not canonical",
+            "production-config-noncanonical",
+        ),
+        (
+            "Full C6 production lifecycle is disabled",
+            "production-lifecycle-disabled",
+        ),
+        (
+            "Full C6 production requires exact preflight",
+            "production-preflight-invalid",
+        ),
+        (
+            "project root differs from the exact preflight root",
+            "production-project-root-mismatch",
+        ),
+    ],
+)
+def test_full_c6_failure_reason_codes_cover_direct_pre_cargo_production_gates(
+    message: str,
+    expected: str,
+) -> None:
+    error = build_cmd.FullC6ProductionError(message)
+
+    assert build_cmd._full_c6_failure_reason_code(error) == expected
+
+
+def test_full_c6_failure_reason_code_prefers_exact_deep_cause() -> None:
+    executor = build_cmd.FullC6ExecutorError(
+        "strict Cargo build failed with exit status 125"
+    )
+    external = build_cmd.FullC6ExternalExecutionError(
+        "RXT060 strict external native execution failed closed"
+    )
+    external.__cause__ = executor
+    production = build_cmd.FullC6ProductionError(
+        "Full C6 production authority collection failed closed"
+    )
+    production.__cause__ = external
+
+    assert (
+        build_cmd._full_c6_failure_reason_code(production)
+        == "linux-launcher-exit-125"
+    )
+
+
+def test_full_c6_failure_reason_code_never_returns_unknown_message() -> None:
+    private = "/private/runner/project secret diagnostics"
+    error = build_cmd.FullC6ProductionError(private)
+
+    reason = build_cmd._full_c6_failure_reason_code(error)
+
+    assert reason == "production-authority-unclassified"
+    assert private not in reason
+
+
+def test_full_c6_failure_report_serializes_only_static_deep_reason_code(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path.resolve()
+    executor = build_cmd.FullC6ExecutorError(
+        "strict Cargo build failed with exit status 125"
+    )
+    private = build_cmd.FullC6ProductionError("/private/runner/project secret")
+    private.__cause__ = executor
+    reporter, _stdout, _stderr = _reporter()
+
+    assert (
+        build_cmd._report_full_c6_pipeline_failure(
+            project,
+            _analysis(project),
+            "cpython",
+            private,
+            reporter,
+            stage="production-authority",
+        )
+        == 1
+    )
+
+    serialized = (project / ".rextio" / "reports" / "build.json").read_text(
+        encoding="utf-8"
+    )
+    report = json.loads(serialized)
+    assert report["error"]["reason_code"] == "linux-launcher-exit-125"
+    assert "/private" not in serialized
+    assert "secret" not in serialized
 
 
 def test_host_cleanup_failure_replaces_provisional_success(

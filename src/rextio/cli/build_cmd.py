@@ -44,6 +44,9 @@ from rextio.build.full_c6_host_inputs import (
     collect_full_c6_host_prerequisites,
 )
 from rextio.build.full_c6_gate import FullC6GateError
+from rextio.build.full_c6_external_execution import FullC6ExternalExecutionError
+from rextio.build.full_c6_executor import FullC6ExecutorError
+from rextio.build.full_c6_pyo3_config import FullC6Pyo3ConfigError
 from rextio.build.full_c6_pipeline import (
     FULL_C6_DISTRIBUTION_POLICY,
     FullC6ExternalPreflightResult,
@@ -60,6 +63,8 @@ from rextio.build.full_c6_production import (
     collect_full_c6_production_authority,
 )
 from rextio.build.full_c6_publication import FullC6PublicationError
+from rextio.build.full_c6_read_sandbox import FullC6ReadSandboxError
+from rextio.build.full_c6_toolchain_support import FullC6ToolchainSupportError
 from rextio.plugins.capabilities import (
     StandalonePluginContext,
     build_standalone_plugin_context,
@@ -95,6 +100,147 @@ from rextio.source.external import (
 )
 from rextio.source.planning import ensure_host_source_plan
 from rextio.targets.plan import TargetPlanError, create_target_plan
+
+
+_FULL_C6_UNCLASSIFIED_REASON = "production-authority-unclassified"
+_FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
+    (
+        FullC6ProductionError,
+        "Full C6 production authority collection failed closed",
+    ): "production-collection-failed",
+    (
+        FullC6ProductionError,
+        "Full C6 production toolchain support authority is invalid",
+    ): "production-toolchain-support-invalid",
+    (
+        FullC6ProductionError,
+        "Full C6 production toolchain support authority failed closed",
+    ): "production-toolchain-support",
+    (
+        FullC6ProductionError,
+        "Full C6 production prerequisites are invalid",
+    ): "production-prerequisites-invalid",
+    (
+        FullC6ProductionError,
+        "toolchain and Cargo workspace differ",
+    ): "production-cargo-workspace-mismatch",
+    (
+        FullC6ProductionError,
+        "Full C6 production toolchain support authority was replaced",
+    ): "production-toolchain-support-replaced",
+    (
+        FullC6ProductionError,
+        "Full C6 effective config is not canonical",
+    ): "production-config-noncanonical",
+    (
+        FullC6ProductionError,
+        "Full C6 production lifecycle is disabled",
+    ): "production-lifecycle-disabled",
+    (
+        FullC6ProductionError,
+        "Full C6 production requires exact preflight",
+    ): "production-preflight-invalid",
+    (
+        FullC6ProductionError,
+        "project root differs from the exact preflight root",
+    ): "production-project-root-mismatch",
+    (
+        FullC6ExternalExecutionError,
+        "RXT060 external toolchain support authority failed closed",
+    ): "external-toolchain-support",
+    (
+        FullC6ExternalExecutionError,
+        "RXT060 execution reanalysis differs from the exact preflight analysis",
+    ): "external-reanalysis-mismatch",
+    (
+        FullC6ExecutorError,
+        "Full C6 toolchain support closure failed closed",
+    ): "executor-toolchain-support",
+    (
+        FullC6ExecutorError,
+        "Full C6 critical toolchain support binding failed closed",
+    ): "executor-toolchain-support",
+    (
+        FullC6ExecutorError,
+        "Full C6 native execution requires the fixed CPython 3.11 PyO3 profile",
+    ): "executor-pyo3-profile",
+    (
+        FullC6ExecutorError,
+        "Full C6 native read-sandbox plan failed closed",
+    ): "executor-sandbox-plan",
+    (
+        FullC6ExecutorError,
+        "Full C6 Linux seccomp lease failed closed",
+    ): "executor-seccomp-setup",
+    (
+        FullC6ExecutorError,
+        "Full C6 Linux read sandbox failed closed",
+    ): "executor-sandbox-launch",
+    (
+        FullC6ExecutorError,
+        "Full C6 native read sandbox failed closed",
+    ): "executor-sandbox-execution",
+    (
+        FullC6ExecutorError,
+        "strict Cargo build failed with exit status 1",
+    ): "native-build-exit-1",
+    (
+        FullC6ExecutorError,
+        "strict Cargo build failed with exit status 125",
+    ): "linux-launcher-exit-125",
+    (
+        FullC6ReadSandboxError,
+        "Full C6 bubblewrap is unavailable",
+    ): "sandbox-bubblewrap-unavailable",
+    (
+        FullC6ReadSandboxError,
+        "Full C6 bubblewrap executable is unsafe",
+    ): "sandbox-bubblewrap-unsafe",
+    (
+        FullC6ReadSandboxError,
+        "Full C6 Linux seccomp memfd is unavailable on this host",
+    ): "sandbox-seccomp-unavailable",
+    (
+        FullC6ReadSandboxError,
+        "Full C6 Linux sandbox path is unavailable",
+    ): "sandbox-path-unavailable",
+    (
+        FullC6Pyo3ConfigError,
+        "Full C6 PyO3 config target differs from the running host",
+    ): "pyo3-target-mismatch",
+    (
+        FullC6Pyo3ConfigError,
+        "Full C6 PyO3 config requires CPython 3.11",
+    ): "pyo3-cpython-version-mismatch",
+    (
+        FullC6ToolchainSupportError,
+        "Full C6 critical support path changed",
+    ): "toolchain-critical-path-changed",
+}
+
+
+def _full_c6_failure_reason_code(error: BaseException) -> str:
+    """Return only a static code for an exact known exception-chain member."""
+    reason = _FULL_C6_UNCLASSIFIED_REASON
+    current: BaseException | None = error
+    seen: set[int] = set()
+    for _depth in range(12):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        current_type = type(current)
+        if any(
+            registered_type is current_type
+            for registered_type, _message in _FULL_C6_FAILURE_REASON_CODES
+        ):
+            candidate = _FULL_C6_FAILURE_REASON_CODES.get(
+                (current_type, str(current))
+            )
+            if candidate is not None:
+                # A deeper exact cause is more diagnostic than its wrapping gate.
+                reason = candidate
+        current = current.__cause__ or current.__context__
+    return reason
 
 
 def _report_artifact_profile_failure(
@@ -260,6 +406,7 @@ def _report_full_c6_pipeline_failure(
                     "code": "RXT060",
                     "domain": type(error).__name__,
                     "message": public_message,
+                    "reason_code": _full_c6_failure_reason_code(error),
                 },
                 "fallback": fallback,
                 "lifecycle": "failed",
