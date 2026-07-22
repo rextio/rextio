@@ -91,74 +91,29 @@ def test_macos_sandbox_log_parser_emits_only_closed_count_families() -> None:
         json.dumps(document).encode("utf-8")
     )
 
-    assert summary == {
-        "status": "ok",
-        "accepted_count": 9,
-        "operation_counts": {
-            "file-test-existence": 0,
-            "file-read": 1,
-            "file-write": 2,
-            "file-map-exec": 1,
-            "process-exec": 1,
-            "sysctl-read": 1,
-            "mach": 1,
-            "ipc": 1,
-            "network": 1,
-            "other": 0,
-        },
-        "resource_counts": {
-            "dev-null": 1,
-            "dev-random": 0,
-            "dev-urandom": 0,
-            "dev-other": 0,
-            "library": 0,
-            "private-etc": 1,
-            "private-var": 1,
-            "system": 0,
-            "usr": 0,
-            "users-runner": 0,
-            "host-temp": 1,
-            "xcode": 1,
-            "sysctl-hw-ncpu": 1,
-            "sysctl-other": 0,
-            "other-absolute": 0,
-            "non-path-other": 3,
-        },
-        "denial_rows": [
-            {"operation": "file-read", "resource": "dev-null", "count": 1},
-            {
-                "operation": "file-write",
-                "resource": "private-var",
-                "count": 1,
-            },
-            {"operation": "file-write", "resource": "host-temp", "count": 1},
-            {"operation": "file-map-exec", "resource": "xcode", "count": 1},
-            {
-                "operation": "process-exec",
-                "resource": "private-etc",
-                "count": 1,
-            },
-            {
-                "operation": "sysctl-read",
-                "resource": "sysctl-hw-ncpu",
-                "count": 1,
-            },
-            {"operation": "mach", "resource": "non-path-other", "count": 1},
-            {"operation": "ipc", "resource": "non-path-other", "count": 1},
-            {
-                "operation": "network",
-                "resource": "non-path-other",
-                "count": 1,
-            },
-        ],
+    assert summary["status"] == "ok"
+    assert summary["accepted_count"] == 9
+    assert summary["process_counts"] == {
+        "cargo": 2,
+        "rustc": 1,
+        "clang": 1,
+        "ld": 1,
+        "cc": 1,
+        "ar": 1,
+        "ranlib": 1,
+        "build-script-build": 1,
     }
+    assert summary["resource_counts"]["private-var-db"] == 1
+    assert summary["resource_counts"]["private-var-folders"] == 1
+    assert summary["resource_counts"]["private-etc-other"] == 1
+    assert sum(row["count"] for row in summary["denial_rows"]) == 9
     assert "/must/not/escape" not in json.dumps(summary)
     assert (
         DIAGNOSTIC._macos_sandbox_resource_family(
             operation="file-read",
             resource="/Users/runner/work/_temp/private",
         )
-        == "host-temp"
+        == "users-runner-work"
     )
 
 
@@ -208,46 +163,152 @@ def test_macos_sandbox_log_parser_preserves_closed_operation_resource_pairs() ->
         "network": 1,
         "other": 1,
     }
-    assert summary["resource_counts"] == {
-        "dev-null": 1,
-        "dev-random": 1,
-        "dev-urandom": 1,
-        "dev-other": 1,
-        "library": 1,
-        "private-etc": 1,
-        "private-var": 1,
-        "system": 1,
-        "usr": 1,
-        "users-runner": 1,
-        "host-temp": 0,
-        "xcode": 0,
-        "sysctl-hw-ncpu": 1,
-        "sysctl-other": 1,
-        "other-absolute": 1,
-        "non-path-other": 4,
+    assert summary["resource_counts"]["dev-tty"] == 1
+    assert summary["resource_counts"]["library-other"] == 1
+    assert summary["resource_counts"]["private-etc-other"] == 1
+    assert summary["resource_counts"]["private-var-other"] == 1
+    assert summary["resource_counts"]["users-runner-other"] == 1
+    assert summary["resource_counts"]["sysctl-hw"] == 1
+    assert sum(row["count"] for row in summary["denial_rows"]) == len(messages)
+    assert all(
+        set(row) == {"process", "operation", "resource", "count"}
+        for row in summary["denial_rows"]
+    )
+    encoded = json.dumps(summary, sort_keys=True)
+    assert "/must/not/escape" not in encoded
+    assert "private-owner" not in encoded
+
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    (
+        ("/dev/zero", "dev-zero"),
+        ("/dev/tty", "dev-tty"),
+        ("/dev/fd/7", "dev-fd"),
+        ("/dev/stdin", "dev-stdin"),
+        ("/dev/stdout", "dev-stdout"),
+        ("/dev/stderr", "dev-stderr"),
+        ("/Library/Preferences/private", "library-preferences"),
+        ("/Library/Developer/private", "library-developer"),
+        ("/Library/private", "library-other"),
+        ("/private/etc/localtime", "private-etc-localtime"),
+        ("/private/etc/passwd", "private-etc-passwd"),
+        ("/private/etc/group", "private-etc-group"),
+        ("/private/etc/hosts", "private-etc-hosts"),
+        ("/private/etc/resolv.conf", "private-etc-resolv"),
+        ("/private/etc/ssl/private", "private-etc-ssl"),
+        ("/private/etc/private", "private-etc-other"),
+        ("/private/var/db/timezone/private", "private-var-db-timezone"),
+        ("/private/var/db/dyld/private", "private-var-dyld"),
+        ("/private/var/db/private", "private-var-db"),
+        ("/private/var/run/private", "private-var-run"),
+        ("/private/var/folders/private", "private-var-folders"),
+        ("/private/var/private", "private-var-other"),
+        ("/Users/runner/hostedtoolcache/private", "users-runner-hostedtoolcache"),
+        ("/Users/runner/work/private", "users-runner-work"),
+        ("/Users/runner/.cargo/private", "users-runner-cargo"),
+        ("/Users/runner/.rustup/private", "users-runner-rustup"),
+        ("/Users/runner/Library/private", "users-runner-library"),
+        ("/Users/runner/private", "users-runner-other"),
+    ),
+)
+def test_macos_sandbox_resource_family_uses_only_closed_subfamilies(
+    resource: str,
+    expected: str,
+) -> None:
+    assert (
+        DIAGNOSTIC._macos_sandbox_resource_family(
+            operation="file-read",
+            resource=resource,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    (
+        ("hw.ncpu", "sysctl-hw-ncpu"),
+        ("hw.private", "sysctl-hw"),
+        ("kern.private", "sysctl-kern"),
+        ("machdep.private", "sysctl-machdep"),
+        ("sysctl.proc_translated", "sysctl-proc-translated"),
+        ("private.owner", "sysctl-other"),
+    ),
+)
+def test_macos_sandbox_sysctl_family_uses_only_closed_subfamilies(
+    resource: str,
+    expected: str,
+) -> None:
+    assert (
+        DIAGNOSTIC._macos_sandbox_resource_family(
+            operation="sysctl-read",
+            resource=resource,
+        )
+        == expected
+    )
+
+
+def test_macos_sandbox_summary_pairs_closed_process_operation_and_resource() -> None:
+    messages = [
+        "Sandbox: cargo(1) deny(1) file-read-data /dev/zero",
+        "Sandbox: rustc(2) deny(2) file-read-data /Library/Preferences/private",
+        "Sandbox: cargo(3) deny(3) sysctl-read kern.private-owner",
+        "Sandbox: build-script-build(4) deny(4) file-read-data /Users/runner/.cargo/private",
+    ]
+    document = [
+        {
+            "subsystem": "com.apple.sandbox.reporting",
+            "eventMessage": message,
+            "privateIgnoredField": "/must/not/escape",
+        }
+        for message in messages
+    ]
+
+    summary = DIAGNOSTIC._parse_macos_sandbox_log_json(
+        json.dumps(document).encode("utf-8")
+    )
+
+    assert summary["process_counts"] == {
+        "cargo": 2,
+        "rustc": 1,
+        "clang": 0,
+        "ld": 0,
+        "cc": 0,
+        "ar": 0,
+        "ranlib": 0,
+        "build-script-build": 1,
     }
     assert summary["denial_rows"] == [
-        {"operation": "file-test-existence", "resource": "dev-null", "count": 1},
-        {"operation": "file-read", "resource": "dev-random", "count": 1},
-        {"operation": "file-read", "resource": "dev-urandom", "count": 1},
-        {"operation": "file-read", "resource": "library", "count": 1},
-        {"operation": "file-read", "resource": "private-etc", "count": 1},
-        {"operation": "file-read", "resource": "private-var", "count": 1},
-        {"operation": "file-read", "resource": "users-runner", "count": 1},
-        {"operation": "file-read", "resource": "other-absolute", "count": 1},
-        {"operation": "file-write", "resource": "dev-other", "count": 1},
-        {"operation": "file-map-exec", "resource": "system", "count": 1},
-        {"operation": "process-exec", "resource": "usr", "count": 1},
-        {"operation": "sysctl-read", "resource": "sysctl-hw-ncpu", "count": 1},
-        {"operation": "sysctl-read", "resource": "sysctl-other", "count": 1},
-        {"operation": "mach", "resource": "non-path-other", "count": 1},
-        {"operation": "ipc", "resource": "non-path-other", "count": 1},
-        {"operation": "network", "resource": "non-path-other", "count": 1},
-        {"operation": "other", "resource": "non-path-other", "count": 1},
+        {
+            "process": "cargo",
+            "operation": "file-read",
+            "resource": "dev-zero",
+            "count": 1,
+        },
+        {
+            "process": "cargo",
+            "operation": "sysctl-read",
+            "resource": "sysctl-kern",
+            "count": 1,
+        },
+        {
+            "process": "rustc",
+            "operation": "file-read",
+            "resource": "library-preferences",
+            "count": 1,
+        },
+        {
+            "process": "build-script-build",
+            "operation": "file-read",
+            "resource": "users-runner-cargo",
+            "count": 1,
+        },
     ]
     encoded = json.dumps(summary, sort_keys=True)
     assert "/must/not/escape" not in encoded
     assert "private-owner" not in encoded
+    assert "/Users/runner" not in encoded
 
 
 def test_macos_sandbox_log_query_uses_fixed_bounded_command(
@@ -287,7 +348,7 @@ def test_macos_sandbox_log_query_uses_fixed_bounded_command(
     assert len(children) == 1
     assert children[0].poll() == 0
     assert summary["status"] == "ok"
-    assert summary["resource_counts"]["library"] == 1
+    assert summary["resource_counts"]["library-other"] == 1
 
 
 def test_macos_sandbox_log_query_fails_closed_with_static_zero_summary(
@@ -303,6 +364,7 @@ def test_macos_sandbox_log_query_fails_closed_with_static_zero_summary(
         "status": "failed-closed",
         "accepted_count": 0,
         "operation_counts": _zero_counts(DIAGNOSTIC.MACOS_SANDBOX_OPERATION_FAMILIES),
+        "process_counts": _zero_counts(DIAGNOSTIC._MACOS_SANDBOX_PROCESSES),
         "resource_counts": _zero_counts(DIAGNOSTIC.MACOS_SANDBOX_RESOURCE_FAMILIES),
         "denial_rows": [],
     }

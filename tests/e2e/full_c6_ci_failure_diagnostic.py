@@ -69,16 +69,44 @@ MACOS_SANDBOX_RESOURCE_FAMILIES = (
     "dev-null",
     "dev-random",
     "dev-urandom",
+    "dev-zero",
+    "dev-tty",
+    "dev-fd",
+    "dev-stdin",
+    "dev-stdout",
+    "dev-stderr",
     "dev-other",
-    "library",
-    "private-etc",
-    "private-var",
+    "library-preferences",
+    "library-developer",
+    "library-other",
+    "private-etc-localtime",
+    "private-etc-passwd",
+    "private-etc-group",
+    "private-etc-hosts",
+    "private-etc-resolv",
+    "private-etc-ssl",
+    "private-etc-other",
+    "private-var-db-timezone",
+    "private-var-db",
+    "private-var-dyld",
+    "private-var-run",
+    "private-var-folders",
+    "private-var-other",
     "system",
     "usr",
-    "users-runner",
+    "users-runner-hostedtoolcache",
+    "users-runner-work",
+    "users-runner-cargo",
+    "users-runner-rustup",
+    "users-runner-library",
+    "users-runner-other",
     "host-temp",
     "xcode",
     "sysctl-hw-ncpu",
+    "sysctl-hw",
+    "sysctl-kern",
+    "sysctl-machdep",
+    "sysctl-proc-translated",
     "sysctl-other",
     "other-absolute",
     "non-path-other",
@@ -201,6 +229,7 @@ def _empty_macos_sandbox_log_summary(*, status: str) -> dict[str, object]:
         "operation_counts": {
             name: 0 for name in MACOS_SANDBOX_OPERATION_FAMILIES
         },
+        "process_counts": {name: 0 for name in _MACOS_SANDBOX_PROCESSES},
         "resource_counts": {
             name: 0 for name in MACOS_SANDBOX_RESOURCE_FAMILIES
         },
@@ -239,28 +268,52 @@ def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
         ("/dev/null", "dev-null"),
         ("/dev/random", "dev-random"),
         ("/dev/urandom", "dev-urandom"),
+        ("/dev/zero", "dev-zero"),
+        ("/dev/tty", "dev-tty"),
+        ("/dev/stdin", "dev-stdin"),
+        ("/dev/stdout", "dev-stdout"),
+        ("/dev/stderr", "dev-stderr"),
     ):
         if resource == exact:
             return family
+    if _resource_is_within(resource, "/dev/fd"):
+        return "dev-fd"
     for root in (
-        "/private/var/folders",
-        "/var/folders",
         "/private/tmp",
         "/tmp",
-        "/Users/runner/work/_temp",
     ):
         if _resource_is_within(resource, root):
             return "host-temp"
+    for roots, family in (
+        (("/Library/Preferences",), "library-preferences"),
+        (("/Library/Developer",), "library-developer"),
+        (("/Library",), "library-other"),
+        (("/private/etc/localtime", "/etc/localtime"), "private-etc-localtime"),
+        (("/private/etc/passwd", "/etc/passwd"), "private-etc-passwd"),
+        (("/private/etc/group", "/etc/group"), "private-etc-group"),
+        (("/private/etc/hosts", "/etc/hosts"), "private-etc-hosts"),
+        (("/private/etc/resolv.conf", "/etc/resolv.conf"), "private-etc-resolv"),
+        (("/private/etc/ssl", "/etc/ssl"), "private-etc-ssl"),
+        (("/private/etc", "/etc"), "private-etc-other"),
+        (("/private/var/db/timezone", "/var/db/timezone"), "private-var-db-timezone"),
+        (("/private/var/db/dyld", "/var/db/dyld"), "private-var-dyld"),
+        (("/private/var/db", "/var/db"), "private-var-db"),
+        (("/private/var/run", "/var/run"), "private-var-run"),
+        (("/private/var/folders", "/var/folders"), "private-var-folders"),
+        (("/private/var", "/var"), "private-var-other"),
+        (("/Users/runner/hostedtoolcache",), "users-runner-hostedtoolcache"),
+        (("/Users/runner/work",), "users-runner-work"),
+        (("/Users/runner/.cargo",), "users-runner-cargo"),
+        (("/Users/runner/.rustup",), "users-runner-rustup"),
+        (("/Users/runner/Library",), "users-runner-library"),
+        (("/Users/runner",), "users-runner-other"),
+        (("/dev",), "dev-other"),
+    ):
+        if any(_resource_is_within(resource, root) for root in roots):
+            return family
     for root, family in (
-        ("/dev", "dev-other"),
-        ("/private/etc", "private-etc"),
-        ("/etc", "private-etc"),
-        ("/private/var", "private-var"),
-        ("/var", "private-var"),
-        ("/Library", "library"),
         ("/System", "system"),
         ("/usr", "usr"),
-        ("/Users/runner", "users-runner"),
         ("/Applications/Xcode.app", "xcode"),
     ):
         if _resource_is_within(resource, root):
@@ -268,7 +321,18 @@ def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
     if resource.startswith("/"):
         return "other-absolute"
     if operation == "sysctl-read":
-        return "sysctl-hw-ncpu" if resource == "hw.ncpu" else "sysctl-other"
+        if resource == "hw.ncpu":
+            return "sysctl-hw-ncpu"
+        if resource == "sysctl.proc_translated":
+            return "sysctl-proc-translated"
+        for prefix, family in (
+            ("hw.", "sysctl-hw"),
+            ("kern.", "sysctl-kern"),
+            ("machdep.", "sysctl-machdep"),
+        ):
+            if resource.startswith(prefix):
+                return family
+        return "sysctl-other"
     return "non-path-other"
 
 
@@ -283,10 +347,12 @@ def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
         raise RuntimeError("macos-sandbox-log-document")
     summary = _empty_macos_sandbox_log_summary(status="ok")
     operation_counts = summary["operation_counts"]
+    process_counts = summary["process_counts"]
     resource_counts = summary["resource_counts"]
     assert isinstance(operation_counts, dict)
+    assert isinstance(process_counts, dict)
     assert isinstance(resource_counts, dict)
-    pair_counts: dict[tuple[str, str], int] = {}
+    pair_counts: dict[tuple[str, str, str], int] = {}
     accepted_count = 0
     for record in document:
         if type(record) is not dict:
@@ -303,22 +369,30 @@ def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
         matched = _MACOS_SANDBOX_DENIAL.fullmatch(message)
         if matched is None:
             continue
+        process = matched.group("process")
         operation = _macos_sandbox_operation_family(matched.group("operation"))
         resource = _macos_sandbox_resource_family(
             operation=operation,
             resource=matched.group("resource"),
         )
+        process_counts[process] += 1
         operation_counts[operation] += 1
         resource_counts[resource] += 1
-        pair = (operation, resource)
+        pair = (process, operation, resource)
         pair_counts[pair] = pair_counts.get(pair, 0) + 1
         accepted_count += 1
     summary["accepted_count"] = accepted_count
     summary["denial_rows"] = [
-        {"operation": operation, "resource": resource, "count": count}
+        {
+            "process": process,
+            "operation": operation,
+            "resource": resource,
+            "count": count,
+        }
+        for process in _MACOS_SANDBOX_PROCESSES
         for operation in MACOS_SANDBOX_OPERATION_FAMILIES
         for resource in MACOS_SANDBOX_RESOURCE_FAMILIES
-        if (count := pair_counts.get((operation, resource), 0))
+        if (count := pair_counts.get((process, operation, resource), 0))
     ]
     return summary
 
