@@ -1388,6 +1388,7 @@ def _discover_linux_support(
     )
     target_libdir = _resolved_real_directory(target_libdir)
     _require_within(target_libdir, sysroot)
+    rust_library_root = _require_real_directory(sysroot / "lib")
     python_runtime, python_library = _discover_python_runtime(
         python,
         cwd=cwd,
@@ -1448,7 +1449,7 @@ def _discover_linux_support(
         search_roots=(
             runtime_root,
             python_library_root,
-            _require_real_directory(sysroot / "lib"),
+            rust_library_root,
             target_libdir,
             gcc_root,
         ),
@@ -1519,6 +1520,7 @@ def _discover_linux_support(
         python_library,
         python_library_root,
         sysroot,
+        rust_library_root,
         target_libdir,
         runtime_root,
         gcc_root,
@@ -1631,7 +1633,19 @@ def _new_plan(
         raise FullC6ToolchainSupportError(
             "Full C6 selected Cargo or rustc differs from the exact Rust sysroot leaves"
         )
-    unique_critical = tuple(dict.fromkeys(Path(item) for item in critical_paths))
+    rust_sysroot_namespace_path = rust_sysroot_locator._absolute_path
+    if target_triple == "x86_64-unknown-linux-gnu":
+        rust_sysroot_namespace_path = _require_real_directory(
+            rust_sysroot_namespace_path / "lib"
+        )
+    unique_critical = tuple(
+        dict.fromkeys(
+            (
+                rust_sysroot_namespace_path,
+                *(Path(item) for item in critical_paths),
+            )
+        )
+    )
     bindings = tuple(
         _capture_path_binding(
             path,
@@ -1670,6 +1684,7 @@ def _new_plan(
         ),
     ]
     for locator in (*manifests, *roots):
+        mapping_host_path = locator._absolute_path
         if locator.logical_role == "python-runtime":
             role = "toolchain-python311-stdlib"
         elif locator.logical_role == "python-runtime-library":
@@ -1698,15 +1713,16 @@ def _new_plan(
             continue
         elif locator.logical_role == "rust-sysroot":
             role = "toolchain-rust-sysroot"
+            mapping_host_path = rust_sysroot_namespace_path
         else:
             role = f"support-{locator.logical_role}"
         mapping_rows.append(
             FullC6SupportNamespaceMapping(
                 logical_role=role,
-                host_path=locator._absolute_path,
+                host_path=mapping_host_path,
                 virtual_path=_support_virtual_path(
                     role,
-                    host_path=locator._absolute_path,
+                    host_path=mapping_host_path,
                 ),
                 kind=locator.kind,
             )

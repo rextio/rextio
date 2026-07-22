@@ -169,6 +169,7 @@ def _fixed_plan(
         for item in root_locators
         if item.logical_role == "rust-sysroot"
     )
+    _tree(rust_sysroot / "lib", member="rustlib/components")
     cargo = _file(rust_sysroot / "bin" / "cargo", executable=True)
     rustc = _file(rust_sysroot / "bin" / "rustc", executable=True)
     runtime_leaf = _file(material / "runtime" / "libc.so.6")
@@ -255,6 +256,22 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
     assert mappings["toolchain-rust-sysroot"].virtual_path.as_posix() == (
         "/rextio/toolchain/lib"
     )
+    rust_sysroot_locator = next(
+        locator
+        for locator in plan.root_locators
+        if locator.logical_role == "rust-sysroot"
+    )
+    assert rust_sysroot_locator._absolute_path == (
+        mappings["toolchain-rust-sysroot"].host_path.parent
+    )
+    assert mappings["toolchain-rust-sysroot"].host_path == (
+        rust_sysroot_locator._absolute_path / "lib"
+    )
+    assert any(
+        binding.path == mappings["toolchain-rust-sysroot"].host_path
+        and binding.kind == "tree"
+        for binding in plan._bindings
+    )
     for role in ("ar", "cargo", "ld", "linker", "ranlib", "rustc"):
         assert mappings[f"toolchain-{role}"].virtual_path.as_posix() == (
             f"/rextio/toolchain/bin/{role}"
@@ -264,6 +281,86 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
         "toolchain-cargo"
     )
     assert plan.macos_platform_anchor is None
+
+
+@pytest.mark.parametrize("attack", ("mode", "alias"))
+def test_linux_rust_sysroot_lib_mapping_is_revalidated_directly(
+    tmp_path: Path, attack: str
+) -> None:
+    plan = _fixed_plan(tmp_path)
+    rust_mapping = next(
+        mapping
+        for mapping in plan.namespace_mappings
+        if mapping.logical_role == "toolchain-rust-sysroot"
+    )
+    if attack == "mode":
+        rust_mapping.host_path.chmod(0o700)
+    else:
+        moved = rust_mapping.host_path.with_name("lib-moved")
+        rust_mapping.host_path.rename(moved)
+        rust_mapping.host_path.symlink_to(moved, target_is_directory=True)
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="critical support path changed|unsafe or aliased",
+    ):
+        support.revalidate_full_c6_toolchain_support_plan(plan)
+
+
+def test_linux_bwrap_mount_source_is_the_recorded_sysroot_lib_mapping(
+    tmp_path: Path,
+) -> None:
+    from rextio.build import full_c6_linux_launcher as launcher
+    from rextio.build import full_c6_read_sandbox as sandbox
+
+    plan = _fixed_plan(tmp_path)
+    rust_mapping = next(
+        mapping
+        for mapping in plan.namespace_mappings
+        if mapping.logical_role == "toolchain-rust-sysroot"
+    )
+    executable_roles = {
+        "runtime-loader-mirror",
+        "support-gcc-toolchain",
+        "toolchain-ar",
+        "toolchain-cargo",
+        "toolchain-ld",
+        "toolchain-linker",
+        "toolchain-python311",
+        "toolchain-ranlib",
+        "toolchain-rustc",
+        "toolchain-rust-sysroot",
+    }
+    rules = tuple(
+        sandbox.SandboxPathRule(
+            path=mapping.host_path,
+            access=(
+                "read-execute"
+                if mapping.logical_role in executable_roles
+                else "read"
+            ),
+            logical_role=mapping.logical_role,
+        )
+        for mapping in plan.namespace_mappings
+    )
+    environment = {**launcher._FIXED_ENVIRONMENT, "SOURCE_DATE_EPOCH": "0"}
+    environment_rows = launcher.canonical_linux_payload_environment(environment)
+    command, _virtual_rows = sandbox._linux_bubblewrap_command(
+        rules,
+        (launcher.FULL_C6_LINUX_CARGO, "build"),
+        bubblewrap=tmp_path / "bwrap",
+        seccomp_fd=3,
+        environment_rows=environment_rows,
+        environment_sha256=launcher.linux_payload_environment_digest(environment),
+    )
+    rust_bind_sources = tuple(
+        Path(command[index + 1])
+        for index, operation in enumerate(command)
+        if operation == "--ro-bind"
+        and command[index + 2] == "/rextio/toolchain/lib"
+    )
+
+    assert rust_bind_sources == (rust_mapping.host_path,)
 
 
 def test_macos_xcode_clang_evidence_has_one_linker_namespace_owner(
@@ -280,6 +377,16 @@ def test_macos_xcode_clang_evidence_has_one_linker_namespace_owner(
         for mapping in plan.namespace_mappings
         if mapping.logical_role == "toolchain-linker"
     )
+    rust_sysroot_locator = next(
+        locator
+        for locator in plan.root_locators
+        if locator.logical_role == "rust-sysroot"
+    )
+    rust_sysroot_mapping = next(
+        mapping
+        for mapping in plan.namespace_mappings
+        if mapping.logical_role == "toolchain-rust-sysroot"
+    )
 
     assert len(xcode_clang) == 1
     assert xcode_clang[0]._absolute_path == plan.linker_path
@@ -288,6 +395,7 @@ def test_macos_xcode_clang_evidence_has_one_linker_namespace_owner(
     }
     assert len(linker_mappings) == 1
     assert linker_mappings[0].host_path == plan.linker_path
+    assert rust_sysroot_mapping.host_path == rust_sysroot_locator._absolute_path
     assert len({mapping.host_path for mapping in plan.namespace_mappings}) == len(
         plan.namespace_mappings
     )

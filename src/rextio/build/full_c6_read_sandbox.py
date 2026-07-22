@@ -701,9 +701,12 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
             raise ValueError(
                 "Full C6 Linux sandbox is missing a fixed launcher input"
             )
-    rust_sysroot = by_role["toolchain-rust-sysroot"].path
+    rust_sysroot_lib = by_role["toolchain-rust-sysroot"].path
+    rust_sysroot = rust_sysroot_lib.parent
     if (
-        by_role["toolchain-cargo"].path != rust_sysroot / "bin" / "cargo"
+        rust_sysroot_lib.name != "lib"
+        or os.fspath(rust_sysroot_lib) != os.path.abspath(rust_sysroot_lib)
+        or by_role["toolchain-cargo"].path != rust_sysroot / "bin" / "cargo"
         or by_role["toolchain-rustc"].path != rust_sysroot / "bin" / "rustc"
     ):
         raise ValueError(
@@ -832,38 +835,6 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             raise FullC6ReadSandboxError(
                 "Full C6 Linux runtime loader must be a regular file"
             )
-        if rule.logical_role == "toolchain-rust-sysroot":
-            _linux_rust_sysroot_lib_source(rule)
-
-
-def _linux_rust_sysroot_lib_source(rule: SandboxPathRule) -> Path:
-    """Return the exact real ``lib`` child exposed from the locked sysroot."""
-    if rule.logical_role != "toolchain-rust-sysroot":
-        raise FullC6ReadSandboxError(
-            "Full C6 Linux Rust sysroot source role is invalid"
-        )
-    source = rule.path / "lib"
-    if (
-        source.parent != rule.path
-        or source.name != "lib"
-        or os.fspath(source) != os.path.abspath(source)
-    ):
-        raise FullC6ReadSandboxError(
-            "Full C6 Linux Rust sysroot lib path is not canonical"
-        )
-    try:
-        observed = os.lstat(source)
-    except OSError as exc:
-        raise FullC6ReadSandboxError(
-            "Full C6 Linux Rust sysroot lib path is unavailable"
-        ) from exc
-    if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
-        raise FullC6ReadSandboxError(
-            "Full C6 Linux Rust sysroot lib path must be a real directory"
-        )
-    return source
-
-
 def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
     if rule.logical_role == "project-root":
         return _LINUX_PROJECT_DESTINATION
@@ -965,12 +936,7 @@ def _linux_bubblewrap_command(
     virtual_rows: list[str] = []
     for destination, rule in mappings:
         operation = "--bind" if rule.logical_role == "build-root" else "--ro-bind"
-        source = (
-            _linux_rust_sysroot_lib_source(rule)
-            if rule.logical_role == "toolchain-rust-sysroot"
-            else rule.path
-        )
-        arguments.extend((operation, os.fspath(source), destination))
+        arguments.extend((operation, os.fspath(rule.path), destination))
         virtual_rows.append(
             f"{rule.logical_role}\0{rule.access}\0{operation}\0{destination}"
         )

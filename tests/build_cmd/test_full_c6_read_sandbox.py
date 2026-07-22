@@ -125,7 +125,7 @@ def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
         SandboxPathRule(ranlib, "read-execute", "toolchain-ranlib"),
         SandboxPathRule(rustc, "read-execute", "toolchain-rustc"),
         SandboxPathRule(
-            rust_sysroot,
+            rust_sysroot / "lib",
             "read-execute",
             "toolchain-rust-sysroot",
         ),
@@ -706,7 +706,7 @@ def test_linux_namespace_rejects_aliased_rust_sysroot_lib(
         platform_anchor_sha256=_SHA,
     )
 
-    with pytest.raises(FullC6ReadSandboxError, match="real directory"):
+    with pytest.raises(FullC6ReadSandboxError, match="unsafe"):
         _prepare_linux(
             plan,
             bwrap=_bwrap(tmp_path),
