@@ -448,9 +448,9 @@ public nor signed identity.
 
 One local macOS arm64 run observed about 104,645 members / 2.67 GB and about
 45 seconds for each full verification. This is an observation, not a limit or
-guarantee. Exact-HEAD macOS arm64 and Linux x86_64 heavy E2E remain pending
-until branch push and blocking CI. This bounded profile is not a general
-hermetic-build claim.
+guarantee. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
+requires the manual `python scripts/validate-full-c6-host.py` host validation and is not
+CI-certified. This bounded profile is not a general hermetic-build claim.
 
 The profile securely reopens exactly one
 SourceLock-authorized depth-1 `py3-none-any` source wheel, links only direct
@@ -745,8 +745,8 @@ The unreleased Train C planning records do not change these additional limits:
   one-package/direct-scalar-leaf CPython 3.11/PyO3/offline-Cargo scope. The
   final local real-E2E at `f9eb5e6` certifies that complete installed-wheel
   lifecycle on macOS arm64; subsequent byte-budget and support-lock/sandbox
-  hardening is unit-tested, while exact-HEAD macOS arm64 and Linux x86_64
-  heavy E2E remain pending until branch push and blocking CI. Full-C6
+  hardening is unit-tested, while evidence for the current `HEAD` on macOS arm64
+  and Linux x86_64 requires manual host validation and is not CI-certified. Full-C6
   authority outside macOS arm64/Linux x86_64, broader C5.2 linkage/codegen/
   packaging, output license sets above 128 files or 64 MiB, general standards
   SBOM coverage, and general redistribution remain future work.

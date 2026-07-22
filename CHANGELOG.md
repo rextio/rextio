@@ -72,8 +72,15 @@ authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
   scalar leaves. Plugins, executables, rust-crate output, top-level AOT,
   embedding, Windows, general recursion, and broader external-source lowering
   remain excluded.
-- Keep exact-HEAD macOS arm64 and Linux x86_64 heavy E2E status **pending**
-  until the feature branch is pushed and CI runs the blocking jobs.
+- Remove the 90-minute macOS arm64/Linux x86_64 Full C6 installed-wheel matrix
+  from automatic CI. Keep fast policy/unit coverage in CI and preserve the real
+  lifecycle as `python scripts/validate-full-c6-host.py`, with
+  `--preflight-only` available for a non-building host/toolchain check. The
+  command requires a clean Git worktree and index, exports only tracked `HEAD`
+  files into a fresh temporary source tree so stale local build output cannot
+  enter the wheel, and uses isolated build/install environments plus the
+  existing real-Cargo E2E harness. Its result is evidence for that host and
+  exact recorded commit, not CI certification.
 - Advance only the unreleased tooling contract to **2.24.0**. Package
   **0.1.4** and plugin API **1.4** remain unchanged.
 

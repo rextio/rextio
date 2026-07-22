@@ -621,10 +621,23 @@ raw-lock and Merkle identities.
 
 One local macOS arm64 observation covered roughly **104,645** members and
 **2.67 GB**, with about **45 seconds** per full verification. It is not a
-support limit, performance promise, or CI guarantee. Exact-HEAD macOS arm64
-and Linux x86_64 heavy E2E remain pending until this branch is pushed and the
-blocking CI jobs run. These boundaries do not create a general hermetic-build
-claim or virtualize time, randomness, scheduling, or CPU behavior.
+support limit, performance promise, or CI guarantee. The real installed-wheel
+lifecycle is intentionally excluded from automatic CI and does not confer CI
+certification. Validate one exact supported host and revision manually with:
+
+```bash
+python scripts/validate-full-c6-host.py
+```
+
+The optional `--preflight-only` flag checks CPython 3.11, the supported host
+target, Cargo 1.93.1, and Xcode/sandbox-exec or bubblewrap without building.
+The complete command requires a clean Git worktree and index, records the exact
+`HEAD` commit, exports only its tracked files into a fresh temporary source tree,
+builds the wheel there, installs it non-editably into a second clean environment,
+and runs the existing real-Cargo E2E harness outside the checkout. It neither
+uses nor removes existing local `build/` or `dist/` contents. These boundaries
+do not create a general hermetic-build claim or virtualize time, randomness,
+scheduling, or CPU behavior.
 
 The isolated executor does not broaden its scrubbed `PATH` to find ambient
 compiler tools. It binds the captured, identity-verified linker absolute path
@@ -655,8 +668,9 @@ installed-wheel path on macOS arm64 with CPython 3.11.15 and Cargo 1.93.1,
 including exact two-build execution per stage, final publication/authorization,
 fresh install, external license/metadata/RECORD bindings, runtime guard poison
 check, and a cache-free tree. The subsequent installed-input byte-budget change
-is unit-tested; exact-HEAD macOS arm64 and Linux x86_64 blocking CI for the
-2.24.0 support-lock/sandbox changes remain pending until branch push.
+  is unit-tested. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
+  for the 2.24.0 support-lock/sandbox changes now requires the manual validation
+  command above and is not CI-certified.
 
 The macOS dyld shared-cache exception is closed rather than prefix-based. For
 the exact direct `/usr/lib/libSystem.B.dylib` dependency, it permits the
@@ -735,9 +749,10 @@ size; final METADATA, `RECORD`, subject-wheel, two-build, policy, SBOM, and
 provenance checks therefore observe those members. The closed output set permits
 at most 128 license files and 64 MiB total. The current frozen real-PyO3 fixture
 uses 108 (project 1 + Cargo 106 + external 1); the macOS arm64 final local E2E
-confirmed that observation, while Linux x86_64 blocking CI remains pending. A
-129th file, noncanonical ordering/path, or alias fails closed. This copies
-required license material, not the dependency's Python source.
+confirmed that observation, while a current Linux x86_64 observation remains a
+manual host-validation task rather than a blocking CI job. A 129th file,
+noncanonical ordering/path, or alias fails closed. This copies required license
+material, not the dependency's Python source.
 
 ### Public policy handoff
 

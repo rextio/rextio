@@ -30,7 +30,7 @@ from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
 full_c6_e2e_only = pytest.mark.skipif(
     os.environ.get("REXTIO_FULL_C6_E2E") != "1",
-    reason="dedicated installed-wheel Full C6 CI lane only",
+    reason="manual installed-wheel Full C6 host validation only",
 )
 
 

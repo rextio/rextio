@@ -789,9 +789,24 @@ support plan, raw lock, and Merkle identities.
 One local macOS arm64 run observed roughly **104,645 members**, **2.67 GB**, and
 about **45 seconds** for each full support verification. These are
 machine-specific observations, not bounds, performance promises, or CI
-guarantees. Exact-HEAD macOS arm64 and Linux x86_64 heavy E2E remain pending
-until the branch is pushed and the blocking CI jobs run. This does not make a
-general hermetic-build claim.
+guarantees. The real installed-wheel lifecycle is deliberately a manual host
+validation rather than automatic CI certification. On a supported host with
+CPython 3.11 and Cargo 1.93.1, run:
+
+```bash
+python scripts/validate-full-c6-host.py
+```
+
+Use `python scripts/validate-full-c6-host.py --preflight-only` to check the
+target, Cargo, and required Xcode/sandbox-exec or bubblewrap setup without
+building. The complete command requires a clean Git worktree and index, records
+the exact `HEAD` commit, exports only that commit's tracked files into a fresh
+temporary source tree, builds the wheel there, installs it non-editably into a
+clean environment, and delegates to the existing Full C6 real-Cargo E2E harness
+outside the checkout. Existing local `build/` and `dist/` contents are neither
+used nor removed. A successful run is evidence for that exact host and recorded
+commit; it is not a cross-platform CI guarantee or a general hermetic-build
+claim.
 
 The executor keeps `PATH`
 scrubbed to the selected Cargo directory and binds the already verified linker
@@ -815,8 +830,9 @@ loaded successfully. The later final local real-E2E at `f9eb5e6` certified the
 complete three-stage installed-wheel lifecycle on macOS arm64 with CPython
 3.11.15 and Cargo 1.93.1, including publication/authorization, fresh install,
 runtime guard, and a cache-free tree. The subsequent installed-input byte-budget
-hardening is unit-tested; exact-HEAD macOS arm64 and Linux x86_64 blocking CI
-for the current 2.24.0 support-lock/sandbox changes remain pending until push.
+  hardening is unit-tested. Evidence for the current `HEAD` on macOS arm64 and
+  Linux x86_64 now requires the manual host-validation command above and is not
+  CI-certified.
 For the direct `/usr/lib/libSystem.B.dylib` dependency, the macOS dyld
 shared-cache policy also recognizes exactly one additional singleton provider:
 `/usr/lib/system/libcommonCrypto.dylib`. This is a bounded one-hop relation,

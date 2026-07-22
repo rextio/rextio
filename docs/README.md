@@ -68,8 +68,9 @@ Train C remains integration-branch work. Its evidence and publication authority
 do not authorize a `0.1.5` → `main` merge, a release tag, or a PyPI upload. The
 complete macOS arm64 local installed-wheel lifecycle through `f9eb5e6` is
 historical evidence. The subsequent installed-input and 2.24.0 support-lock /
-sandbox work is unit-tested; exact-HEAD macOS arm64 and Linux x86_64 heavy E2E
-remain pending until the branch is pushed and blocking CI runs. One local
+sandbox work is unit-tested; evidence for the current `HEAD` on macOS arm64 and
+Linux x86_64 now requires `python scripts/validate-full-c6-host.py` on the target
+host and is not CI-certified. One local
 macOS support closure measured roughly 104,645 members / 2.67 GB and about
 45 seconds per full verification; those figures are observations, not
 guarantees.

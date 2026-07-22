@@ -2013,7 +2013,8 @@ with CPython 3.11.15 and Cargo 1.93.1: each stage used exactly two distinct
 Cargo PIDs, final state was published/authorized, a fresh installation preserved
 the external LICENSE/METADATA/RECORD bindings and runtime poison check, and no
 bytecode cache appeared. The subsequent 256 MiB installed-input hardening is
-unit-tested; exact-HEAD and Linux x86_64 blocking CI remain pending.
+unit-tested; evidence for the current `HEAD` on macOS arm64 and Linux x86_64 requires
+manual host validation and is not CI-certified.
 
 macOS shared-cache provider resolution has one additional exact singleton for
 the direct `/usr/lib/libSystem.B.dylib` root:
@@ -2230,8 +2231,9 @@ changed binding.
 One local macOS arm64 collection observed approximately **104,645** support
 members and **2.67 GB**, with about **45 seconds** per full verification. This
 is a machine-specific observation, not a member/byte/time limit, performance
-claim, or CI guarantee. Exact-HEAD macOS arm64 and Linux x86_64 heavy E2E are
-pending until the branch is pushed and blocking CI runs.
+claim, or CI guarantee. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
+requires `python scripts/validate-full-c6-host.py` on the target host and is not
+CI-certified.
 
 The bounded threat model excludes hostile same-UID concurrent replacement,
 kernel or operating-system compromise, and complete time, randomness,

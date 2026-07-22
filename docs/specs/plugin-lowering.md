@@ -856,10 +856,11 @@ domain-separated detached-signature and seven-file atomic-publication
 contracts likewise do not widen plugin API 1.4 or make an
 `artifact_capability()` declaration authoritative. The plugin-free macOS arm64
 installed-wheel lifecycle is certified by the final local real-E2E at
-`f9eb5e6`; the subsequent byte-budget hardening is unit-tested, and exact-HEAD
-macOS arm64 plus Linux x86_64 blocking CI for the 2.24.0 support-lock/sandbox
-changes remain pending until branch push. This result does not certify or
-widen any plugin-bearing Full-C6 profile.
+`f9eb5e6`; the subsequent byte-budget hardening is unit-tested, and
+evidence for the current `HEAD` on macOS arm64 plus Linux x86_64 for the 2.24.0
+support-lock/sandbox changes requires manual host validation and is not
+CI-certified. This result
+does not certify or widen any plugin-bearing Full-C6 profile.
 
 ### 10.1 Explicit hook (separate extension Protocol)
 
