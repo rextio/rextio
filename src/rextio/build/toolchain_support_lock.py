@@ -90,10 +90,24 @@ _XCODE_HARDLINK_ALIAS_COUNT = 361
 _XCODE_HARDLINK_POLICY_MERKLE_SHA256 = (
     "46dfe178bd85f3df653adbda460c674045acbc370c96e1a756564011e2a01e46"
 )
+_XCODE_SDK_HARDLINK_ROLE = "xcode-sdk"
+_XCODE_SDK_ROOT = (
+    _XCODE_APP_BOUNDARY
+    / "Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+)
+_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256 = (
+    "06a2a3aad7cf447c6c6606bfbffc69f1de90229943e1b7d73e4b0534c73c35d0"
+)
+_XCODE_SDK_HARDLINK_GROUP_COUNT = 4_626
+_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT = 8_605
+_XCODE_SDK_HARDLINK_ALIAS_COUNT = 24_430
+_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256 = (
+    "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4"
+)
 _XCODE_HARDLINK_SUPPORT_MAX_ENTRIES = 250_000
 _XCODE_HARDLINK_APP_MAX_ENTRIES = 1_000_000
-_XCODE_HARDLINK_MAX_GROUPS = 1_024
-_XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP = 64
+_XCODE_HARDLINK_MAX_GROUPS = 4_626
+_XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP = 128
 _LINUX_CASEFOLD_ROLE = "linux-runtime-support"
 _LINUX_CASEFOLD_GROUP_COUNT = 10
 _LINUX_CASEFOLD_MEMBER_COUNT = 20
@@ -673,7 +687,7 @@ class ToolchainSupportHardlinkDispositionReceipt:
             or not 1 <= self.group_count <= _XCODE_HARDLINK_MAX_GROUPS
             or type(self.support_member_count) is not int
             or isinstance(self.support_member_count, bool)
-            or self.support_member_count != self.group_count
+            or self.support_member_count < self.group_count
             or type(self.alias_count) is not int
             or isinstance(self.alias_count, bool)
             or not self.support_member_count <= self.alias_count
@@ -1183,16 +1197,100 @@ class _FilesystemStamp:
 
 
 @dataclass(frozen=True, slots=True)
+class _XcodeHardlinkPolicy:
+    logical_role: str
+    support_root: Path
+    support_root_locator_path_sha256: str
+    group_count: int
+    support_member_count: int
+    alias_count: int
+    policy_merkle_sha256: str
+
+
+def _fixed_xcode_hardlink_policies() -> tuple[_XcodeHardlinkPolicy, ...]:
+    """Return only the two frozen Xcode roots admitted by this profile."""
+    return (
+        _XcodeHardlinkPolicy(
+            logical_role=_XCODE_HARDLINK_ROLE,
+            support_root=_XCODE_RESOURCE_ROOT,
+            support_root_locator_path_sha256=(
+                _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
+            ),
+            group_count=_XCODE_HARDLINK_GROUP_COUNT,
+            support_member_count=_XCODE_HARDLINK_SUPPORT_MEMBER_COUNT,
+            alias_count=_XCODE_HARDLINK_ALIAS_COUNT,
+            policy_merkle_sha256=_XCODE_HARDLINK_POLICY_MERKLE_SHA256,
+        ),
+        _XcodeHardlinkPolicy(
+            logical_role=_XCODE_SDK_HARDLINK_ROLE,
+            support_root=_XCODE_SDK_ROOT,
+            support_root_locator_path_sha256=(
+                _XCODE_SDK_ROOT_LOCATOR_PATH_SHA256
+            ),
+            group_count=_XCODE_SDK_HARDLINK_GROUP_COUNT,
+            support_member_count=_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT,
+            alias_count=_XCODE_SDK_HARDLINK_ALIAS_COUNT,
+            policy_merkle_sha256=_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256,
+        ),
+    )
+
+
+def _select_xcode_hardlink_policy(
+    *,
+    target_triple: str,
+    logical_role: str,
+    support_root: Path,
+    locator_path_sha256: str,
+) -> _XcodeHardlinkPolicy | None:
+    if target_triple != "aarch64-apple-darwin":
+        return None
+    matches = tuple(
+        policy
+        for policy in _fixed_xcode_hardlink_policies()
+        if policy.logical_role == logical_role
+        and policy.support_root == support_root
+        and policy.support_root_locator_path_sha256 == locator_path_sha256
+    )
+    if len(matches) > 1:
+        raise ToolchainSupportLockError(
+            "toolchain support Xcode hardlink policy is ambiguous"
+        )
+    return matches[0] if matches else None
+
+
+def _select_xcode_hardlink_policy_receipt(
+    *,
+    target_triple: str,
+    logical_role: str,
+    locator_path_sha256: str,
+) -> _XcodeHardlinkPolicy | None:
+    if target_triple != "aarch64-apple-darwin":
+        return None
+    matches = tuple(
+        policy
+        for policy in _fixed_xcode_hardlink_policies()
+        if policy.logical_role == logical_role
+        and policy.support_root_locator_path_sha256 == locator_path_sha256
+    )
+    if len(matches) > 1:
+        raise ToolchainSupportLockError(
+            "toolchain support Xcode hardlink policy is ambiguous"
+        )
+    return matches[0] if matches else None
+
+
+@dataclass(frozen=True, slots=True)
 class _XcodeHardlinkTopologyGroup:
     policy_group_sha256: str
     observation_group_sha256: str
     stamp: _FilesystemStamp
-    support_relative_path: str
+    support_relative_paths: tuple[str, ...]
     app_relative_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class _XcodeHardlinkTopologyObservation:
+    policy: _XcodeHardlinkPolicy
     groups: tuple[_XcodeHardlinkTopologyGroup, ...]
     group_count: int
     support_member_count: int
@@ -1213,13 +1311,11 @@ class _AllowedHardlinkPlan:
         topology: _XcodeHardlinkTopologyObservation,
     ) -> _AllowedHardlinkPlan:
         entries = {
-            group.support_relative_path: group.stamp for group in topology.groups
+            relative_path: group.stamp
+            for group in topology.groups
+            for relative_path in group.support_relative_paths
         }
-        if (
-            len(entries)
-            != topology.group_count
-            or topology.group_count != topology.support_member_count
-        ):
+        if len(entries) != topology.support_member_count:
             raise ToolchainSupportLockError(
                 "toolchain support Xcode hardlink plan is ambiguous"
             )
@@ -1738,13 +1834,17 @@ def _capture_stable_tree(
     xcode_manifest_binding: tuple[
         ToolchainSupportLocator, ToolchainSupportFileReceipt
     ] | None = None
-    if (
-        target_triple == "aarch64-apple-darwin"
-        and locator.logical_role == _XCODE_HARDLINK_ROLE
-        and locator._absolute_path == _XCODE_RESOURCE_ROOT
-        and _locator_path_digest(locator._absolute_path)
-        == _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
-    ):
+    xcode_policy = (
+        None
+        if target_triple is None
+        else _select_xcode_hardlink_policy(
+            target_triple=target_triple,
+            logical_role=locator.logical_role,
+            support_root=locator._absolute_path,
+            locator_path_sha256=_locator_path_digest(locator._absolute_path),
+        )
+    )
+    if xcode_policy is not None:
         manifest_binding = manifest_bindings.get(_XCODE_VERSION_MANIFEST_ROLE)
         if manifest_binding is None:
             raise ToolchainSupportLockError(
@@ -1768,6 +1868,10 @@ def _capture_stable_tree(
             support_root=locator._absolute_path,
             app_boundary=_XCODE_APP_BOUNDARY,
         )
+        if topology.policy != xcode_policy:
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode topology selected a different policy"
+            )
         hardlink_receipt = _new_xcode_hardlink_topology_receipt(
             topology=topology,
             manifest=manifest_receipt,
@@ -2347,19 +2451,18 @@ def _validate_lock_topology_dispositions(
     """Enforce singular target-, role-, root-, and manifest-bound policies."""
     manifests_by_role = {item.logical_role: item for item in manifests}
     for root in roots:
-        exact_xcode_root = (
-            scope.target_triple == "aarch64-apple-darwin"
-            and root.logical_role == _XCODE_HARDLINK_ROLE
-            and root.locator_path_sha256
-            == _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
+        xcode_policy = _select_xcode_hardlink_policy_receipt(
+            target_triple=scope.target_triple,
+            logical_role=root.logical_role,
+            locator_path_sha256=root.locator_path_sha256,
         )
-        if exact_xcode_root and len(root.hardlink_dispositions) != 1:
+        if xcode_policy is not None and len(root.hardlink_dispositions) != 1:
             raise ToolchainSupportLockError(
                 "toolchain support Xcode hardlink topology disposition is missing"
             )
         if root.hardlink_dispositions:
             if (
-                not exact_xcode_root
+                xcode_policy is None
                 or len(root.hardlink_dispositions) != 1
             ):
                 raise ToolchainSupportLockError(
@@ -2373,7 +2476,7 @@ def _validate_lock_topology_dispositions(
                 hardlink_receipt.resource_root_locator_path_sha256
                 != root.locator_path_sha256
                 or hardlink_receipt.resource_root_locator_path_sha256
-                != _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
+                != xcode_policy.support_root_locator_path_sha256
                 or hardlink_receipt.version_manifest_role
                 != _XCODE_VERSION_MANIFEST_ROLE
                 or hardlink_receipt.version_manifest_raw_sha256
@@ -2385,12 +2488,12 @@ def _validate_lock_topology_dispositions(
                 != _XCODE_VERSION_MANIFEST_RAW_SHA256
                 or hardlink_receipt.version_manifest_merkle_sha256
                 != version_manifest.merkle_sha256
-                or hardlink_receipt.group_count != _XCODE_HARDLINK_GROUP_COUNT
+                or hardlink_receipt.group_count != xcode_policy.group_count
                 or hardlink_receipt.support_member_count
-                != _XCODE_HARDLINK_SUPPORT_MEMBER_COUNT
-                or hardlink_receipt.alias_count != _XCODE_HARDLINK_ALIAS_COUNT
+                != xcode_policy.support_member_count
+                or hardlink_receipt.alias_count != xcode_policy.alias_count
                 or hardlink_receipt.policy_merkle_sha256
-                != _XCODE_HARDLINK_POLICY_MERKLE_SHA256
+                != xcode_policy.policy_merkle_sha256
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support Xcode hardlink topology policy changed"
@@ -5424,6 +5527,18 @@ def _scan_xcode_hardlink_topology(
         raise ToolchainSupportLockError(
             "toolchain support Xcode topology scope is invalid"
         )
+    matching_policies = tuple(
+        policy
+        for policy in _fixed_xcode_hardlink_policies()
+        if policy.support_root == support_root
+        and policy.support_root_locator_path_sha256
+        == _locator_path_digest(support_root)
+    )
+    if app_boundary != _XCODE_APP_BOUNDARY or len(matching_policies) != 1:
+        raise ToolchainSupportLockError(
+            "toolchain support Xcode topology is outside the exact profile"
+        )
+    policy = matching_policies[0]
 
     def scan_tree(
         *,
@@ -5601,9 +5716,9 @@ def _scan_xcode_hardlink_topology(
                 "toolchain support Xcode topology inode stamp changed"
             )
         paths = cast(list[str], group["paths"])
-        if paths:
+        if len(paths) >= _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP:
             raise ToolchainSupportLockError(
-                "toolchain support Xcode topology repeats a support inode"
+                "toolchain support Xcode topology support-member bound exceeded"
             )
         paths.append(relative_path.as_posix())
 
@@ -5666,7 +5781,7 @@ def _scan_xcode_hardlink_topology(
     for key, group in support_groups.items():
         stamp = cast(_FilesystemStamp, group["stamp"])
         support_paths = tuple(sorted(cast(list[str], group["paths"])))
-        if len(support_paths) != 1:
+        if not support_paths:
             raise ToolchainSupportLockError(
                 "toolchain support Xcode topology support-member count differs"
             )
@@ -5680,10 +5795,19 @@ def _scan_xcode_hardlink_topology(
             raise ToolchainSupportLockError(
                 "toolchain support Xcode topology alias count differs"
             )
-        support_path_sha256 = _xcode_topology_sha256(
-            "rextio.full-c6-xcode-hardlink-topology-support-path.v1",
-            {"support_relative_path": support_paths[0]},
+        support_path_sha256s = tuple(
+            sorted(
+                _xcode_topology_sha256(
+                    "rextio.full-c6-xcode-hardlink-topology-support-path.v1",
+                    {"support_relative_path": relative_path},
+                )
+                for relative_path in support_paths
+            )
         )
+        if len(set(support_path_sha256s)) != len(support_path_sha256s):
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode topology support paths are ambiguous"
+            )
         alias_parent_chain_merkle = _xcode_topology_sha256(
             "rextio.full-c6-xcode-hardlink-topology-alias-parents.v1",
             {
@@ -5699,7 +5823,7 @@ def _scan_xcode_hardlink_topology(
         policy_group_sha256 = _xcode_topology_sha256(
             "rextio.full-c6-xcode-hardlink-topology-policy-group.v1",
             {
-                "support_relative_path_sha256s": [support_path_sha256],
+                "support_relative_path_sha256s": list(support_path_sha256s),
                 "link_count": stamp.links,
                 "alias_count": len(ordered_aliases),
                 "alias_path_sha256s": [item[1] for item in ordered_aliases],
@@ -5718,7 +5842,7 @@ def _scan_xcode_hardlink_topology(
                 policy_group_sha256=policy_group_sha256,
                 observation_group_sha256=observation_group_sha256,
                 stamp=stamp,
-                support_relative_path=support_paths[0],
+                support_relative_paths=support_paths,
                 app_relative_paths=tuple(item[0] for item in ordered_aliases),
             )
         )
@@ -5747,18 +5871,21 @@ def _scan_xcode_hardlink_topology(
         },
     )
     result = _XcodeHardlinkTopologyObservation(
+        policy=policy,
         groups=ordered_records,
         group_count=len(ordered_records),
-        support_member_count=len(ordered_records),
+        support_member_count=sum(
+            len(item.support_relative_paths) for item in ordered_records
+        ),
         alias_count=alias_count,
         policy_merkle_sha256=policy_merkle,
         observation_merkle_sha256=observation_merkle,
     )
     if (
-        result.group_count != _XCODE_HARDLINK_GROUP_COUNT
-        or result.support_member_count != _XCODE_HARDLINK_SUPPORT_MEMBER_COUNT
-        or result.alias_count != _XCODE_HARDLINK_ALIAS_COUNT
-        or result.policy_merkle_sha256 != _XCODE_HARDLINK_POLICY_MERKLE_SHA256
+        result.group_count != policy.group_count
+        or result.support_member_count != policy.support_member_count
+        or result.alias_count != policy.alias_count
+        or result.policy_merkle_sha256 != policy.policy_merkle_sha256
     ):
         raise ToolchainSupportLockError(
             "toolchain support Xcode hardlink topology differs from policy"
@@ -5773,12 +5900,20 @@ def _reopen_xcode_hardlink_topology(
     app_boundary: Path,
 ) -> None:
     """Final-reopen every support and app alias after the bracketed scans."""
-    for group in topology.groups:
-        _open_xcode_topology_regular(
-            boundary=support_root,
-            relative_path=group.support_relative_path,
-            expected=group.stamp,
+    if (
+        support_root != topology.policy.support_root
+        or app_boundary != _XCODE_APP_BOUNDARY
+    ):
+        raise ToolchainSupportLockError(
+            "toolchain support Xcode topology final reopen is outside the exact profile"
         )
+    for group in topology.groups:
+        for relative_path in group.support_relative_paths:
+            _open_xcode_topology_regular(
+                boundary=support_root,
+                relative_path=relative_path,
+                expected=group.stamp,
+            )
         for relative_path in group.app_relative_paths:
             _open_xcode_topology_regular(
                 boundary=app_boundary,
@@ -5795,7 +5930,7 @@ def _new_xcode_hardlink_topology_receipt(
     values: dict[str, object] = {
         "disposition": "bind-xcode-resource-hardlink-topology",
         "resource_root_locator_path_sha256": (
-            _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
+            topology.policy.support_root_locator_path_sha256
         ),
         "version_manifest_role": _XCODE_VERSION_MANIFEST_ROLE,
         "version_manifest_raw_sha256": _XCODE_VERSION_MANIFEST_RAW_SHA256,
@@ -5815,7 +5950,7 @@ def _new_xcode_hardlink_topology_receipt(
     return ToolchainSupportHardlinkDispositionReceipt(
         disposition="bind-xcode-resource-hardlink-topology",
         resource_root_locator_path_sha256=(
-            _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
+            topology.policy.support_root_locator_path_sha256
         ),
         version_manifest_role=_XCODE_VERSION_MANIFEST_ROLE,
         version_manifest_raw_sha256=_XCODE_VERSION_MANIFEST_RAW_SHA256,
@@ -5851,16 +5986,11 @@ def _require_unaliased_regular_tree_inode(
         )
         if (
             hardlink_plan is not None
-            and observation_count == 1
             and hardlink_plan.consume(
                 relative_path=relative_path,
                 observed=value,
             )
         ):
-            if key in inode_keys:
-                raise ToolchainSupportLockError(
-                    "toolchain support Xcode hardlink plan reuses an inode"
-                )
             inode_keys.add(key)
             return
         raise ToolchainSupportLockError(

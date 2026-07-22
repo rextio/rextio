@@ -2728,6 +2728,429 @@ def _xcode_topology_inputs(
     return manifests, roots, app, root, (first, second, *alias_paths)
 
 
+def _xcode_multiple_support_path_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    logical_role: str = "xcode-clang-resource",
+) -> tuple[
+    list[ToolchainSupportLocator],
+    list[ToolchainSupportLocator],
+    Path,
+    Path,
+    tuple[Path, ...],
+]:
+    app = tmp_path / "Xcode.app"
+    if logical_role == "xcode-clang-resource":
+        root = (
+            app
+            / "Contents"
+            / "Developer"
+            / "Toolchains"
+            / "XcodeDefault.xctoolchain"
+            / "usr"
+            / "lib"
+            / "clang"
+            / "17"
+        )
+    else:
+        assert logical_role == "xcode-sdk"
+        root = (
+            app
+            / "Contents"
+            / "Developer"
+            / "Platforms"
+            / "MacOSX.platform"
+            / "Developer"
+            / "SDKs"
+            / "MacOSX.sdk"
+        )
+    include = root / "include"
+    include.mkdir(parents=True)
+    first = include / "first.h"
+    second = include / "second.h"
+    external_alias = app / "Aliases" / "third.h"
+    external_alias.parent.mkdir()
+    first.write_bytes(b"shared fixed topology member\n")
+    try:
+        os.link(first, second)
+        os.link(first, external_alias)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+    version_manifest = app / "Contents" / "version.plist"
+    version_manifest.write_bytes(b"synthetic Xcode version 17\n")
+
+    support_digests = sorted(
+        support_lock._xcode_topology_sha256(
+            "rextio.full-c6-xcode-hardlink-topology-support-path.v1",
+            {"support_relative_path": path.relative_to(root).as_posix()},
+        )
+        for path in (first, second)
+    )
+    alias_digests = sorted(
+        support_lock._xcode_topology_sha256(
+            "rextio.full-c6-xcode-hardlink-topology-alias-path.v1",
+            {"app_relative_path": path.relative_to(app).as_posix()},
+        )
+        for path in (first, second, external_alias)
+    )
+    policy_group = support_lock._xcode_topology_sha256(
+        "rextio.full-c6-xcode-hardlink-topology-policy-group.v1",
+        {
+            "support_relative_path_sha256s": support_digests,
+            "link_count": 3,
+            "alias_count": 3,
+            "alias_path_sha256s": alias_digests,
+        },
+    )
+    policy_merkle = support_lock._xcode_topology_sha256(
+        "rextio.full-c6-xcode-hardlink-topology-policy.v1",
+        {"policy_group_sha256s": [policy_group]},
+    )
+    monkeypatch.setattr(support_lock, "_XCODE_APP_BOUNDARY", app)
+    if logical_role == "xcode-clang-resource":
+        monkeypatch.setattr(support_lock, "_XCODE_RESOURCE_ROOT", root)
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256",
+            support_lock._locator_path_digest(root),
+        )
+    else:
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_SDK_HARDLINK_ROLE",
+            "xcode-sdk",
+            raising=False,
+        )
+        monkeypatch.setattr(support_lock, "_XCODE_SDK_ROOT", root, raising=False)
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256",
+            support_lock._locator_path_digest(root),
+            raising=False,
+        )
+        policy_key = ("aarch64-apple-darwin", "xcode-sdk")
+        monkeypatch.setattr(
+            support_lock,
+            "_FIXED_SYMLINK_DISPOSITIONS",
+            {**support_lock._FIXED_SYMLINK_DISPOSITIONS, policy_key: ()},
+        )
+        monkeypatch.setattr(
+            support_lock,
+            "_MACOS_XCODE_SDK_MODERN_DISPOSITION_PATHS",
+            frozenset(),
+        )
+        monkeypatch.setattr(
+            support_lock,
+            "_MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS",
+            frozenset(),
+        )
+    monkeypatch.setattr(support_lock, "_XCODE_VERSION_MANIFEST", version_manifest)
+    monkeypatch.setattr(
+        support_lock,
+        "_XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256",
+        support_lock._locator_path_digest(version_manifest),
+    )
+    monkeypatch.setattr(
+        support_lock,
+        "_XCODE_VERSION_MANIFEST_RAW_SHA256",
+        hashlib.sha256(version_manifest.read_bytes()).hexdigest(),
+    )
+    if logical_role == "xcode-clang-resource":
+        monkeypatch.setattr(support_lock, "_XCODE_HARDLINK_GROUP_COUNT", 1)
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_HARDLINK_SUPPORT_MEMBER_COUNT",
+            2,
+        )
+        monkeypatch.setattr(support_lock, "_XCODE_HARDLINK_ALIAS_COUNT", 3)
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_HARDLINK_POLICY_MERKLE_SHA256",
+            policy_merkle,
+        )
+    else:
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_SDK_HARDLINK_GROUP_COUNT",
+            1,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT",
+            2,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_SDK_HARDLINK_ALIAS_COUNT",
+            3,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            support_lock,
+            "_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256",
+            policy_merkle,
+            raising=False,
+        )
+    manifests = [
+        create_toolchain_support_locator(
+            logical_role="xcode-version-plist",
+            path=version_manifest,
+            kind="file",
+        )
+    ]
+    roots = [
+        create_toolchain_support_locator(
+            logical_role=logical_role,
+            path=root,
+            kind="tree",
+        )
+    ]
+    return manifests, roots, app, root, (first, second, external_alias)
+
+
+def test_xcode_topology_accepts_exact_multiple_support_paths_per_inode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _app, _root, paths = _xcode_multiple_support_path_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+
+    tree = lock.roots[0]
+    receipt = tree.hardlink_dispositions[0]
+    assert tree.file_count == 2
+    assert tree.total_bytes == sum(path.stat().st_size for path in paths[:2])
+    assert receipt.group_count == 1
+    assert receipt.support_member_count == 2
+    assert receipt.alias_count == 3
+    assert verify_toolchain_support_lock(lock, manifests=manifests, roots=roots)
+
+
+def test_frozen_xcode_sdk_hardlink_policy_constants_are_exact() -> None:
+    assert getattr(support_lock, "_XCODE_SDK_HARDLINK_ROLE", None) == "xcode-sdk"
+    assert getattr(support_lock, "_XCODE_SDK_ROOT", None) == Path(
+        "/Applications/Xcode.app/Contents/Developer/Platforms/"
+        "MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    )
+    assert (
+        getattr(support_lock, "_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256", None)
+        == "06a2a3aad7cf447c6c6606bfbffc69f1de90229943e1b7d73e4b0534c73c35d0"
+    )
+    assert getattr(support_lock, "_XCODE_SDK_HARDLINK_GROUP_COUNT", None) == 4_626
+    assert (
+        getattr(support_lock, "_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT", None)
+        == 8_605
+    )
+    assert getattr(support_lock, "_XCODE_SDK_HARDLINK_ALIAS_COUNT", None) == 24_430
+    assert (
+        getattr(support_lock, "_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256", None)
+        == "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4"
+    )
+    assert support_lock._XCODE_HARDLINK_MAX_GROUPS == 4_626
+    assert support_lock._XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP == 128
+
+
+def test_exact_xcode_sdk_topology_is_selected_and_round_trips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _app, root, _paths = _xcode_multiple_support_path_inputs(
+        tmp_path,
+        monkeypatch,
+        logical_role="xcode-sdk",
+    )
+
+    lock = generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+
+    receipt = lock.roots[0].hardlink_dispositions[0]
+    assert receipt.resource_root_locator_path_sha256 == (
+        support_lock._locator_path_digest(root)
+    )
+    assert receipt.group_count == 1
+    assert receipt.support_member_count == 2
+    assert receipt.alias_count == 3
+    topology = support_lock._scan_xcode_hardlink_topology(
+        support_root=root,
+        app_boundary=support_lock._XCODE_APP_BOUNDARY,
+    )
+    assert topology.groups[0].support_relative_paths == (
+        "include/first.h",
+        "include/second.h",
+    )
+    parsed = parse_toolchain_support_lock(
+        lock.canonical_bytes,
+        expected_raw_sha256=lock.raw_sha256,
+    )
+    assert parsed == lock
+    assert verify_toolchain_support_lock(parsed, manifests=manifests, roots=roots)
+
+
+def test_xcode_sdk_topology_consumes_two_plans_and_reopens_every_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, app, root, paths = _xcode_multiple_support_path_inputs(
+        tmp_path,
+        monkeypatch,
+        logical_role="xcode-sdk",
+    )
+    real_from_topology = support_lock._AllowedHardlinkPlan.from_topology.__func__
+    plans: list[object] = []
+
+    def tracked_plan(cls: type[object], topology: object):
+        plan = real_from_topology(cls, topology)
+        plans.append(plan)
+        return plan
+
+    monkeypatch.setattr(
+        support_lock._AllowedHardlinkPlan,
+        "from_topology",
+        classmethod(tracked_plan),
+    )
+    real_scan = support_lock._scan_xcode_hardlink_topology
+    scans = 0
+
+    def tracked_scan(*, support_root: Path, app_boundary: Path):
+        nonlocal scans
+        scans += 1
+        return real_scan(
+            support_root=support_root,
+            app_boundary=app_boundary,
+        )
+
+    monkeypatch.setattr(
+        support_lock,
+        "_scan_xcode_hardlink_topology",
+        tracked_scan,
+    )
+    real_reopen = support_lock._open_xcode_topology_regular
+    reopened: list[tuple[Path, str]] = []
+
+    def tracked_reopen(
+        *, boundary: Path, relative_path: str, expected: object
+    ) -> None:
+        reopened.append((boundary, relative_path))
+        real_reopen(
+            boundary=boundary,
+            relative_path=relative_path,
+            expected=expected,
+        )
+
+    monkeypatch.setattr(
+        support_lock,
+        "_open_xcode_topology_regular",
+        tracked_reopen,
+    )
+
+    generate_toolchain_support_lock(
+        target_triple="aarch64-apple-darwin",
+        manifests=manifests,
+        roots=roots,
+    )
+
+    assert scans == 2
+    assert len(plans) == 2
+    assert plans[0] is not plans[1]
+    assert all(not plan.entries for plan in plans)
+    assert set(reopened) == {
+        (root, paths[0].relative_to(root).as_posix()),
+        (root, paths[1].relative_to(root).as_posix()),
+        *((app, path.relative_to(app).as_posix()) for path in paths),
+    }
+
+
+def test_xcode_sdk_topology_root_count_digest_version_and_bound_drift_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, app, root, _paths = _xcode_multiple_support_path_inputs(
+        tmp_path,
+        monkeypatch,
+        logical_role="xcode-sdk",
+    )
+
+    for name, value in (
+        ("_XCODE_SDK_HARDLINK_GROUP_COUNT", 2),
+        ("_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT", 3),
+        ("_XCODE_SDK_HARDLINK_ALIAS_COUNT", 4),
+        ("_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256", "0" * 64),
+    ):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(support_lock, name, value)
+            with pytest.raises(ToolchainSupportLockError, match="topology"):
+                generate_toolchain_support_lock(
+                    target_triple="aarch64-apple-darwin",
+                    manifests=manifests,
+                    roots=roots,
+                )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            support_lock,
+            "_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256",
+            "0" * 64,
+        )
+        with pytest.raises(ToolchainSupportLockError, match="hardlink"):
+            generate_toolchain_support_lock(
+                target_triple="aarch64-apple-darwin",
+                manifests=manifests,
+                roots=roots,
+            )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(support_lock, "_XCODE_VERSION_MANIFEST_RAW_SHA256", "0" * 64)
+        with pytest.raises(ToolchainSupportLockError, match="manifest differs"):
+            generate_toolchain_support_lock(
+                target_triple="aarch64-apple-darwin",
+                manifests=manifests,
+                roots=roots,
+            )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(support_lock, "_XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP", 2)
+        with pytest.raises(ToolchainSupportLockError, match="alias bound"):
+            support_lock._scan_xcode_hardlink_topology(
+                support_root=root,
+                app_boundary=app,
+            )
+
+
+def test_xcode_sdk_final_reopen_rejects_a_different_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifests, _roots, app, root, _paths = _xcode_multiple_support_path_inputs(
+        tmp_path,
+        monkeypatch,
+        logical_role="xcode-sdk",
+    )
+    topology = support_lock._scan_xcode_hardlink_topology(
+        support_root=root,
+        app_boundary=app,
+    )
+
+    with pytest.raises(ToolchainSupportLockError, match="outside the exact profile"):
+        support_lock._reopen_xcode_hardlink_topology(
+            topology,
+            support_root=root.parent,
+            app_boundary=app,
+        )
+
+
 def test_exact_xcode_topology_is_root_scoped_bound_and_not_double_counted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2877,7 +3300,7 @@ def test_xcode_topology_rejects_policy_near_misses_and_outside_alias(
     outside.unlink()
     in_root_alias = roots[0]._absolute_path / "include" / "duplicate-first.h"
     os.link(paths[0], in_root_alias)
-    with pytest.raises(ToolchainSupportLockError, match="support inode"):
+    with pytest.raises(ToolchainSupportLockError, match="topology"):
         support_lock._scan_xcode_hardlink_topology(
             support_root=roots[0]._absolute_path,
             app_boundary=app,
