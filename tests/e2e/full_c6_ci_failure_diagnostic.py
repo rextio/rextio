@@ -8,12 +8,13 @@ user-selected paths.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import posixpath
 import stat
 import sys
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 MACOS_XCODE_APP = Path("/Applications/Xcode.app")
@@ -33,13 +34,20 @@ LINUX_RUNTIME_ROOT = Path("/usr/lib/x86_64-linux-gnu")
 MAX_ROOT_SCAN_ENTRIES = 250_000
 MAX_XCODE_APP_SCAN_ENTRIES = 1_000_000
 MAX_REPORT_ENTRIES = 512
-MAX_RELEVANT_INODES = 1_024
+MAX_RELEVANT_INODES = 16_384
 MAX_ALIAS_PATHS = 16
+MAX_TOPOLOGY_MEMBERS_PER_GROUP = 64
+MAX_TOPOLOGY_PATH_HASHES = 250_000
 MAX_SCAN_DEPTH = 128
 MAX_DIRECTORY_ENTRIES = 65_536
 MAX_PATH_BYTES = 8_192
 MAX_LINE_BYTES = 8_192
 MAX_OUTPUT_BYTES = 256 * 1_024
+
+XCODE_SUPPORT_PATH_POLICY_DOMAIN = "rextio.full-c6-xcode-hardlink-topology-support-path.v1"
+XCODE_ALIAS_PATH_POLICY_DOMAIN = "rextio.full-c6-xcode-hardlink-topology-alias-path.v1"
+XCODE_POLICY_GROUP_DOMAIN = "rextio.full-c6-xcode-hardlink-topology-policy-group.v1"
+XCODE_POLICY_DOMAIN = "rextio.full-c6-xcode-hardlink-topology-policy.v1"
 
 
 class _ScanBoundExceeded(RuntimeError):
@@ -51,6 +59,20 @@ class _CapturedEntry:
     relative_path: str
     stat_result: os.stat_result
     link_target: str | None
+
+
+@dataclass(slots=True)
+class _SharedInodeGroup:
+    link_count: int
+    support_member_count: int = 0
+    support_path_sha256s: set[str] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class _RootTopology:
+    groups: dict[tuple[int, int], _SharedInodeGroup] = field(default_factory=dict)
+    support_member_count: int = 0
+    topology_truncated: bool = False
 
 
 class _Reporter:
@@ -93,6 +115,22 @@ def _bounded_text(value: str) -> str:
     if len(encoded) > MAX_PATH_BYTES or "\0" in value:
         raise _ScanBoundExceeded("path-bound")
     return value
+
+
+def _policy_sha256(domain: str, fields: dict[str, object]) -> str:
+    payload = {"domain": domain, **fields}
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _path_policy_sha256(*, domain: str, field_name: str, path: str) -> str:
+    return _policy_sha256(domain, {field_name: _bounded_text(path)})
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -275,6 +313,82 @@ def _walk_nofollow(root: Path, *, entry_limit: int) -> Iterator[_CapturedEntry]:
             os.close(descriptor)
 
 
+def _root_topology_evidence(
+    *,
+    label: str,
+    topology: _RootTopology,
+    alias_counts: dict[tuple[int, int], int],
+    alias_path_sha256s: dict[tuple[int, int], set[str]],
+) -> dict[str, object]:
+    complete_alias_group_count = 0
+    alias_count_mismatch_group_count = 0
+    policy_group_sha256s: list[str] = []
+    alias_count = 0
+    max_support_members_per_group = 0
+    max_alias_members_per_group = 0
+    policy_complete = not topology.topology_truncated
+    for inode, group in topology.groups.items():
+        observed_alias_count = alias_counts[inode]
+        observed_alias_hashes = alias_path_sha256s[inode]
+        alias_count += observed_alias_count
+        max_support_members_per_group = max(
+            max_support_members_per_group,
+            group.support_member_count,
+        )
+        max_alias_members_per_group = max(
+            max_alias_members_per_group,
+            observed_alias_count,
+        )
+        if observed_alias_count == group.link_count:
+            complete_alias_group_count += 1
+        else:
+            alias_count_mismatch_group_count += 1
+            policy_complete = False
+        if (
+            len(group.support_path_sha256s) != group.support_member_count
+            or len(observed_alias_hashes) != observed_alias_count
+        ):
+            policy_complete = False
+        policy_group_sha256s.append(
+            _policy_sha256(
+                XCODE_POLICY_GROUP_DOMAIN,
+                {
+                    "support_relative_path_sha256s": sorted(group.support_path_sha256s),
+                    "link_count": group.link_count,
+                    "alias_count": observed_alias_count,
+                    "alias_path_sha256s": sorted(observed_alias_hashes),
+                },
+            )
+        )
+    policy_merkle_sha256 = None
+    if policy_complete:
+        policy_merkle_sha256 = _policy_sha256(
+            XCODE_POLICY_DOMAIN,
+            {"policy_group_sha256s": sorted(policy_group_sha256s)},
+        )
+    return {
+        "root": label,
+        "group_count": len(topology.groups),
+        "support_member_count": topology.support_member_count,
+        "tracked_support_member_count": sum(
+            group.support_member_count for group in topology.groups.values()
+        ),
+        "alias_count": alias_count,
+        "complete_alias_group_count": complete_alias_group_count,
+        "alias_count_mismatch_group_count": alias_count_mismatch_group_count,
+        "max_support_members_per_group": max_support_members_per_group,
+        "max_alias_members_per_group": max_alias_members_per_group,
+        "max_members_per_group": max(
+            max_support_members_per_group,
+            max_alias_members_per_group,
+        ),
+        "policy_merkle_domain": XCODE_POLICY_DOMAIN,
+        "policy_merkle_sha256": policy_merkle_sha256,
+        "policy_complete": policy_complete,
+        "topology_truncated": topology.topology_truncated,
+    }
+
+
 def _diagnose_macos(
     reporter: _Reporter,
     *,
@@ -283,6 +397,10 @@ def _diagnose_macos(
 ) -> None:
     if not app.is_absolute():
         raise RuntimeError("fixed-app-path")
+    labels = tuple(label for label, _root in support_roots)
+    if len(set(labels)) != len(labels):
+        raise RuntimeError("fixed-support-root-label")
+    root_topologies = {label: _RootTopology() for label in labels}
     for _label, root in support_roots:
         try:
             root.relative_to(app)
@@ -291,24 +409,49 @@ def _diagnose_macos(
 
     records: list[tuple[str, str, str, tuple[int, int], int]] = []
     relevant_inodes: dict[tuple[int, int], int] = {}
-    shared_member_count = 0
-    topology_truncated = False
+    inode_roots: dict[tuple[int, int], set[str]] = {}
+    topology_path_hash_count = 0
     for label, root in support_roots:
+        topology = root_topologies[label]
         app_prefix = root.relative_to(app).as_posix()
         for entry in _walk_nofollow(root, entry_limit=MAX_ROOT_SCAN_ENTRIES):
             observed = entry.stat_result
             if not stat.S_ISREG(observed.st_mode) or observed.st_nlink <= 1:
                 continue
-            shared_member_count += 1
+            topology.support_member_count += 1
             inode = (observed.st_dev, observed.st_ino)
             expected_links = relevant_inodes.get(inode)
             if expected_links is None:
                 if len(relevant_inodes) >= MAX_RELEVANT_INODES:
-                    topology_truncated = True
+                    topology.topology_truncated = True
                     continue
                 relevant_inodes[inode] = observed.st_nlink
+                inode_roots[inode] = set()
             elif expected_links != observed.st_nlink:
                 raise RuntimeError("shared-inode-link-count-changed")
+            inode_roots[inode].add(label)
+            group = topology.groups.get(inode)
+            if group is None:
+                group = _SharedInodeGroup(link_count=observed.st_nlink)
+                topology.groups[inode] = group
+            elif group.link_count != observed.st_nlink:
+                raise RuntimeError("shared-root-inode-link-count-changed")
+            group.support_member_count += 1
+            if (
+                group.support_member_count > MAX_TOPOLOGY_MEMBERS_PER_GROUP
+                or topology_path_hash_count >= MAX_TOPOLOGY_PATH_HASHES
+            ):
+                topology.topology_truncated = True
+            else:
+                support_path_sha256 = _path_policy_sha256(
+                    domain=XCODE_SUPPORT_PATH_POLICY_DOMAIN,
+                    field_name="support_relative_path",
+                    path=entry.relative_path,
+                )
+                if support_path_sha256 in group.support_path_sha256s:
+                    raise RuntimeError("support-path-hash-collision")
+                group.support_path_sha256s.add(support_path_sha256)
+                topology_path_hash_count += 1
             if len(records) >= MAX_REPORT_ENTRIES:
                 continue
             relative = entry.relative_path
@@ -317,6 +460,9 @@ def _diagnose_macos(
 
     alias_counts = {inode: 0 for inode in relevant_inodes}
     alias_paths: dict[tuple[int, int], list[str]] = {inode: [] for inode in relevant_inodes}
+    alias_path_sha256s: dict[tuple[int, int], set[str]] = {
+        inode: set() for inode in relevant_inodes
+    }
     app_scan_entries = 0
     for entry in _walk_nofollow(app, entry_limit=MAX_XCODE_APP_SCAN_ENTRIES):
         app_scan_entries += 1
@@ -327,6 +473,22 @@ def _diagnose_macos(
         if inode not in relevant_inodes:
             continue
         alias_counts[inode] += 1
+        if (
+            alias_counts[inode] > MAX_TOPOLOGY_MEMBERS_PER_GROUP
+            or topology_path_hash_count >= MAX_TOPOLOGY_PATH_HASHES
+        ):
+            for label in inode_roots[inode]:
+                root_topologies[label].topology_truncated = True
+        else:
+            alias_path_sha256 = _path_policy_sha256(
+                domain=XCODE_ALIAS_PATH_POLICY_DOMAIN,
+                field_name="app_relative_path",
+                path=entry.relative_path,
+            )
+            if alias_path_sha256 in alias_path_sha256s[inode]:
+                raise RuntimeError("alias-path-hash-collision")
+            alias_path_sha256s[inode].add(alias_path_sha256)
+            topology_path_hash_count += 1
         paths = alias_paths[inode]
         if len(paths) < MAX_ALIAS_PATHS + 1:
             paths.append(entry.relative_path)
@@ -335,6 +497,10 @@ def _diagnose_macos(
         alias_counts[inode] == link_count for inode, link_count in relevant_inodes.items()
     )
     alias_count_mismatch_group_count = len(relevant_inodes) - complete_alias_group_count
+    shared_member_count = sum(
+        topology.support_member_count for topology in root_topologies.values()
+    )
+    topology_truncated = any(topology.topology_truncated for topology in root_topologies.values())
     reporter.emit(
         "macos-diagnostic-summary",
         shared_member_count=shared_member_count,
@@ -346,6 +512,16 @@ def _diagnose_macos(
         reports_truncated=shared_member_count > len(records),
         xcode_app_scan_entries=app_scan_entries,
     )
+    for label in labels:
+        reporter.emit(
+            "macos-support-hardlink-topology",
+            **_root_topology_evidence(
+                label=label,
+                topology=root_topologies[label],
+                alias_counts=alias_counts,
+                alias_path_sha256s=alias_path_sha256s,
+            ),
+        )
     for label, relative, app_relative, inode, link_count in records:
         aliases = sorted(path for path in alias_paths[inode] if path != app_relative)[
             :MAX_ALIAS_PATHS
