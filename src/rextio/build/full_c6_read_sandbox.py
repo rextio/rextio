@@ -1325,7 +1325,7 @@ def _verify_sandbox_exec(path: Path) -> None:
         raise FullC6ReadSandboxError("Full C6 sandbox-exec is not executable")
 
 
-_MACOS_PROFILE_CONTRACT_DOMAIN = "rextio.full-c6-macos-sandbox-profile.v1"
+_MACOS_PROFILE_CONTRACT_DOMAIN = "rextio.full-c6-macos-sandbox-profile.v2"
 _MACOS_PROFILE_BASE_LINES = (
     "(version 1)",
     # system.sb supplies Apple's process/dyld bootstrap baseline.  The support
@@ -1346,6 +1346,7 @@ _MACOS_PROFILE_BASE_LINES = (
     "(deny ipc-posix-shm-read*)",
     "(deny user-preference-read)",
     "(deny sysctl-read)",
+    '(allow sysctl-read (sysctl-name "hw.ncpu"))',
     "(deny sysctl-write)",
     "(allow process-fork)",
     "(allow signal (target self))",

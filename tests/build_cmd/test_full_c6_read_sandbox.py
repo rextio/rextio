@@ -1370,7 +1370,16 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert '(subpath "/Library")' in launch.command[2]
     assert '(subpath "/dev")' in launch.command[2]
     assert '(subpath "/System/Volumes/Preboot")' in launch.command[2]
-    assert "(deny sysctl-write)" in launch.command[2]
+    profile_lines = launch.command[2].splitlines()
+    sysctl_read_index = profile_lines.index("(deny sysctl-read)")
+    assert profile_lines[sysctl_read_index : sysctl_read_index + 3] == [
+        "(deny sysctl-read)",
+        '(allow sysctl-read (sysctl-name "hw.ncpu"))',
+        "(deny sysctl-write)",
+    ]
+    assert sandbox_module._MACOS_PROFILE_CONTRACT_DOMAIN == (
+        "rextio.full-c6-macos-sandbox-profile.v2"
+    )
     assert str(tmp_path / "inputs") in launch.command[2]
     assert str(fresh_root / "inputs") in fresh_launch.command[2]
 

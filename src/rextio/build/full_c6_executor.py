@@ -207,6 +207,15 @@ _NATIVE_AUTHORITY_DOMAIN = "rextio.full-c6-native-execution-authority.v1"
 _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES = 64 * 1024
 _MACOS_SANDBOX_TARGET = "aarch64-apple-darwin"
 _MACOS_SANDBOX_ENGINE = "macos-sandbox-exec-v1"
+_CARGO_MACOS_CPU_COUNT_FAILURE = (
+    "failed to determine the amount of parallelism available"
+)
+_CARGO_MACOS_CPU_COUNT_FAILURE_LINES = frozenset(
+    {
+        _CARGO_MACOS_CPU_COUNT_FAILURE,
+        f"error: {_CARGO_MACOS_CPU_COUNT_FAILURE}",
+    }
+)
 FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS = (
     "native-macos-permission-sandbox-apply",
     "native-macos-permission-mach-lookup",
@@ -337,6 +346,11 @@ def _classify_macos_sandbox_permission(
         return None
     if not context:
         return "native-macos-permission-unmatched"
+    if any(
+        line in _CARGO_MACOS_CPU_COUNT_FAILURE_LINES
+        for line in context.splitlines()
+    ):
+        return "native-macos-permission-sysctl-cpu-count"
     lowered = context.casefold()
     if "sandbox_apply" in lowered or (
         "sandbox-exec:" in lowered

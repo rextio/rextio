@@ -334,6 +334,45 @@ def test_native_sandbox_stderr_macos_categories_require_exact_plan_and_target() 
     )
 
 
+def test_native_sandbox_stderr_macos_cargo_cpu_count_phrase_is_exact_and_bounded() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan, _paths = _macos_diagnostic_plan()
+    phrase = "failed to determine the amount of parallelism available"
+    diagnostic = f"error: {phrase}\nCaused by:\nOperation not permitted"
+
+    assert executor._classify_native_sandbox_stderr(
+        diagnostic,
+        sandbox_plan=plan,
+        target_triple="aarch64-apple-darwin",
+    ) == "native-macos-permission-sysctl-cpu-count"
+    assert executor._classify_native_sandbox_stderr(
+        f"error: {phrase}",
+        sandbox_plan=plan,
+        target_triple="aarch64-apple-darwin",
+    ) == "native-compile"
+    assert executor._classify_native_sandbox_stderr(
+        f"error: {phrase}: /private/owner-input\nOperation not permitted",
+        sandbox_plan=plan,
+        target_triple="aarch64-apple-darwin",
+    ) == "native-macos-permission-unmatched"
+    assert executor._classify_native_sandbox_stderr(
+        "error: parallelism unavailable\nOperation not permitted",
+        sandbox_plan=plan,
+        target_triple="aarch64-apple-darwin",
+    ) == "native-macos-permission-unmatched"
+    assert executor._classify_native_sandbox_stderr(
+        diagnostic,
+        sandbox_plan=plan,
+        target_triple="x86_64-unknown-linux-gnu",
+    ) == "native-permission"
+    assert executor._classify_native_sandbox_stderr(
+        f"{'x' * (64 * 1024)}\n{diagnostic}",
+        sandbox_plan=plan,
+        target_triple="aarch64-apple-darwin",
+    ) == "native-permission"
+
+
 def test_native_sandbox_stderr_macos_classifier_is_bounded_and_path_exact() -> None:
     import rextio.build.full_c6_executor as executor
 
