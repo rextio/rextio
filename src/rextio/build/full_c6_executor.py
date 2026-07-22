@@ -238,6 +238,48 @@ _LINUX_PERMISSION_VIRTUAL_ROOT_REASONS = (
     ("/proc/", "native-linux-permission-proc-root"),
 )
 _LINUX_REXTIO_VIRTUAL_ROOT = "/rextio"
+_LINUX_PERMISSION_OPERATION_PHRASES = (
+    (
+        "native-linux-permission-jobserver-creation",
+        ("failed to create jobserver",),
+    ),
+    (
+        "native-linux-permission-pipe-creation",
+        ("failed to create pipe", "could not create pipe"),
+    ),
+    (
+        "native-linux-permission-socket-creation",
+        (
+            "failed to create socket",
+            "failed to create socketpair",
+            "could not create socket",
+            "could not create socketpair",
+            "socketpair failed",
+        ),
+    ),
+    (
+        "native-linux-permission-network-connect",
+        ("failed to connect to",),
+    ),
+    (
+        "native-linux-permission-process-spawn",
+        (
+            "could not execute process",
+            "failed to spawn process",
+            "posix_spawn failed",
+            "failed to fork",
+            "failed to clone process",
+        ),
+    ),
+    (
+        "native-linux-permission-dynamic-loader",
+        (
+            "error while loading shared libraries",
+            "cannot open shared object file",
+            "failed to load shared library",
+        ),
+    ),
+)
 _CARGO_MACOS_CPU_COUNT_FAILURE = (
     "failed to determine the amount of parallelism available"
 )
@@ -277,6 +319,13 @@ FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS = (
     "native-linux-permission-dev-root",
     "native-linux-permission-proc-root",
     "native-linux-permission-rextio-root",
+    "native-linux-permission-jobserver-creation",
+    "native-linux-permission-pipe-creation",
+    "native-linux-permission-socket-creation",
+    "native-linux-permission-network-connect",
+    "native-linux-permission-process-spawn",
+    "native-linux-permission-dynamic-loader",
+    "native-linux-permission-unclassified-no-known-operation",
 )
 
 
@@ -436,6 +485,16 @@ def _context_mentions_exact_virtual_root(context: str, root: str) -> bool:
     )
 
 
+def _context_mentions_exact_phrase(context: str, phrase: str) -> bool:
+    return (
+        re.search(
+            rf"(?<![\w-]){re.escape(phrase)}(?![\w-])",
+            context,
+        )
+        is not None
+    )
+
+
 def _linux_permission_diagnostic_overflow(stderr: str) -> bool:
     if len(stderr) > _MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES:
         lowered = stderr.casefold()
@@ -493,7 +552,19 @@ def _classify_linux_sandbox_permission(stderr: str) -> str | None:
         candidates.add("native-linux-permission-rextio-root")
     if len(candidates) == 1:
         return candidates.pop()
-    return None
+    if candidates:
+        return None
+    for reason, phrases in _LINUX_PERMISSION_OPERATION_PHRASES:
+        if any(
+            _context_mentions_exact_phrase(lowered, phrase)
+            for phrase in phrases
+        ):
+            candidates.add(reason)
+    if len(candidates) == 1:
+        return candidates.pop()
+    if candidates:
+        return None
+    return "native-linux-permission-unclassified-no-known-operation"
 
 
 def _classify_macos_sandbox_permission(

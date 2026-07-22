@@ -408,6 +408,13 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "native-linux-permission-dev-root",
         "native-linux-permission-proc-root",
         "native-linux-permission-rextio-root",
+        "native-linux-permission-jobserver-creation",
+        "native-linux-permission-pipe-creation",
+        "native-linux-permission-socket-creation",
+        "native-linux-permission-network-connect",
+        "native-linux-permission-process-spawn",
+        "native-linux-permission-dynamic-loader",
+        "native-linux-permission-unclassified-no-known-operation",
     )
     parallelism = "error: failed to determine the amount of parallelism available"
     assert classify(f"{parallelism}\nOperation not permitted") == (
@@ -417,10 +424,10 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         f"{parallelism}\n/rextio/build/target: Operation not permitted"
     ) == "native-linux-cargo-parallelism"
     assert classify(f"{parallelism}: private\nOperation not permitted") == (
-        "native-permission"
+        "native-linux-permission-unclassified-no-known-operation"
     )
     assert classify("error: parallelism unavailable\nOperation not permitted") == (
-        "native-permission"
+        "native-linux-permission-unclassified-no-known-operation"
     )
     assert classify(
         "error: could not execute process '/rextio/toolchain/bin/rustc --crate-name x'\n"
@@ -439,7 +446,7 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     ) == "native-linux-cargo-cache-lock"
     assert classify(
         "failed to acquire package cache lock: private\nPermission denied"
-    ) == "native-permission"
+    ) == "native-linux-permission-unclassified-no-known-operation"
     assert classify(
         "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
     ) == "native-linux-permission-gcc-lto-plugin"
@@ -460,7 +467,9 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "/libexec/gcc/x86_64-linux-gnu/14/liblto_plugin.so",
         "/unmapped/liblto_plugin.so: error loading plugin",
     ):
-        assert classify(f"{near_miss}: Permission denied") == "native-permission"
+        assert classify(f"{near_miss}: Permission denied") == (
+            "native-linux-permission-unclassified-no-known-operation"
+        )
     assert classify(
         "/rextio/support/gcc-toolchain/opaque-plugin: error loading plugin\n"
         "Permission denied"
@@ -492,9 +501,47 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "/rextio-private",
         "/rextio/unclassified",
     ):
-        assert classify(f"{near_miss}: Permission denied") == "native-permission"
+        assert classify(f"{near_miss}: Permission denied") == (
+            "native-linux-permission-unclassified-no-known-operation"
+        )
     assert classify(
         "/rextio/build/target and /rextio/project/src: Permission denied"
+    ) == "native-permission"
+    operation_cases = (
+        ("failed to create jobserver", "native-linux-permission-jobserver-creation"),
+        ("could not create pipe", "native-linux-permission-pipe-creation"),
+        ("failed to create socketpair", "native-linux-permission-socket-creation"),
+        ("failed to connect to registry", "native-linux-permission-network-connect"),
+        ("posix_spawn failed", "native-linux-permission-process-spawn"),
+        (
+            "error while loading shared libraries",
+            "native-linux-permission-dynamic-loader",
+        ),
+    )
+    for phrase, reason in operation_cases:
+        assert classify(f"{phrase}: Permission denied") == reason
+    assert classify(
+        "/tmp/cargo-pipe: failed to create pipe\nPermission denied"
+    ) == "native-linux-permission-tmp-root"
+    for near_miss in (
+        "failed create jobserver",
+        "failed to create jobservers",
+        "failed to create pipeline",
+        "failed to create sockets",
+        "failed to reconnect to registry",
+        "could execute process",
+        "posix-spawn failed",
+        "error while loading shared library",
+        "cannot open shared object filename",
+    ):
+        assert classify(f"{near_miss}: Permission denied") == (
+            "native-linux-permission-unclassified-no-known-operation"
+        )
+    assert classify("opaque failure: Permission denied") == (
+        "native-linux-permission-unclassified-no-known-operation"
+    )
+    assert classify(
+        "failed to create pipe\nfailed to create socketpair\nPermission denied"
     ) == "native-permission"
     assert classify(
         "/rextio/support/gcc-toolchain/liblto_plugin.so and "
@@ -525,6 +572,14 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     assert classify(lto_stderr, active_plan=forged) == "native-permission"
     assert classify(
         "/tmp/rustc-output: Permission denied",
+        active_plan=forged,
+    ) == "native-permission"
+    assert classify(
+        "failed to create pipe: Permission denied",
+        active_plan=forged,
+    ) == "native-permission"
+    assert classify(
+        "opaque failure: Permission denied",
         active_plan=forged,
     ) == "native-permission"
     overflow_stderr = f"{'x' * (64 * 1024)}\nPermission denied"

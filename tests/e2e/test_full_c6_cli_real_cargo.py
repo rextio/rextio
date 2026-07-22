@@ -301,14 +301,21 @@ def test_build_failure_report_diagnostic_allows_static_launcher_stage(
     (
         "native-linux-permission-dev-root",
         "native-linux-permission-diagnostic-overflow",
+        "native-linux-permission-dynamic-loader",
         "native-linux-permission-gcc-lto-plugin",
+        "native-linux-permission-jobserver-creation",
         "native-linux-permission-lib64-root",
+        "native-linux-permission-network-connect",
+        "native-linux-permission-pipe-creation",
         "native-linux-permission-proc-root",
+        "native-linux-permission-process-spawn",
         "native-linux-permission-python-root",
         "native-linux-permission-rextio-root",
+        "native-linux-permission-socket-creation",
         "native-linux-permission-support-root",
         "native-linux-permission-tmp-root",
         "native-linux-permission-toolchain-root",
+        "native-linux-permission-unclassified-no-known-operation",
     ),
 )
 def test_build_failure_report_diagnostic_allows_static_linux_permission(
