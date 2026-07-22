@@ -76,6 +76,7 @@ _FULL_C6_BUILD_FAILURE_REASON_CODES = frozenset(
         "external-toolchain-support",
         "linux-launcher-exit-125",
         "native-build-exit-1",
+        "native-build-exit-101",
         "production-authority-unclassified",
         "production-cargo-workspace-mismatch",
         "production-collection-failed",

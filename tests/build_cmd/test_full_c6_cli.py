@@ -966,6 +966,14 @@ def test_full_c6_failure_reason_code_prefers_exact_deep_cause() -> None:
     )
 
 
+def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
+    error = build_cmd.FullC6ExecutorError(
+        "strict Cargo build failed with exit status 101"
+    )
+
+    assert build_cmd._full_c6_failure_reason_code(error) == "native-build-exit-101"
+
+
 def test_full_c6_failure_reason_code_never_returns_unknown_message() -> None:
     private = "/private/runner/project secret diagnostics"
     error = build_cmd.FullC6ProductionError(private)

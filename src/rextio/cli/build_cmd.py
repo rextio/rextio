@@ -186,6 +186,10 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     ): "native-build-exit-1",
     (
         FullC6ExecutorError,
+        "strict Cargo build failed with exit status 101",
+    ): "native-build-exit-101",
+    (
+        FullC6ExecutorError,
         "strict Cargo build failed with exit status 125",
     ): "linux-launcher-exit-125",
     (
