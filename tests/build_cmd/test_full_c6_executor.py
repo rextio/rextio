@@ -104,6 +104,60 @@ def _project(tmp_path: Path, *, lock: bool = True) -> Path:
     return root
 
 
+def _macos_diagnostic_plan():
+    from rextio.build.full_c6_read_sandbox import (
+        FullC6ReadSandboxPlan,
+        SandboxPathRule,
+    )
+
+    paths = {
+        "build": Path("/private/var/rextio-c6-diagnostic-build"),
+        "project": Path("/private/rextio-c6-diagnostic-project"),
+        "toolchain": Path("/opt/rextio-c6-diagnostic/rustc"),
+        "support": Path("/opt/rextio-c6-diagnostic/pyo3-config"),
+    }
+    rules = tuple(
+        sorted(
+            (
+                SandboxPathRule(
+                    path=paths["build"],
+                    access="read-write",
+                    logical_role="build-root",
+                ),
+                SandboxPathRule(
+                    path=paths["project"],
+                    access="read",
+                    logical_role="project-root",
+                ),
+                SandboxPathRule(
+                    path=paths["toolchain"],
+                    access="read-execute",
+                    logical_role="toolchain-rustc",
+                ),
+                SandboxPathRule(
+                    path=paths["support"],
+                    access="read",
+                    logical_role="support-pyo3-config",
+                ),
+            ),
+            key=lambda item: (
+                item.logical_role,
+                item.access,
+                os.fsencode(item.path),
+            ),
+        )
+    )
+    return (
+        FullC6ReadSandboxPlan(
+            target_triple="aarch64-apple-darwin",
+            engine="macos-sandbox-exec-v1",
+            rules=rules,
+            platform_anchor_sha256="9" * 64,
+        ),
+        paths,
+    )
+
+
 @pytest.mark.parametrize(
     ("stderr", "expected"),
     [
@@ -184,6 +238,139 @@ def test_native_sandbox_stderr_error_never_retains_private_input() -> None:
     assert error is not None
     assert str(error) == "strict native sandbox build failed: native-sandbox-bubblewrap"
     assert private not in str(error)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("sandbox-apply", "native-macos-permission-sandbox-apply"),
+        ("mach-lookup", "native-macos-permission-mach-lookup"),
+        ("sysctl", "native-macos-permission-sysctl-cpu-count"),
+        ("build", "native-macos-permission-build-root"),
+        ("project", "native-macos-permission-project-root"),
+        ("toolchain", "native-macos-permission-toolchain"),
+        ("support", "native-macos-permission-support"),
+        ("dev", "native-macos-permission-denied-dev"),
+        ("private-var", "native-macos-permission-denied-private-var"),
+        ("library", "native-macos-permission-denied-library"),
+        ("preboot", "native-macos-permission-denied-preboot"),
+        ("unmatched", "native-macos-permission-unmatched"),
+    ),
+)
+def test_native_sandbox_stderr_classifier_returns_bounded_macos_categories(
+    case: str,
+    expected: str,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan, paths = _macos_diagnostic_plan()
+    diagnostics = {
+        "sandbox-apply": "sandbox-exec: sandbox_apply: Operation not permitted",
+        "mach-lookup": (
+            "Sandbox: cargo(42) deny(1) mach-lookup "
+            "com.example.private-service"
+        ),
+        "sysctl": "Sandbox: cargo(42) deny(1) sysctl-read hw.ncpu",
+        "build": f"Sandbox: cargo(42) deny(1) file-write {paths['build']}/target",
+        "project": f"Sandbox: cargo(42) deny(1) file-read {paths['project']}/src",
+        "toolchain": f"Sandbox: cargo(42) deny(1) process-exec {paths['toolchain']}",
+        "support": f"Sandbox: cargo(42) deny(1) file-read {paths['support']}",
+        "dev": "Sandbox: cargo(42) deny(1) file-read /dev/null",
+        "private-var": "Sandbox: cargo(42) deny(1) file-read /private/var/db/private",
+        "library": "Sandbox: cargo(42) deny(1) file-read /Library/Private/file",
+        "preboot": (
+            "Sandbox: cargo(42) deny(1) file-read "
+            "/System/Volumes/Preboot/private"
+        ),
+        "unmatched": "error: access to an unknown capability: Permission denied",
+    }
+
+    assert (
+        executor._classify_native_sandbox_stderr(
+            diagnostics[case],
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == expected
+    )
+
+
+def test_native_sandbox_stderr_macos_categories_require_exact_plan_and_target() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan, _paths = _macos_diagnostic_plan()
+    stderr = "error: access failed: Permission denied"
+    forged = SimpleNamespace(
+        target_triple="aarch64-apple-darwin",
+        engine="macos-sandbox-exec-v1",
+        rules=plan.rules,
+    )
+
+    assert executor._classify_native_sandbox_stderr(stderr) == "native-permission"
+    assert (
+        executor._classify_native_sandbox_stderr(
+            stderr,
+            sandbox_plan=forged,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-permission"
+    )
+    assert (
+        executor._classify_native_sandbox_stderr(
+            stderr,
+            sandbox_plan=plan,
+            target_triple="x86_64-unknown-linux-gnu",
+        )
+        == "native-permission"
+    )
+
+
+def test_native_sandbox_stderr_macos_classifier_is_bounded_and_path_exact() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan, paths = _macos_diagnostic_plan()
+
+    def classify(stderr: str) -> str | None:
+        return executor._classify_native_sandbox_stderr(
+            stderr,
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+
+    assert classify("x" * (64 * 1024) + "\nPermission denied") == (
+        "native-macos-permission-unmatched"
+    )
+    assert classify("😀" * 20_000 + "\nPermission denied") == (
+        "native-macos-permission-unmatched"
+    )
+    assert classify(
+        "Permission denied\nnearby detail\noutside context\n"
+        f"{paths['build']}/target"
+    ) == "native-macos-permission-unmatched"
+    assert classify(
+        f"Sandbox: cargo(42) deny(1) file-write {paths['build']}-evil/target"
+    ) == "native-macos-permission-denied-private-var"
+
+
+def test_native_sandbox_stderr_macos_error_contains_only_static_category() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    plan, _paths = _macos_diagnostic_plan()
+    private_service = "com.example.private-service"
+    injected_reason = "native-macos-permission-owner-controlled"
+    error = executor._native_sandbox_stderr_error(
+        f"Permission denied: {injected_reason} {private_service}",
+        sandbox_plan=plan,
+        target_triple="aarch64-apple-darwin",
+    )
+
+    assert error is not None
+    assert str(error) == (
+        "strict native sandbox build failed: native-macos-permission-unmatched"
+    )
+    assert error.args == (str(error),)
+    assert injected_reason not in str(error)
+    assert private_service not in str(error)
 
 
 def _external_contract():

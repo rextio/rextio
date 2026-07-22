@@ -986,6 +986,18 @@ def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
         "native-cargo-dependency-config",
         "native-rustc",
         "native-linker",
+        "native-macos-permission-build-root",
+        "native-macos-permission-denied-dev",
+        "native-macos-permission-denied-library",
+        "native-macos-permission-denied-preboot",
+        "native-macos-permission-denied-private-var",
+        "native-macos-permission-mach-lookup",
+        "native-macos-permission-project-root",
+        "native-macos-permission-sandbox-apply",
+        "native-macos-permission-support",
+        "native-macos-permission-sysctl-cpu-count",
+        "native-macos-permission-toolchain",
+        "native-macos-permission-unmatched",
         "native-pyo3",
         "native-permission",
         "native-missing-path",
@@ -1056,7 +1068,11 @@ def test_full_c6_failure_report_serializes_only_static_deep_reason_code(
 
 @pytest.mark.parametrize(
     "reason_code",
-    ("native-sandbox-bubblewrap", "linux-launcher-landlock"),
+    (
+        "native-sandbox-bubblewrap",
+        "linux-launcher-landlock",
+        "native-macos-permission-mach-lookup",
+    ),
 )
 def test_full_c6_failure_report_serializes_only_static_native_stderr_category(
     tmp_path: Path, reason_code: str
@@ -1069,7 +1085,9 @@ def test_full_c6_failure_report_serializes_only_static_native_stderr_category(
         "strict Cargo build failed with exit status 1"
     )
     executor.__cause__ = detail
-    private = build_cmd.FullC6ProductionError("/private/runner/project secret")
+    private = build_cmd.FullC6ProductionError(
+        "/private/runner/project secret com.example.private-service"
+    )
     private.__cause__ = executor
     reporter, _stdout, _stderr = _reporter()
 
@@ -1092,6 +1110,7 @@ def test_full_c6_failure_report_serializes_only_static_native_stderr_category(
     assert report["error"]["reason_code"] == reason_code
     assert "/private" not in serialized
     assert "secret" not in serialized
+    assert "com.example.private-service" not in serialized
 
 
 def test_host_cleanup_failure_replaces_provisional_success(

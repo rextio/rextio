@@ -200,6 +200,23 @@ _LINUX_NATIVE_PAYLOAD_ROLES = {
 }
 _NATIVE_AUTHORITY_SEAL_KEY = secrets.token_bytes(32)
 _NATIVE_AUTHORITY_DOMAIN = "rextio.full-c6-native-execution-authority.v1"
+_MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES = 64 * 1024
+_MACOS_SANDBOX_TARGET = "aarch64-apple-darwin"
+_MACOS_SANDBOX_ENGINE = "macos-sandbox-exec-v1"
+FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS = (
+    "native-macos-permission-sandbox-apply",
+    "native-macos-permission-mach-lookup",
+    "native-macos-permission-sysctl-cpu-count",
+    "native-macos-permission-build-root",
+    "native-macos-permission-project-root",
+    "native-macos-permission-toolchain",
+    "native-macos-permission-support",
+    "native-macos-permission-denied-dev",
+    "native-macos-permission-denied-private-var",
+    "native-macos-permission-denied-library",
+    "native-macos-permission-denied-preboot",
+    "native-macos-permission-unmatched",
+)
 
 
 class FullC6ExecutorError(ReproducibilityError):
@@ -228,15 +245,177 @@ _NATIVE_SANDBOX_STDERR_MESSAGES = {
         "native-permission",
         "native-missing-path",
         "native-compile",
+        *FULL_C6_MACOS_SANDBOX_PERMISSION_REASONS,
         *tuple(_LINUX_LAUNCHER_STDERR_REASONS.values()),
     )
 }
 
 
-def _classify_native_sandbox_stderr(stderr: object) -> str | None:
+def _is_exact_macos_sandbox_diagnostic_context(
+    sandbox_plan: object,
+    target_triple: object,
+) -> bool:
+    return (
+        type(target_triple) is str
+        and target_triple == _MACOS_SANDBOX_TARGET
+        and type(sandbox_plan) is FullC6ReadSandboxPlan
+        and sandbox_plan.target_triple == target_triple
+        and sandbox_plan.engine == _MACOS_SANDBOX_ENGINE
+    )
+
+
+def _macos_sandbox_denial_context(stderr: str) -> str | None:
+    """Return only bounded lines adjacent to an explicit denial marker."""
+    if len(stderr) > _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES:
+        return ""
+    encoded = stderr.encode("utf-8", errors="replace")
+    if len(encoded) > _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES:
+        return ""
+    lines = stderr.splitlines()
+    denial_indexes: set[int] = set()
+    for index, line in enumerate(lines):
+        lowered = line.casefold()
+        sandbox_exec_failure = "sandbox-exec:" in lowered and any(
+            marker in lowered
+            for marker in (
+                "failed",
+                "failure",
+                "error",
+                "invalid profile",
+                "operation not permitted",
+                "permission denied",
+                "could not",
+                "unable to",
+            )
+        )
+        if sandbox_exec_failure or any(
+            marker in lowered
+            for marker in (
+                "sandbox_apply",
+                "deny(",
+                "deny ",
+                " denied",
+                "permission denied",
+                "operation not permitted",
+                "read-only file system",
+            )
+        ):
+            denial_indexes.add(index)
+    if not denial_indexes:
+        return None
+    nearby_indexes: set[int] = set()
+    for index in denial_indexes:
+        nearby_indexes.update(
+            range(max(0, index - 1), min(len(lines), index + 2))
+        )
+    return "\n".join(lines[index] for index in sorted(nearby_indexes))
+
+
+def _context_mentions_exact_path(context: str, path: Path) -> bool:
+    value = os.fspath(path)
+    if value == os.sep:
+        return re.search(r"(?<![\w./-])/(?![^\s'\"),:])", context) is not None
+    return (
+        re.search(
+            rf"(?<![\w./-]){re.escape(value)}(?=$|[/\s'\"),:])",
+            context,
+        )
+        is not None
+    )
+
+
+def _classify_macos_sandbox_permission(
+    stderr: str,
+    sandbox_plan: FullC6ReadSandboxPlan,
+) -> str | None:
+    context = _macos_sandbox_denial_context(stderr)
+    if context is None:
+        return None
+    if not context:
+        return "native-macos-permission-unmatched"
+    lowered = context.casefold()
+    if "sandbox_apply" in lowered or (
+        "sandbox-exec:" in lowered
+        and any(
+            marker in lowered
+            for marker in (
+                "failed",
+                "failure",
+                "error",
+                "invalid profile",
+                "operation not permitted",
+                "permission denied",
+                "could not",
+                "unable to",
+            )
+        )
+    ):
+        return "native-macos-permission-sandbox-apply"
+    if "mach-lookup" in lowered or "mach lookup" in lowered:
+        return "native-macos-permission-mach-lookup"
+    if any(
+        marker in lowered
+        for marker in (
+            "sysctl",
+            "hw.ncpu",
+            "available_parallelism",
+            "num_cpus",
+            "cpu count",
+            "cpu-count",
+        )
+    ):
+        return "native-macos-permission-sysctl-cpu-count"
+
+    role_categories = (
+        ("build-root", "native-macos-permission-build-root"),
+        ("project-root", "native-macos-permission-project-root"),
+    )
+    for logical_role, reason in role_categories:
+        if any(
+            rule.logical_role == logical_role
+            and _context_mentions_exact_path(context, rule.path)
+            for rule in sandbox_plan.rules
+        ):
+            return reason
+    for role_prefix, reason in (
+        ("toolchain-", "native-macos-permission-toolchain"),
+        ("support-", "native-macos-permission-support"),
+    ):
+        if any(
+            rule.logical_role.startswith(role_prefix)
+            and _context_mentions_exact_path(context, rule.path)
+            for rule in sandbox_plan.rules
+        ):
+            return reason
+
+    for root, reason in (
+        (Path("/dev"), "native-macos-permission-denied-dev"),
+        (Path("/private/var"), "native-macos-permission-denied-private-var"),
+        (Path("/Library"), "native-macos-permission-denied-library"),
+        (
+            Path("/System/Volumes/Preboot"),
+            "native-macos-permission-denied-preboot",
+        ),
+    ):
+        if _context_mentions_exact_path(context, root):
+            return reason
+    return "native-macos-permission-unmatched"
+
+
+def _classify_native_sandbox_stderr(
+    stderr: object,
+    *,
+    sandbox_plan: object = None,
+    target_triple: object = None,
+) -> str | None:
     """Reduce captured native stderr to one non-authorizing static category."""
     if type(stderr) is not str or not stderr:
         return None
+    if _is_exact_macos_sandbox_diagnostic_context(sandbox_plan, target_triple):
+        assert type(sandbox_plan) is FullC6ReadSandboxPlan
+        macos_reason = _classify_macos_sandbox_permission(stderr, sandbox_plan)
+        if macos_reason is not None:
+            return macos_reason
     launcher_reason = _LINUX_LAUNCHER_STDERR_REASONS.get(stderr)
     if launcher_reason is not None:
         return launcher_reason
@@ -347,9 +526,18 @@ def _classify_native_sandbox_stderr(stderr: object) -> str | None:
     return None
 
 
-def _native_sandbox_stderr_error(stderr: object) -> FullC6ExecutorError | None:
+def _native_sandbox_stderr_error(
+    stderr: object,
+    *,
+    sandbox_plan: object = None,
+    target_triple: object = None,
+) -> FullC6ExecutorError | None:
     """Create an error containing only an allowlisted category, never stderr."""
-    reason = _classify_native_sandbox_stderr(stderr)
+    reason = _classify_native_sandbox_stderr(
+        stderr,
+        sandbox_plan=sandbox_plan,
+        target_triple=target_triple,
+    )
     if reason is None:
         return None
     return FullC6ExecutorError(_NATIVE_SANDBOX_STDERR_MESSAGES[reason])
@@ -2353,7 +2541,11 @@ def execute_full_c6_two_build(
                 failure = FullC6ExecutorError(
                     f"strict Cargo build failed with exit status {completed.returncode}"
                 )
-                detail = _native_sandbox_stderr_error(completed.stderr)
+                detail = _native_sandbox_stderr_error(
+                    completed.stderr,
+                    sandbox_plan=sandbox_plan,
+                    target_triple=native_manifest.target_triple,
+                )
                 if detail is not None:
                     raise failure from detail
                 raise failure
