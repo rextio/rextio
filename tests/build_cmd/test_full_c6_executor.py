@@ -397,13 +397,25 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "native-linux-rustc-exec-permission",
         "native-linux-cargo-cache-lock",
         "native-linux-permission-gcc-lto-plugin",
+        "native-linux-permission-diagnostic-overflow",
+        "native-linux-permission-toolchain-root",
+        "native-linux-permission-python-root",
+        "native-linux-permission-support-root",
         "native-linux-permission-build-root",
         "native-linux-permission-project-root",
+        "native-linux-permission-lib64-root",
+        "native-linux-permission-tmp-root",
+        "native-linux-permission-dev-root",
+        "native-linux-permission-proc-root",
+        "native-linux-permission-rextio-root",
     )
     parallelism = "error: failed to determine the amount of parallelism available"
     assert classify(f"{parallelism}\nOperation not permitted") == (
         "native-linux-cargo-parallelism"
     )
+    assert classify(
+        f"{parallelism}\n/rextio/build/target: Operation not permitted"
+    ) == "native-linux-cargo-parallelism"
     assert classify(f"{parallelism}: private\nOperation not permitted") == (
         "native-permission"
     )
@@ -417,10 +429,14 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     assert classify(
         "error: could not execute process '/rextio/toolchain/bin/rustc-private'\n"
         "Permission denied"
-    ) == "native-permission"
+    ) == "native-linux-permission-toolchain-root"
     assert classify("  failed to acquire package cache lock\nPermission denied") == (
         "native-linux-cargo-cache-lock"
     )
+    assert classify(
+        "failed to acquire package cache lock\n"
+        "/rextio/build/cargo-home: Permission denied"
+    ) == "native-linux-cargo-cache-lock"
     assert classify(
         "failed to acquire package cache lock: private\nPermission denied"
     ) == "native-permission"
@@ -436,8 +452,10 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "/rextio/support/gcc-toolchain/liblto_plugin.so and "
         "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so: Permission denied"
     ) == "native-linux-permission-gcc-lto-plugin"
+    assert classify(
+        "/rextio/support/gcc-toolchain/liblto_plugin.so-private: Permission denied"
+    ) == "native-linux-permission-support-root"
     for near_miss in (
-        "/rextio/support/gcc-toolchain/liblto_plugin.so-private",
         "/private/rextio/support/gcc-toolchain/liblto_plugin.so",
         "/libexec/gcc/x86_64-linux-gnu/14/liblto_plugin.so",
         "/unmapped/liblto_plugin.so: error loading plugin",
@@ -447,26 +465,52 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "/rextio/support/gcc-toolchain/opaque-plugin: error loading plugin\n"
         "Permission denied"
     ) == "native-linux-permission-gcc-lto-plugin"
-    assert classify("/rextio/build/target/output: Permission denied") == (
-        "native-linux-permission-build-root"
+    root_cases = (
+        ("/rextio/toolchain/bin/cargo", "native-linux-permission-toolchain-root"),
+        ("/rextio/python/bin/python3.11", "native-linux-permission-python-root"),
+        ("/rextio/support/runtime", "native-linux-permission-support-root"),
+        ("/rextio/build/target/output", "native-linux-permission-build-root"),
+        ("/rextio/project/src/lib.rs", "native-linux-permission-project-root"),
+        ("/lib64/ld-linux-x86-64.so.2", "native-linux-permission-lib64-root"),
+        ("/tmp/rustc-output", "native-linux-permission-tmp-root"),
+        ("/dev/null", "native-linux-permission-dev-root"),
+        ("/proc/self/status", "native-linux-permission-proc-root"),
+        ("/rextio", "native-linux-permission-rextio-root"),
     )
-    assert classify("/rextio/project/src/lib.rs: Permission denied") == (
-        "native-linux-permission-project-root"
-    )
+    for path, reason in root_cases:
+        assert classify(f"{path}: Permission denied") == reason
+    for near_miss in (
+        "/rextio/toolchain-private/bin/cargo",
+        "/private/rextio/python/bin/python3.11",
+        "/rextio/support-private/runtime",
+        "/rextio/build-private/target",
+        "/rextio/project-private/src",
+        "/lib640/ld-linux.so",
+        "/tmp-private/output",
+        "/developer/null",
+        "/processor/self/status",
+        "/rextio-private",
+        "/rextio/unclassified",
+    ):
+        assert classify(f"{near_miss}: Permission denied") == "native-permission"
     assert classify(
         "/rextio/build/target and /rextio/project/src: Permission denied"
     ) == "native-permission"
     assert classify(
         "/rextio/support/gcc-toolchain/liblto_plugin.so and "
         "/rextio/build/target: Permission denied"
-    ) == "native-permission"
+    ) == "native-linux-permission-gcc-lto-plugin"
     assert classify(f"{'x' * (64 * 1024)}\n{parallelism}\nPermission denied") == (
-        "native-permission"
+        "native-linux-permission-diagnostic-overflow"
     )
     assert classify(
         f"{'x' * (64 * 1024)}\n"
         "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
-    ) == "native-permission"
+    ) == "native-linux-permission-diagnostic-overflow"
+    assert classify(
+        f"{'😀' * ((64 * 1024) // 4)}\nPermission denied"
+    ) == "native-linux-permission-diagnostic-overflow"
+    assert classify("x" * (64 * 1024 + 1)) is None
     forged = SimpleNamespace(
         target_triple="x86_64-unknown-linux-gnu",
         engine="linux-bwrap-landlock-v1",
@@ -479,6 +523,12 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
     )
     assert classify(lto_stderr, active_plan=forged) == "native-permission"
+    assert classify(
+        "/tmp/rustc-output: Permission denied",
+        active_plan=forged,
+    ) == "native-permission"
+    overflow_stderr = f"{'x' * (64 * 1024)}\nPermission denied"
+    assert classify(overflow_stderr, active_plan=forged) == "native-permission"
     assert (
         executor._classify_native_sandbox_stderr(
             lto_stderr,

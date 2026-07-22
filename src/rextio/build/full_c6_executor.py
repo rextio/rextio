@@ -221,6 +221,23 @@ _LINUX_GCC_LTO_PLUGIN_NAME_RE = re.compile(
 _LINUX_GCC_LTO_LOAD_FAILURE_RE = re.compile(
     r"(?<![\w-])error loading plugin(?![\w-])"
 )
+_LINUX_PERMISSION_MARKERS = (
+    "permission denied",
+    "operation not permitted",
+    "read-only file system",
+)
+_LINUX_PERMISSION_VIRTUAL_ROOT_REASONS = (
+    ("/rextio/toolchain/", "native-linux-permission-toolchain-root"),
+    ("/rextio/python/", "native-linux-permission-python-root"),
+    ("/rextio/support/", "native-linux-permission-support-root"),
+    ("/rextio/build/", "native-linux-permission-build-root"),
+    ("/rextio/project/", "native-linux-permission-project-root"),
+    ("/lib64/", "native-linux-permission-lib64-root"),
+    ("/tmp/", "native-linux-permission-tmp-root"),
+    ("/dev/", "native-linux-permission-dev-root"),
+    ("/proc/", "native-linux-permission-proc-root"),
+)
+_LINUX_REXTIO_VIRTUAL_ROOT = "/rextio"
 _CARGO_MACOS_CPU_COUNT_FAILURE = (
     "failed to determine the amount of parallelism available"
 )
@@ -249,8 +266,17 @@ FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS = (
     "native-linux-rustc-exec-permission",
     "native-linux-cargo-cache-lock",
     "native-linux-permission-gcc-lto-plugin",
+    "native-linux-permission-diagnostic-overflow",
+    "native-linux-permission-toolchain-root",
+    "native-linux-permission-python-root",
+    "native-linux-permission-support-root",
     "native-linux-permission-build-root",
     "native-linux-permission-project-root",
+    "native-linux-permission-lib64-root",
+    "native-linux-permission-tmp-root",
+    "native-linux-permission-dev-root",
+    "native-linux-permission-proc-root",
+    "native-linux-permission-rextio-root",
 )
 
 
@@ -325,11 +351,7 @@ def _linux_permission_context(stderr: str) -> str | None:
         for index, line in enumerate(lines)
         if any(
             marker in line.casefold()
-            for marker in (
-                "permission denied",
-                "operation not permitted",
-                "read-only file system",
-            )
+            for marker in _LINUX_PERMISSION_MARKERS
         )
     }
     if not permission_indexes:
@@ -404,7 +426,30 @@ def _context_mentions_exact_virtual_prefix(context: str, prefix: str) -> bool:
     return re.search(rf"(?<![\w./-]){re.escape(prefix)}", context) is not None
 
 
+def _context_mentions_exact_virtual_root(context: str, root: str) -> bool:
+    return (
+        re.search(
+            rf"(?<![\w./-]){re.escape(root)}(?=$|[\s'\"`),:;])",
+            context,
+        )
+        is not None
+    )
+
+
+def _linux_permission_diagnostic_overflow(stderr: str) -> bool:
+    if len(stderr) > _MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES:
+        lowered = stderr.casefold()
+        return any(marker in lowered for marker in _LINUX_PERMISSION_MARKERS)
+    encoded = stderr.encode("utf-8", errors="replace")
+    if len(encoded) <= _MAX_LINUX_SANDBOX_DIAGNOSTIC_BYTES:
+        return False
+    lowered = stderr.casefold()
+    return any(marker in lowered for marker in _LINUX_PERMISSION_MARKERS)
+
+
 def _classify_linux_sandbox_permission(stderr: str) -> str | None:
+    if _linux_permission_diagnostic_overflow(stderr):
+        return "native-linux-permission-diagnostic-overflow"
     context = _linux_permission_context(stderr)
     if context is None:
         return None
@@ -434,12 +479,18 @@ def _classify_linux_sandbox_permission(stderr: str) -> str | None:
         or _LINUX_GCC_LTO_LOAD_FAILURE_RE.search(lowered) is not None
     ):
         candidates.add("native-linux-permission-gcc-lto-plugin")
-    for prefix, reason in (
-        (f"{_BUILD_ROOT_TOKEN}/", "native-linux-permission-build-root"),
-        (f"{_PROJECT_ROOT_TOKEN}/", "native-linux-permission-project-root"),
-    ):
+    if len(candidates) == 1:
+        return candidates.pop()
+    if candidates:
+        return None
+    for prefix, reason in _LINUX_PERMISSION_VIRTUAL_ROOT_REASONS:
         if _context_mentions_exact_virtual_prefix(context, prefix):
             candidates.add(reason)
+    if _context_mentions_exact_virtual_root(
+        context,
+        _LINUX_REXTIO_VIRTUAL_ROOT,
+    ):
+        candidates.add("native-linux-permission-rextio-root")
     if len(candidates) == 1:
         return candidates.pop()
     return None

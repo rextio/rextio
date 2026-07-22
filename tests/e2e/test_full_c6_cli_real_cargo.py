@@ -296,11 +296,26 @@ def test_build_failure_report_diagnostic_allows_static_launcher_stage(
     assert "unavailable" not in line
 
 
-def test_build_failure_report_diagnostic_allows_static_gcc_lto_permission(
+@pytest.mark.parametrize(
+    "reason_code",
+    (
+        "native-linux-permission-dev-root",
+        "native-linux-permission-diagnostic-overflow",
+        "native-linux-permission-gcc-lto-plugin",
+        "native-linux-permission-lib64-root",
+        "native-linux-permission-proc-root",
+        "native-linux-permission-python-root",
+        "native-linux-permission-rextio-root",
+        "native-linux-permission-support-root",
+        "native-linux-permission-tmp-root",
+        "native-linux-permission-toolchain-root",
+    ),
+)
+def test_build_failure_report_diagnostic_allows_static_linux_permission(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    reason_code: str,
 ) -> None:
-    reason_code = "native-linux-permission-gcc-lto-plugin"
     path = _failure_report_path(tmp_path)
     path.write_text(
         json.dumps(_full_c6_failure_report(reason_code=reason_code)),
