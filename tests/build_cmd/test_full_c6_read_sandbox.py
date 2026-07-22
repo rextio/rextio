@@ -40,6 +40,26 @@ from rextio.build import full_c6_read_sandbox as sandbox_module
 
 
 _SHA = "a" * 64
+_LINUX_UNMAPPED_RAW_TARGETS = {
+    "libLLVM-18.so": "libLLVM.so.18.1",
+    "libLLVM.so.18.1": "../llvm-18/lib/libLLVM.so.1",
+    "libclang-cpp.so.16": "../llvm-16/lib/libclang-cpp.so.16",
+    "libclang-cpp.so.17": "../llvm-17/lib/libclang-cpp.so.17",
+    "libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.1",
+    "libclang-cpp.so.18.1": "../llvm-18/lib/libclang-cpp.so.18.1",
+    "libpython3.12.a": (
+        "../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
+    ),
+}
+_LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS = frozenset(
+    {
+        "/llvm-16/lib/libclang-cpp.so.16",
+        "/llvm-17/lib/libclang-cpp.so.17",
+        "/llvm-18/lib/libLLVM.so.1",
+        "/llvm-18/lib/libclang-cpp.so.18.1",
+        "/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a",
+    }
+)
 
 
 def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
@@ -271,6 +291,88 @@ def test_plan_is_canonical_and_path_private(tmp_path: Path) -> None:
         )
     )
     assert str(tmp_path) not in plan.digest
+
+
+def test_linux_unmapped_runtime_symlink_targets_remain_outside_all_mappings(
+    tmp_path: Path,
+) -> None:
+    rules = _rules(tmp_path)
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=rules,
+        platform_anchor_sha256=_SHA,
+    )
+    source_prefix = "/x86_64-linux-gnu"
+    fixed_sources = {
+        posixpath.join(source_prefix, relative_path): raw_target
+        for relative_path, raw_target in _LINUX_UNMAPPED_RAW_TARGETS.items()
+    }
+    final_targets: set[str] = set()
+    for source in fixed_sources:
+        current = source
+        visited: set[str] = set()
+        while current in fixed_sources:
+            assert current not in visited
+            visited.add(current)
+            current = posixpath.normpath(
+                posixpath.join(
+                    posixpath.dirname(current),
+                    fixed_sources[current],
+                )
+            )
+        final_targets.add(current)
+    assert frozenset(final_targets) == _LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS
+    assert (
+        sandbox_module._LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS
+        == _LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS
+    )
+    assert all(
+        not target.startswith(f"{source_prefix}/")
+        for target in final_targets
+    )
+    destinations = tuple(
+        destination
+        for rule in plan.rules
+        if (destination := sandbox_module._linux_rule_destination(rule))
+        is not None
+    )
+    assert all(
+        not (
+            target == destination
+            or target.startswith(destination.rstrip("/") + "/")
+        )
+        for target in final_targets
+        for destination in destinations
+    )
+
+
+@pytest.mark.parametrize(
+    "forbidden_destination",
+    ("/llvm-16", "/llvm-17", "/llvm-18", "/python3.12", "/"),
+)
+def test_linux_plan_rejects_mapping_an_unmapped_virtual_target_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forbidden_destination: str,
+) -> None:
+    original = sandbox_module._linux_rule_destination
+
+    def forged_destination(rule: SandboxPathRule) -> str | None:
+        if rule.logical_role == "support-runtime-libs":
+            return forbidden_destination
+        return original(rule)
+
+    monkeypatch.setattr(
+        sandbox_module,
+        "_linux_rule_destination",
+        forged_destination,
+    )
+    with pytest.raises(FullC6ReadSandboxError, match="unmapped virtual target"):
+        build_full_c6_sandbox_plan(
+            target_triple="x86_64-unknown-linux-gnu",
+            rules=_rules(tmp_path),
+            platform_anchor_sha256=_SHA,
+        )
 
 
 def test_plan_rejects_duplicate_or_wrong_engine(tmp_path: Path) -> None:

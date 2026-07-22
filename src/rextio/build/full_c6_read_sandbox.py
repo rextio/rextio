@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import plistlib
 import re
@@ -149,6 +149,15 @@ _LINUX_RUNTIME_LOADER_DESTINATION = "/lib64/ld-linux-x86-64.so.2"
 _LINUX_PYTHON_STDLIB_DESTINATION = "/rextio/toolchain/lib/python3.11"
 _LINUX_LAUNCHER_DESTINATION = FULL_C6_LINUX_LAUNCHER
 _LINUX_ROLE_LEAF_RE = re.compile(r"^[a-z][a-z0-9-]{0,95}$")
+_LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS = frozenset(
+    {
+        "/llvm-16/lib/libclang-cpp.so.16",
+        "/llvm-17/lib/libclang-cpp.so.17",
+        "/llvm-18/lib/libLLVM.so.1",
+        "/llvm-18/lib/libclang-cpp.so.18.1",
+        "/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a",
+    }
+)
 _MAX_BUBBLEWRAP_BYTES = 64 * 1024 * 1024
 
 SandboxAccess = Literal["read", "read-execute", "read-write"]
@@ -738,6 +747,40 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
     exposed = tuple(destination for destination in destinations if destination is not None)
     if len(set(exposed)) != len(exposed):
         raise ValueError("Full C6 Linux sandbox virtual destinations collide")
+    _validate_linux_unmapped_virtual_targets(exposed)
+
+
+def _validate_linux_unmapped_virtual_targets(
+    destinations: Sequence[str],
+) -> None:
+    """Keep denied host aliases outside every bubblewrap virtual mapping."""
+    runtime_root = PurePosixPath(FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT)
+    targets = tuple(
+        PurePosixPath(value)
+        for value in sorted(_LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS)
+    )
+    if (
+        len(targets) != 5
+        or any(
+            not target.is_absolute()
+            or target.as_posix() not in _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS
+            or target == runtime_root
+            or runtime_root in target.parents
+            for target in targets
+        )
+    ):
+        raise ValueError(
+            "Full C6 Linux denied unmapped virtual target policy is invalid"
+        )
+    mapped = tuple(PurePosixPath(value) for value in destinations)
+    if any(
+        target == destination or destination in target.parents
+        for target in targets
+        for destination in mapped
+    ):
+        raise ValueError(
+            "Full C6 Linux sandbox exposes a denied unmapped virtual target"
+        )
 
 
 def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
