@@ -2954,10 +2954,26 @@ def test_frozen_xcode_sdk_hardlink_policy_constants_are_exact() -> None:
     assert getattr(support_lock, "_XCODE_SDK_HARDLINK_ALIAS_COUNT", None) == 24_430
     assert (
         getattr(support_lock, "_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256", None)
-        == "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4"
+        == "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4b8"
     )
     assert support_lock._XCODE_HARDLINK_MAX_GROUPS == 4_626
     assert support_lock._XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP == 128
+
+
+def test_xcode_hardlink_policy_rejects_a_truncated_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        support_lock,
+        "_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256",
+        "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4",
+    )
+
+    with pytest.raises(
+        ToolchainSupportLockError,
+        match="Xcode hardlink policy Merkle SHA-256 must be a lowercase SHA-256 digest",
+    ):
+        support_lock._fixed_xcode_hardlink_policies()
 
 
 def test_exact_xcode_sdk_topology_is_selected_and_round_trips(
@@ -3127,6 +3143,42 @@ def test_xcode_sdk_topology_root_count_digest_version_and_bound_drift_fail_close
                 support_root=root,
                 app_boundary=app,
             )
+
+
+def test_xcode_sdk_policy_mismatch_diagnostic_is_exact_and_path_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, app, root, paths = _xcode_multiple_support_path_inputs(
+        tmp_path,
+        monkeypatch,
+        logical_role="xcode-sdk",
+    )
+    policy_digest = support_lock._XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(support_lock, "_XCODE_SDK_HARDLINK_GROUP_COUNT", 2)
+        with pytest.raises(ToolchainSupportLockError) as captured:
+            generate_toolchain_support_lock(
+                target_triple="aarch64-apple-darwin",
+                manifests=manifests,
+                roots=roots,
+            )
+
+    message = str(captured.value)
+    assert message == (
+        "toolchain support Xcode hardlink topology differs from policy "
+        "(logical_role=xcode-sdk, "
+        "observed_group_count=1, expected_group_count=2, "
+        "observed_support_member_count=2, expected_support_member_count=2, "
+        "observed_alias_count=3, expected_alias_count=3, "
+        f"observed_policy_merkle_sha256={policy_digest}, "
+        f"expected_policy_merkle_sha256={policy_digest})"
+    )
+    assert str(tmp_path) not in message
+    assert str(app) not in message
+    assert str(root) not in message
+    assert all(path.name not in message for path in paths)
 
 
 def test_xcode_sdk_final_reopen_rejects_a_different_root(

@@ -102,7 +102,7 @@ _XCODE_SDK_HARDLINK_GROUP_COUNT = 4_626
 _XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT = 8_605
 _XCODE_SDK_HARDLINK_ALIAS_COUNT = 24_430
 _XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256 = (
-    "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4"
+    "6e5221cfc1d3ff7ca60fdae6b6f6bcc9b126af9dc62e57b4d0242368a018e4b8"
 )
 _XCODE_HARDLINK_SUPPORT_MAX_ENTRIES = 250_000
 _XCODE_HARDLINK_APP_MAX_ENTRIES = 1_000_000
@@ -1205,6 +1205,38 @@ class _XcodeHardlinkPolicy:
     support_member_count: int
     alias_count: int
     policy_merkle_sha256: str
+
+    def __post_init__(self) -> None:
+        _require_sha256(
+            self.support_root_locator_path_sha256,
+            "Xcode hardlink support-root locator SHA-256",
+        )
+        if (
+            type(self.group_count) is not int
+            or isinstance(self.group_count, bool)
+            or not 1 <= self.group_count <= _XCODE_HARDLINK_MAX_GROUPS
+            or type(self.support_member_count) is not int
+            or isinstance(self.support_member_count, bool)
+            or self.support_member_count < self.group_count
+            or type(self.alias_count) is not int
+            or isinstance(self.alias_count, bool)
+            or self.alias_count < self.support_member_count
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode hardlink topology policy counts are "
+                "noncanonical"
+            )
+        if (
+            self.alias_count
+            > self.group_count * _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP
+        ):
+            raise ToolchainSupportLockError(
+                "toolchain support Xcode hardlink alias bound is noncanonical"
+            )
+        _require_sha256(
+            self.policy_merkle_sha256,
+            "Xcode hardlink policy Merkle SHA-256",
+        )
 
 
 def _fixed_xcode_hardlink_policies() -> tuple[_XcodeHardlinkPolicy, ...]:
@@ -5888,7 +5920,20 @@ def _scan_xcode_hardlink_topology(
         or result.policy_merkle_sha256 != policy.policy_merkle_sha256
     ):
         raise ToolchainSupportLockError(
-            "toolchain support Xcode hardlink topology differs from policy"
+            "toolchain support Xcode hardlink topology differs from policy "
+            f"(logical_role={_validate_role(policy.logical_role)}, "
+            f"observed_group_count={result.group_count}, "
+            f"expected_group_count={policy.group_count}, "
+            "observed_support_member_count="
+            f"{result.support_member_count}, "
+            "expected_support_member_count="
+            f"{policy.support_member_count}, "
+            f"observed_alias_count={result.alias_count}, "
+            f"expected_alias_count={policy.alias_count}, "
+            "observed_policy_merkle_sha256="
+            f"{result.policy_merkle_sha256}, "
+            "expected_policy_merkle_sha256="
+            f"{policy.policy_merkle_sha256})"
         )
     return result
 
