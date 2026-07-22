@@ -327,6 +327,7 @@ jobs:
             --no-compile \
             "${REXTIO_FULL_C6_WHEEL}" pytest
       - name: Run the installed-wheel three-pass Full C6 lifecycle
+        id: full_c6_lifecycle
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONNOUSERSITE: "1"
@@ -338,6 +339,17 @@ jobs:
             -c /dev/null \
             "${GITHUB_WORKSPACE}/tests/e2e/test_full_c6_cli_real_cargo.py" \
             -q -s
+      - name: Report bounded fixed-root Full C6 failure evidence
+        if: ${{ failure() && steps.full_c6_lifecycle.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set +e
+          python "${GITHUB_WORKSPACE}/tests/e2e/full_c6_ci_failure_diagnostic.py"
+          diagnostic_status=$?
+          if [[ "${diagnostic_status}" -ne 0 ]]; then
+            echo '{"event":"full-c6-failure-diagnostic-crashed"}'
+          fi
+          exit 0
 
   nuitka-e2e:
     name: E2E (real Nuitka toolchain)
