@@ -3,7 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import posixpath
 import stat
 import struct
@@ -189,13 +189,14 @@ def _environment() -> dict[str, str]:
         "LC_ALL": "C",
         "LD": "/rextio/toolchain/bin/ld",
         "LD_LIBRARY_PATH": (
-            "/rextio/toolchain/lib:/rextio/support/python-library-root:"
+            "/rextio/toolchain/lib:/rextio/python/lib:"
+            "/rextio/support/python-library-root:"
             "/x86_64-linux-gnu"
         ),
         "LIBRARY_PATH": (
             "/rextio/support/gcc-toolchain:/x86_64-linux-gnu"
         ),
-        "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
+        "PATH": "/rextio/toolchain/bin:/rextio/python/bin",
         "PYO3_CONFIG_FILE": FULL_C6_LINUX_PYO3_CONFIG,
         "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
         "PYTHONHASHSEED": "0",
@@ -522,7 +523,7 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         "/tmp",
     )
     dir_index = proc_index + 6
-    assert command[dir_index : dir_index + 16] == (
+    assert command[dir_index : dir_index + 22] == (
         "--dir",
         "/rextio",
         "--dir",
@@ -531,6 +532,12 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         "/rextio/toolchain/bin",
         "--dir",
         "/rextio/toolchain/lib",
+        "--dir",
+        "/rextio/python",
+        "--dir",
+        "/rextio/python/bin",
+        "--dir",
+        "/rextio/python/lib",
         "--dir",
         "/rextio/support",
         "--dir",
@@ -548,8 +555,14 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         str(tmp_path / "build"),
         "/rextio/build",
         "--ro-bind",
-        str(tmp_path / "rust-sysroot"),
-        "/rextio/toolchain",
+        str(tmp_path / "python3.11"),
+        "/rextio/python/bin/python3.11",
+        "--ro-bind",
+        str(tmp_path / "python-library-root" / "libpython3.11.so.1.0"),
+        FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
+        "--ro-bind",
+        str(tmp_path / "python-library-root" / "python3.11"),
+        "/rextio/python/lib/python3.11",
         "--ro-bind",
         str(tmp_path / "ar"),
         "/rextio/toolchain/bin/ar",
@@ -563,20 +576,14 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         str(tmp_path / "linker"),
         "/rextio/toolchain/bin/linker",
         "--ro-bind",
-        str(tmp_path / "python3.11"),
-        "/rextio/toolchain/bin/python3.11",
-        "--ro-bind",
         str(tmp_path / "ranlib"),
         "/rextio/toolchain/bin/ranlib",
         "--ro-bind",
         str(tmp_path / "rust-sysroot" / "bin" / "rustc"),
         "/rextio/toolchain/bin/rustc",
         "--ro-bind",
-        str(tmp_path / "python-library-root" / "libpython3.11.so.1.0"),
-        FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
-        "--ro-bind",
-        str(tmp_path / "python-library-root" / "python3.11"),
-        "/rextio/toolchain/lib/python3.11",
+        str(tmp_path / "rust-sysroot" / "lib"),
+        "/rextio/toolchain/lib",
         "--ro-bind",
         str(tmp_path / "gcc-toolchain"),
         "/rextio/support/gcc-toolchain",
@@ -596,7 +603,7 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         str(tmp_path / "ld-linux-x86-64.so.2"),
         "/lib64/ld-linux-x86-64.so.2",
     )
-    mappings_index = dir_index + 16
+    mappings_index = dir_index + 22
     assert command[mappings_index : mappings_index + len(expected_mappings)] == expected_mappings
     tail_index = mappings_index + len(expected_mappings)
     assert command[tail_index : tail_index + 12] == (
@@ -644,6 +651,67 @@ def test_linux_namespace_preserves_ubuntu_gcc_runtime_symlink_topology(
     assert resolved_target == f"{runtime_root}/libstdc++.so.6"
     assert bind_destinations.count(runtime_root) == 1
     assert "/rextio/support/runtime-libs" not in command
+
+
+def test_linux_namespace_has_no_mount_below_read_only_directory(
+    tmp_path: Path, seccomp_lease: LinuxSeccompLease
+) -> None:
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=_rules(tmp_path),
+        platform_anchor_sha256=_SHA,
+    )
+    launch = _prepare_linux(
+        plan,
+        bwrap=_bwrap(tmp_path),
+        seccomp_lease=seccomp_lease,
+    )
+
+    mappings = tuple(
+        (
+            index,
+            value,
+            Path(launch.command[index + 1]),
+            PurePosixPath(launch.command[index + 2]),
+        )
+        for index, value in enumerate(launch.command)
+        if value in {"--bind", "--ro-bind"}
+    )
+    read_only_directories = tuple(
+        (index, destination)
+        for index, operation, source, destination in mappings
+        if operation == "--ro-bind" and source.is_dir()
+    )
+
+    assert not tuple(
+        (ancestor, destination)
+        for ancestor_index, ancestor in read_only_directories
+        for mapping_index, _operation, _source, destination in mappings
+        if mapping_index > ancestor_index and ancestor in destination.parents
+    )
+
+
+def test_linux_namespace_rejects_aliased_rust_sysroot_lib(
+    tmp_path: Path, seccomp_lease: LinuxSeccompLease
+) -> None:
+    rules = _rules(tmp_path)
+    rust_lib = tmp_path / "rust-sysroot" / "lib"
+    rust_lib.rmdir()
+    aliased_lib = tmp_path / "aliased-rust-lib"
+    aliased_lib.mkdir()
+    rust_lib.symlink_to(aliased_lib, target_is_directory=True)
+    plan = build_full_c6_sandbox_plan(
+        target_triple="x86_64-unknown-linux-gnu",
+        rules=rules,
+        platform_anchor_sha256=_SHA,
+    )
+
+    with pytest.raises(FullC6ReadSandboxError, match="real directory"):
+        _prepare_linux(
+            plan,
+            bwrap=_bwrap(tmp_path),
+            seccomp_lease=seccomp_lease,
+        )
 
 
 def test_linux_payload_is_exactly_fixed_cargo_not_another_mapped_tool(

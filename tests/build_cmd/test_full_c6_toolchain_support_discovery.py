@@ -218,10 +218,10 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
     assert support.verify_full_c6_toolchain_support_lock(plan, lock) is True
     mappings = {item.logical_role: item for item in plan.namespace_mappings}
     assert mappings["toolchain-python311"].virtual_path.as_posix() == (
-        "/rextio/toolchain/bin/python3.11"
+        "/rextio/python/bin/python3.11"
     )
     assert mappings["toolchain-python311-stdlib"].virtual_path.as_posix() == (
-        "/rextio/toolchain/lib/python3.11"
+        "/rextio/python/lib/python3.11"
     )
     assert mappings["support-landlock-launcher"].virtual_path.as_posix() == (
         "/rextio/support/rextio/full_c6_linux_launcher.py"
@@ -238,13 +238,13 @@ def test_fixed_roles_generation_verification_and_namespace_round_trip(
     assert mappings[
         "toolchain-python311-runtime-library"
     ].virtual_path.as_posix() == (
-        "/rextio/toolchain/lib/libpython3.11.so.1.0"
+        "/rextio/python/lib/libpython3.11.so.1.0"
     )
     assert mappings["runtime-loader-mirror"].virtual_path.as_posix() == (
         "/lib64/ld-linux-x86-64.so.2"
     )
     assert mappings["toolchain-rust-sysroot"].virtual_path.as_posix() == (
-        "/rextio/toolchain"
+        "/rextio/toolchain/lib"
     )
     for role in ("ar", "cargo", "ld", "linker", "ranlib", "rustc"):
         assert mappings[f"toolchain-{role}"].virtual_path.as_posix() == (

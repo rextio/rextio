@@ -56,6 +56,7 @@ from rextio.build.full_c6_pyo3_config import (
 )
 from rextio.build.full_c6_linux_launcher import (
     FULL_C6_LINUX_CARGO,
+    FULL_C6_LINUX_PYTHON_ROOT,
     FULL_C6_LINUX_PYO3_CONFIG,
     FullC6LinuxLauncherError,
     canonical_linux_payload_environment,
@@ -4581,7 +4582,9 @@ def _linux_native_payload_environment(
             "linker=/rextio/toolchain/bin/linker",
         )
     )
-    result["PATH"] = "/rextio/toolchain/bin:/rextio/toolchain"
+    result["PATH"] = (
+        f"/rextio/toolchain/bin:{FULL_C6_LINUX_PYTHON_ROOT}/bin"
+    )
     gcc_support = _native_support_virtual_path(
         support_plan,
         "support-gcc-toolchain",
@@ -4596,7 +4599,8 @@ def _linux_native_payload_environment(
         "support-python-library-root",
     )
     result["LD_LIBRARY_PATH"] = (
-        f"/rextio/toolchain/lib:{python_library_support}:{runtime_support}"
+        f"/rextio/toolchain/lib:{FULL_C6_LINUX_PYTHON_ROOT}/lib:"
+        f"{python_library_support}:{runtime_support}"
     )
     result["LIBRARY_PATH"] = f"{gcc_support}:{runtime_support}"
     result["TMPDIR"] = "/tmp"

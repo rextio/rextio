@@ -1,7 +1,7 @@
 """Post-namespace Landlock launcher for strict Full C6 Linux builds.
 
 This file is executed directly by the support-locked CPython 3.11 mapped at
-``/rextio/toolchain/bin/python3.11``.  It intentionally imports only the
+``/rextio/python/bin/python3.11``.  It intentionally imports only the
 standard library, validates the exact isolated interpreter/environment/argv
 contract, replaces stdin with EOF-only ``/dev/null``, closes every extra
 descriptor, installs Landlock in the already-created bubblewrap namespace,
@@ -26,12 +26,13 @@ import sys
 FULL_C6_LINUX_LAUNCHER_DOMAIN = "rextio.full-c6-linux-launcher.v1"
 FULL_C6_LINUX_TOOLCHAIN_ROOT = "/rextio/toolchain"
 FULL_C6_LINUX_CARGO = "/rextio/toolchain/bin/cargo"
-FULL_C6_LINUX_PYTHON = "/rextio/toolchain/bin/python3.11"
-FULL_C6_LINUX_PYTHON_PREFIX = FULL_C6_LINUX_TOOLCHAIN_ROOT
+FULL_C6_LINUX_PYTHON_ROOT = "/rextio/python"
+FULL_C6_LINUX_PYTHON = "/rextio/python/bin/python3.11"
+FULL_C6_LINUX_PYTHON_PREFIX = FULL_C6_LINUX_PYTHON_ROOT
 FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY = (
-    "/rextio/toolchain/lib/libpython3.11.so.1.0"
+    "/rextio/python/lib/libpython3.11.so.1.0"
 )
-FULL_C6_LINUX_PYTHON_STDLIB = "/rextio/toolchain/lib/python3.11"
+FULL_C6_LINUX_PYTHON_STDLIB = "/rextio/python/lib/python3.11"
 FULL_C6_LINUX_PYO3_CONFIG = "/rextio/support/pyo3-config"
 FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT = "/x86_64-linux-gnu"
 FULL_C6_LINUX_LAUNCHER = (
@@ -120,13 +121,14 @@ _FIXED_ENVIRONMENT = {
     "LC_ALL": "C",
     "LD": "/rextio/toolchain/bin/ld",
     "LD_LIBRARY_PATH": (
-        "/rextio/toolchain/lib:/rextio/support/python-library-root:"
+        "/rextio/toolchain/lib:/rextio/python/lib:"
+        "/rextio/support/python-library-root:"
         + FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT
     ),
     "LIBRARY_PATH": (
         f"/rextio/support/gcc-toolchain:{FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT}"
     ),
-    "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
+    "PATH": "/rextio/toolchain/bin:/rextio/python/bin",
     "PYO3_CONFIG_FILE": _PYO3_CONFIG_PATH,
     "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
     "PYTHONHASHSEED": "0",
@@ -148,6 +150,7 @@ _LANDLOCK_RULES = (
     ("/proc", "read"),
     ("/rextio/build", "read-write"),
     ("/rextio/project", "read"),
+    (FULL_C6_LINUX_PYTHON_ROOT, "read-execute"),
     ("/rextio/support", "read-execute"),
     ("/rextio/toolchain", "read-execute"),
     ("/tmp", "read-write"),
@@ -280,7 +283,7 @@ def validate_isolated_python_runtime() -> None:
         raise FullC6LinuxLauncherError(
             "Full C6 Linux launcher CPython contract differs"
         )
-    zip_landmark = "/rextio/toolchain/lib/python311.zip"
+    zip_landmark = "/rextio/python/lib/python311.zip"
     if not sys.path:
         raise FullC6LinuxLauncherError("Full C6 Linux launcher sys.path is empty")
     for entry in sys.path:
@@ -590,6 +593,7 @@ __all__ = [
     "FULL_C6_LINUX_LAUNCHER_DOMAIN",
     "FULL_C6_LINUX_PYTHON",
     "FULL_C6_LINUX_PYTHON_PREFIX",
+    "FULL_C6_LINUX_PYTHON_ROOT",
     "FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY",
     "FULL_C6_LINUX_PYTHON_STDLIB",
     "FULL_C6_LINUX_PYO3_CONFIG",

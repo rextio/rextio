@@ -39,7 +39,9 @@ from rextio.build.full_c6_linux_launcher import (
     FULL_C6_LINUX_CARGO,
     FULL_C6_LINUX_LAUNCHER,
     FULL_C6_LINUX_PYTHON,
+    FULL_C6_LINUX_PYTHON_ROOT,
     FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY,
+    FULL_C6_LINUX_PYTHON_STDLIB,
     FULL_C6_LINUX_PYO3_CONFIG,
     FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT,
     FULL_C6_LINUX_TOOLCHAIN_ROOT,
@@ -144,9 +146,10 @@ _LINUX_BWRAP_FLAGS = (
 _LINUX_PROJECT_DESTINATION = "/rextio/project"
 _LINUX_BUILD_DESTINATION = "/rextio/build"
 _LINUX_TOOLCHAIN_DESTINATION = FULL_C6_LINUX_TOOLCHAIN_ROOT
+_LINUX_RUST_SYSROOT_LIB_DESTINATION = "/rextio/toolchain/lib"
 _LINUX_SUPPORT_DESTINATION = "/rextio/support"
 _LINUX_RUNTIME_LOADER_DESTINATION = "/lib64/ld-linux-x86-64.so.2"
-_LINUX_PYTHON_STDLIB_DESTINATION = "/rextio/toolchain/lib/python3.11"
+_LINUX_PYTHON_STDLIB_DESTINATION = FULL_C6_LINUX_PYTHON_STDLIB
 _LINUX_LAUNCHER_DESTINATION = FULL_C6_LINUX_LAUNCHER
 _LINUX_ROLE_LEAF_RE = re.compile(r"^[a-z][a-z0-9-]{0,95}$")
 _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS = frozenset(
@@ -829,6 +832,36 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             raise FullC6ReadSandboxError(
                 "Full C6 Linux runtime loader must be a regular file"
             )
+        if rule.logical_role == "toolchain-rust-sysroot":
+            _linux_rust_sysroot_lib_source(rule)
+
+
+def _linux_rust_sysroot_lib_source(rule: SandboxPathRule) -> Path:
+    """Return the exact real ``lib`` child exposed from the locked sysroot."""
+    if rule.logical_role != "toolchain-rust-sysroot":
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux Rust sysroot source role is invalid"
+        )
+    source = rule.path / "lib"
+    if (
+        source.parent != rule.path
+        or source.name != "lib"
+        or os.fspath(source) != os.path.abspath(source)
+    ):
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux Rust sysroot lib path is not canonical"
+        )
+    try:
+        observed = os.lstat(source)
+    except OSError as exc:
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux Rust sysroot lib path is unavailable"
+        ) from exc
+    if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+        raise FullC6ReadSandboxError(
+            "Full C6 Linux Rust sysroot lib path must be a real directory"
+        )
+    return source
 
 
 def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
@@ -845,7 +878,7 @@ def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
     if rule.logical_role == "toolchain-python311-runtime-library":
         return FULL_C6_LINUX_PYTHON_RUNTIME_LIBRARY
     if rule.logical_role == "toolchain-rust-sysroot":
-        return _LINUX_TOOLCHAIN_DESTINATION
+        return _LINUX_RUST_SYSROOT_LIB_DESTINATION
     if rule.logical_role == "toolchain-cargo":
         return FULL_C6_LINUX_CARGO
     if rule.logical_role == "toolchain-ar":
@@ -917,6 +950,9 @@ def _linux_bubblewrap_command(
     arguments.extend(("--dir", _LINUX_TOOLCHAIN_DESTINATION))
     arguments.extend(("--dir", "/rextio/toolchain/bin"))
     arguments.extend(("--dir", "/rextio/toolchain/lib"))
+    arguments.extend(("--dir", FULL_C6_LINUX_PYTHON_ROOT))
+    arguments.extend(("--dir", "/rextio/python/bin"))
+    arguments.extend(("--dir", "/rextio/python/lib"))
     arguments.extend(("--dir", _LINUX_SUPPORT_DESTINATION))
     arguments.extend(("--dir", "/rextio/support/rextio"))
     arguments.extend(("--dir", FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT))
@@ -929,7 +965,12 @@ def _linux_bubblewrap_command(
     virtual_rows: list[str] = []
     for destination, rule in mappings:
         operation = "--bind" if rule.logical_role == "build-root" else "--ro-bind"
-        arguments.extend((operation, os.fspath(rule.path), destination))
+        source = (
+            _linux_rust_sysroot_lib_source(rule)
+            if rule.logical_role == "toolchain-rust-sysroot"
+            else rule.path
+        )
+        arguments.extend((operation, os.fspath(source), destination))
         virtual_rows.append(
             f"{rule.logical_role}\0{rule.access}\0{operation}\0{destination}"
         )

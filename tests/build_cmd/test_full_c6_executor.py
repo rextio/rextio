@@ -1314,9 +1314,13 @@ def test_linux_payload_environment_projects_receipted_runtime_topology(
 
     assert projected["LD_LIBRARY_PATH"].split(":") == [
         "/rextio/toolchain/lib",
+        "/rextio/python/lib",
         "/rextio/support/python-library-root",
         "/x86_64-linux-gnu",
     ]
+    assert projected["PATH"] == (
+        "/rextio/toolchain/bin:/rextio/python/bin"
+    )
     assert projected["LIBRARY_PATH"].split(":") == [
         "/rextio/support/gcc-toolchain",
         "/x86_64-linux-gnu",

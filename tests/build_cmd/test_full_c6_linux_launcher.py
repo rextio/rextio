@@ -39,13 +39,14 @@ def _environment() -> dict[str, str]:
         "LC_ALL": "C",
         "LD": "/rextio/toolchain/bin/ld",
         "LD_LIBRARY_PATH": (
-            "/rextio/toolchain/lib:/rextio/support/python-library-root:"
+            "/rextio/toolchain/lib:/rextio/python/lib:"
+            "/rextio/support/python-library-root:"
             "/x86_64-linux-gnu"
         ),
         "LIBRARY_PATH": (
             "/rextio/support/gcc-toolchain:/x86_64-linux-gnu"
         ),
-        "PATH": "/rextio/toolchain/bin:/rextio/toolchain",
+        "PATH": "/rextio/toolchain/bin:/rextio/python/bin",
         "PYO3_CONFIG_FILE": "/rextio/support/pyo3-config",
         "PYO3_ENVIRONMENT_SIGNATURE": (
             launcher.expected_linux_pyo3_environment_signature()
@@ -96,6 +97,7 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
     ]
     assert environment["LD_LIBRARY_PATH"].split(":") == [
         "/rextio/toolchain/lib",
+        "/rextio/python/lib",
         "/rextio/support/python-library-root",
         "/x86_64-linux-gnu",
     ]
@@ -181,7 +183,7 @@ def test_isolated_python_runtime_accepts_only_canonical_landmark_layout(
         base_exec_prefix=launcher.FULL_C6_LINUX_PYTHON_PREFIX,
         flags=flags,
         path=[
-            "/rextio/toolchain/lib/python311.zip",
+            "/rextio/python/lib/python311.zip",
             launcher.FULL_C6_LINUX_PYTHON_STDLIB,
             f"{launcher.FULL_C6_LINUX_PYTHON_STDLIB}/lib-dynload",
         ],

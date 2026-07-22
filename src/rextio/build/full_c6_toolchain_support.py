@@ -30,6 +30,9 @@ from typing import SupportsIndex
 import unicodedata
 
 from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_PYTHON,
+    FULL_C6_LINUX_PYTHON_ROOT,
+    FULL_C6_LINUX_PYTHON_STDLIB,
     FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT,
 )
 from rextio.build.full_c6_read_sandbox import (
@@ -2300,10 +2303,10 @@ def _support_virtual_path(
             FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT
         ),
         "toolchain-python311": PurePosixPath(
-            "/rextio/toolchain/bin/python3.11"
+            FULL_C6_LINUX_PYTHON
         ),
         "toolchain-python311-stdlib": PurePosixPath(
-            "/rextio/toolchain/lib/python3.11"
+            FULL_C6_LINUX_PYTHON_STDLIB
         ),
         "toolchain-ar": PurePosixPath("/rextio/toolchain/bin/ar"),
         "toolchain-cargo": PurePosixPath("/rextio/toolchain/bin/cargo"),
@@ -2313,7 +2316,7 @@ def _support_virtual_path(
             "/rextio/toolchain/bin/ranlib"
         ),
         "toolchain-rustc": PurePosixPath("/rextio/toolchain/bin/rustc"),
-        "toolchain-rust-sysroot": PurePosixPath("/rextio/toolchain"),
+        "toolchain-rust-sysroot": PurePosixPath("/rextio/toolchain/lib"),
     }
     if logical_role == "toolchain-python311-runtime-library":
         if (
@@ -2328,7 +2331,7 @@ def _support_virtual_path(
             raise ValueError(
                 "Full C6 Python runtime library namespace path is invalid"
             )
-        return FULL_C6_TOOLCHAIN_VIRTUAL_ROOT / "lib" / host_path.name
+        return PurePosixPath(FULL_C6_LINUX_PYTHON_ROOT) / "lib" / host_path.name
     if logical_role in special:
         return special[logical_role]
     if not logical_role.startswith("support-"):
