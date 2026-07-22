@@ -78,6 +78,9 @@ _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256 = (
 )
 _XCODE_VERSION_MANIFEST_ROLE = "xcode-version-plist"
 _XCODE_VERSION_MANIFEST = _XCODE_APP_BOUNDARY / "Contents/version.plist"
+_XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256 = (
+    "4bc0a3ad0c28086639932a1adb600483885d7a67afbd61310b638c7d647ac0f5"
+)
 _XCODE_VERSION_MANIFEST_RAW_SHA256 = (
     "b44fcf33ce9e1ac6759f5e71f682bcf734743e6ecd8ad6263116338236b25926"
 )
@@ -1645,6 +1648,10 @@ def _capture_stable_tree(
         manifest_locator, manifest_receipt = manifest_binding
         if (
             manifest_locator._absolute_path != _XCODE_VERSION_MANIFEST
+            or _locator_path_digest(manifest_locator._absolute_path)
+            != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
+            or manifest_receipt.locator_path_sha256
+            != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
             or manifest_receipt.raw_sha256
             != _XCODE_VERSION_MANIFEST_RAW_SHA256
         ):
@@ -2208,6 +2215,8 @@ def _validate_lock_topology_dispositions(
                 or hardlink_receipt.version_manifest_raw_sha256
                 != _XCODE_VERSION_MANIFEST_RAW_SHA256
                 or version_manifest is None
+                or version_manifest.locator_path_sha256
+                != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
                 or version_manifest.raw_sha256
                 != _XCODE_VERSION_MANIFEST_RAW_SHA256
                 or hardlink_receipt.version_manifest_merkle_sha256

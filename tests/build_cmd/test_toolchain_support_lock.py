@@ -2018,6 +2018,11 @@ def _xcode_topology_inputs(
     )
     monkeypatch.setattr(
         support_lock,
+        "_XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256",
+        support_lock._locator_path_digest(version_manifest),
+    )
+    monkeypatch.setattr(
+        support_lock,
         "_XCODE_VERSION_MANIFEST_RAW_SHA256",
         hashlib.sha256(version_manifest.read_bytes()).hexdigest(),
     )
@@ -2125,6 +2130,53 @@ def test_exact_xcode_topology_is_root_scoped_bound_and_not_double_counted(
             )
 
 
+def test_parser_rejects_xcode_version_manifest_locator_drift_with_fresh_merkle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifests, roots, _app, _root, _paths = _xcode_topology_inputs(
+        tmp_path,
+        monkeypatch,
+    )
+    expected_manifest = manifests[0]._absolute_path
+    foreign_manifest = expected_manifest.with_name("foreign-version.plist")
+    foreign_manifest.write_bytes(expected_manifest.read_bytes())
+    foreign_locator = create_toolchain_support_locator(
+        logical_role="xcode-version-plist",
+        path=foreign_manifest,
+        kind="file",
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            support_lock,
+            "_XCODE_VERSION_MANIFEST",
+            foreign_manifest,
+        )
+        scoped.setattr(
+            support_lock,
+            "_XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256",
+            support_lock._locator_path_digest(foreign_manifest),
+        )
+        foreign_lock = generate_toolchain_support_lock(
+            target_triple="aarch64-apple-darwin",
+            manifests=[foreign_locator],
+            roots=roots,
+        )
+
+    assert (
+        foreign_lock.manifests[0].locator_path_sha256
+        != support_lock._XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
+    )
+    with pytest.raises(
+        ToolchainSupportLockError,
+        match="topology policy changed",
+    ):
+        parse_toolchain_support_lock(
+            foreign_lock.canonical_bytes,
+            expected_raw_sha256=foreign_lock.raw_sha256,
+        )
+
+
 def test_xcode_topology_rejects_policy_near_misses_and_outside_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2203,6 +2255,18 @@ def test_xcode_topology_rejects_target_role_root_version_and_policy_near_misses(
             manifests=[wrong_manifest],
             roots=roots,
         )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            support_lock,
+            "_XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256",
+            "0" * 64,
+        )
+        with pytest.raises(ToolchainSupportLockError, match="manifest differs"):
+            generate_toolchain_support_lock(
+                target_triple="aarch64-apple-darwin",
+                manifests=manifests,
+                roots=roots,
+            )
     with monkeypatch.context() as scoped:
         scoped.setattr(
             support_lock,
