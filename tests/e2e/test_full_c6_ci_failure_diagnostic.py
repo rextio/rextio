@@ -252,6 +252,77 @@ def test_macos_sandbox_resource_family_uses_only_closed_subfamilies(
 @pytest.mark.parametrize(
     ("resource", "expected"),
     (
+        ("/Library/Preferences", "library-preferences-root"),
+        (
+            "/Library/Preferences/.GlobalPreferences",
+            "library-preferences-global",
+        ),
+        (
+            "/Library/Preferences/.GlobalPreferences_m",
+            "library-preferences-global-m",
+        ),
+        ("/private/etc/ssl", "private-etc-ssl-root"),
+        ("/etc/ssl", "private-etc-ssl-root"),
+        ("/private/etc/ssl/openssl.cnf", "private-etc-ssl-openssl-cnf"),
+        ("/etc/ssl/openssl.cnf", "private-etc-ssl-openssl-cnf"),
+        ("/private/etc/ssl/certs", "private-etc-ssl-certs-directory"),
+        ("/etc/ssl/certs", "private-etc-ssl-certs-directory"),
+        (
+            "/private/etc/ssl/certs/ca-certificates.crt",
+            "private-etc-ssl-ca-certificates-crt",
+        ),
+        (
+            "/etc/ssl/certs/ca-certificates.crt",
+            "private-etc-ssl-ca-certificates-crt",
+        ),
+        ("/private/etc/ssl/ca-bundle.pem", "private-etc-ssl-ca-bundle-pem"),
+        ("/etc/ssl/ca-bundle.pem", "private-etc-ssl-ca-bundle-pem"),
+        ("/private/var/db", "private-var-db-root"),
+        ("/var/db", "private-var-db-root"),
+        (
+            "/private/var/db/ConfigurationProfiles/Settings/private",
+            "private-var-db-configuration-profiles",
+        ),
+        (
+            "/var/db/ConfigurationProfiles/Settings/private",
+            "private-var-db-configuration-profiles",
+        ),
+        (
+            "/private/var/db/dslocal/nodes/private",
+            "private-var-db-dslocal",
+        ),
+        ("/var/db/dslocal/nodes/private", "private-var-db-dslocal"),
+        (
+            "/private/var/db/com.apple.xpc.launchd/private",
+            "private-var-db-xpc-launchd",
+        ),
+        (
+            "/var/db/com.apple.xpc.launchd/private",
+            "private-var-db-xpc-launchd",
+        ),
+        (
+            "/private/var/db/.AppleSetupDone",
+            "private-var-db-apple-setup-done",
+        ),
+        ("/var/db/.AppleSetupDone", "private-var-db-apple-setup-done"),
+    ),
+)
+def test_macos_sandbox_fixed_startup_candidates_use_closed_families(
+    resource: str,
+    expected: str,
+) -> None:
+    assert (
+        DIAGNOSTIC._macos_sandbox_resource_family(
+            operation="file-test-existence",
+            resource=resource,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    (
         ("hw.ncpu", "sysctl-hw-ncpu"),
         ("hw.private", "sysctl-hw"),
         ("kern.private", "sysctl-kern-other"),
@@ -265,6 +336,30 @@ def test_macos_sandbox_resource_family_uses_only_closed_subfamilies(
     ),
 )
 def test_macos_sandbox_sysctl_family_uses_only_closed_subfamilies(
+    resource: str,
+    expected: str,
+) -> None:
+    assert (
+        DIAGNOSTIC._macos_sandbox_resource_family(
+            operation="sysctl-read",
+            resource=resource,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("resource", "expected"),
+    (
+        ("kern.argmax", "sysctl-kern-argmax"),
+        ("kern.osproductversion", "sysctl-kern-osproductversion"),
+        ("kern.bootargs", "sysctl-kern-bootargs"),
+        ("kern.boottime", "sysctl-kern-boottime"),
+        ("kern.iossupportversion", "sysctl-kern-iossupportversion"),
+        ("kern.osvariant_status", "sysctl-kern-osvariant-status"),
+    ),
+)
+def test_macos_sandbox_fixed_kern_sysctls_use_exact_closed_families(
     resource: str,
     expected: str,
 ) -> None:
@@ -307,6 +402,54 @@ def test_macos_sandbox_exact_candidate_rows_never_emit_raw_resources() -> None:
     encoded = json.dumps(summary, sort_keys=True)
     assert all(resource not in encoded for resource in resources)
     assert "kern.osrelease" not in encoded
+    assert "private-owner" not in encoded
+    assert "/must/not/escape" not in encoded
+
+
+def test_macos_sandbox_new_candidate_rows_emit_only_static_labels() -> None:
+    resources = (
+        "/Library/Preferences/.GlobalPreferences",
+        "/private/etc/ssl/openssl.cnf",
+        "/private/var/db/ConfigurationProfiles/Settings/private-owner",
+    )
+    messages = [
+        f"Sandbox: cargo({index}) deny({index}) file-test-existence {resource}"
+        for index, resource in enumerate(resources, start=1)
+    ]
+    sysctl_resource = "kern.osproductversion"
+    messages.append(
+        f"Sandbox: cargo(4) deny(4) sysctl-read {sysctl_resource}"
+    )
+    document = [
+        {
+            "subsystem": "com.apple.sandbox.reporting",
+            "eventMessage": message,
+            "privateIgnoredField": "/must/not/escape",
+        }
+        for message in messages
+    ]
+
+    summary = DIAGNOSTIC._parse_macos_sandbox_log_json(
+        json.dumps(document).encode("utf-8")
+    )
+
+    assert summary["accepted_count"] == 4
+    assert {
+        (row["operation"], row["resource"], row["count"])
+        for row in summary["denial_rows"]
+    } == {
+        ("file-test-existence", "library-preferences-global", 1),
+        ("file-test-existence", "private-etc-ssl-openssl-cnf", 1),
+        (
+            "file-test-existence",
+            "private-var-db-configuration-profiles",
+            1,
+        ),
+        ("sysctl-read", "sysctl-kern-osproductversion", 1),
+    }
+    encoded = json.dumps(summary, sort_keys=True)
+    assert all(resource not in encoded for resource in resources)
+    assert sysctl_resource not in encoded
     assert "private-owner" not in encoded
     assert "/must/not/escape" not in encoded
 
