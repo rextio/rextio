@@ -54,26 +54,34 @@ MACOS_SANDBOX_LOG_TIMEOUT_SECONDS = 20.0
 MACOS_SANDBOX_LOG_REAP_TIMEOUT_SECONDS = 1.0
 
 MACOS_SANDBOX_OPERATION_FAMILIES = (
+    "file-test-existence",
     "file-read",
     "file-write",
     "file-map-exec",
     "process-exec",
     "sysctl-read",
-    "mach-lookup",
+    "mach",
     "ipc",
     "network",
     "other",
 )
-MACOS_SANDBOX_ROOT_FAMILIES = (
-    "/dev",
-    "private-var",
+MACOS_SANDBOX_RESOURCE_FAMILIES = (
+    "dev-null",
+    "dev-random",
+    "dev-urandom",
+    "dev-other",
+    "library",
     "private-etc",
-    "Library",
-    "Preboot",
+    "private-var",
+    "system",
+    "usr",
+    "users-runner",
     "host-temp",
-    "Xcode",
+    "xcode",
+    "sysctl-hw-ncpu",
+    "sysctl-other",
     "other-absolute",
-    "non-path",
+    "non-path-other",
 )
 _MACOS_SANDBOX_PROCESSES = (
     "cargo",
@@ -193,11 +201,16 @@ def _empty_macos_sandbox_log_summary(*, status: str) -> dict[str, object]:
         "operation_counts": {
             name: 0 for name in MACOS_SANDBOX_OPERATION_FAMILIES
         },
-        "root_counts": {name: 0 for name in MACOS_SANDBOX_ROOT_FAMILIES},
+        "resource_counts": {
+            name: 0 for name in MACOS_SANDBOX_RESOURCE_FAMILIES
+        },
+        "denial_rows": [],
     }
 
 
 def _macos_sandbox_operation_family(operation: str) -> str:
+    if operation == "file-test-existence":
+        return "file-test-existence"
     if operation.startswith("file-read"):
         return "file-read"
     if operation.startswith("file-write"):
@@ -208,8 +221,8 @@ def _macos_sandbox_operation_family(operation: str) -> str:
         return "process-exec"
     if operation == "sysctl-read":
         return "sysctl-read"
-    if operation == "mach-lookup":
-        return "mach-lookup"
+    if operation.startswith("mach-"):
+        return "mach"
     if operation.startswith("ipc-"):
         return "ipc"
     if operation == "network" or operation.startswith("network-"):
@@ -221,7 +234,14 @@ def _resource_is_within(resource: str, root: str) -> bool:
     return resource == root or resource.startswith(root + "/")
 
 
-def _macos_sandbox_root_family(resource: str) -> str:
+def _macos_sandbox_resource_family(*, operation: str, resource: str) -> str:
+    for exact, family in (
+        ("/dev/null", "dev-null"),
+        ("/dev/random", "dev-random"),
+        ("/dev/urandom", "dev-urandom"),
+    ):
+        if resource == exact:
+            return family
     for root in (
         "/private/var/folders",
         "/var/folders",
@@ -232,18 +252,24 @@ def _macos_sandbox_root_family(resource: str) -> str:
         if _resource_is_within(resource, root):
             return "host-temp"
     for root, family in (
-        ("/dev", "/dev"),
-        ("/private/var", "private-var"),
-        ("/var", "private-var"),
+        ("/dev", "dev-other"),
         ("/private/etc", "private-etc"),
         ("/etc", "private-etc"),
-        ("/Library", "Library"),
-        ("/System/Volumes/Preboot", "Preboot"),
-        ("/Applications/Xcode.app", "Xcode"),
+        ("/private/var", "private-var"),
+        ("/var", "private-var"),
+        ("/Library", "library"),
+        ("/System", "system"),
+        ("/usr", "usr"),
+        ("/Users/runner", "users-runner"),
+        ("/Applications/Xcode.app", "xcode"),
     ):
         if _resource_is_within(resource, root):
             return family
-    return "other-absolute" if resource.startswith("/") else "non-path"
+    if resource.startswith("/"):
+        return "other-absolute"
+    if operation == "sysctl-read":
+        return "sysctl-hw-ncpu" if resource == "hw.ncpu" else "sysctl-other"
+    return "non-path-other"
 
 
 def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
@@ -257,9 +283,10 @@ def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
         raise RuntimeError("macos-sandbox-log-document")
     summary = _empty_macos_sandbox_log_summary(status="ok")
     operation_counts = summary["operation_counts"]
-    root_counts = summary["root_counts"]
+    resource_counts = summary["resource_counts"]
     assert isinstance(operation_counts, dict)
-    assert isinstance(root_counts, dict)
+    assert isinstance(resource_counts, dict)
+    pair_counts: dict[tuple[str, str], int] = {}
     accepted_count = 0
     for record in document:
         if type(record) is not dict:
@@ -277,11 +304,22 @@ def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
         if matched is None:
             continue
         operation = _macos_sandbox_operation_family(matched.group("operation"))
-        root = _macos_sandbox_root_family(matched.group("resource"))
+        resource = _macos_sandbox_resource_family(
+            operation=operation,
+            resource=matched.group("resource"),
+        )
         operation_counts[operation] += 1
-        root_counts[root] += 1
+        resource_counts[resource] += 1
+        pair = (operation, resource)
+        pair_counts[pair] = pair_counts.get(pair, 0) + 1
         accepted_count += 1
     summary["accepted_count"] = accepted_count
+    summary["denial_rows"] = [
+        {"operation": operation, "resource": resource, "count": count}
+        for operation in MACOS_SANDBOX_OPERATION_FAMILIES
+        for resource in MACOS_SANDBOX_RESOURCE_FAMILIES
+        if (count := pair_counts.get((operation, resource), 0))
+    ]
     return summary
 
 
