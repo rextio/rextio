@@ -2045,6 +2045,52 @@ def test_unrelated_file_outside_a_support_root_does_not_change_it(tmp_path: Path
     )
 
 
+def test_directory_chain_tolerates_unrelated_sibling_churn(tmp_path: Path) -> None:
+    locator_parent = tmp_path / "shared" / "support"
+    locator_parent.mkdir(parents=True)
+    chain = support_lock._open_directory_chain(locator_parent)
+    try:
+        # Mutate both a shared ancestor and the locator's parent.  Creating
+        # directories also changes link counts on filesystems that maintain
+        # traditional directory link metadata.
+        (tmp_path / "shared" / "unrelated-file").write_bytes(b"unrelated")
+        (locator_parent / "unrelated-directory").mkdir()
+
+        support_lock._verify_directory_chain(chain)
+    finally:
+        support_lock._close_directory_chain(chain)
+
+
+def test_directory_chain_rejects_name_to_inode_substitution(tmp_path: Path) -> None:
+    locator_parent = tmp_path / "shared" / "support"
+    locator_parent.mkdir(parents=True)
+    chain = support_lock._open_directory_chain(locator_parent)
+    displaced = tmp_path / "shared" / "displaced-support"
+    try:
+        locator_parent.rename(displaced)
+        locator_parent.mkdir()
+
+        with pytest.raises(ToolchainSupportLockError, match="link changed"):
+            support_lock._verify_directory_chain(chain)
+    finally:
+        support_lock._close_directory_chain(chain)
+
+
+def test_directory_chain_rejects_permission_changes(tmp_path: Path) -> None:
+    locator_parent = tmp_path / "shared" / "support"
+    locator_parent.mkdir(parents=True, mode=0o700)
+    locator_parent.chmod(0o700)
+    chain = support_lock._open_directory_chain(locator_parent)
+    try:
+        locator_parent.chmod(0o755)
+
+        with pytest.raises(ToolchainSupportLockError, match="changed during capture"):
+            support_lock._verify_directory_chain(chain)
+    finally:
+        locator_parent.chmod(0o700)
+        support_lock._close_directory_chain(chain)
+
+
 def test_xattr_names_values_and_aggregate_bytes_are_bound(tmp_path: Path) -> None:
     manifest, root, manifest_locator, root_locator = _inputs(tmp_path)
     _set_test_xattr(manifest, b"com.rextio.manifest", b"manifest-xattr")

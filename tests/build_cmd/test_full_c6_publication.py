@@ -231,6 +231,165 @@ def test_successful_publication_is_one_closed_atomic_bundle(tmp_path: Path) -> N
     assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
 
 
+def test_exact_existing_publication_is_idempotently_reconciled(tmp_path: Path) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    publication_root, first = _publish(tmp_path, files, request, result)
+
+    second = _publish_full_c6_bundle(
+        publication_root=publication_root,
+        bundle_name="candidate",
+        bundle_files=files,
+        request=request,
+        gate_result=result,
+        public_key_path=tmp_path / "gate" / "owner.pub",
+    )
+
+    assert second == first
+    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+
+
+def test_existing_target_reconciliation_rejects_source_drift_after_target_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    publication_root, _receipt = _publish(tmp_path, files, request, result)
+    import rextio.build.full_c6_publication as module
+
+    original = module._reconcile_existing_publication
+    mutated = False
+
+    def reconcile_then_mutate_source(**kwargs: object) -> bool:
+        nonlocal mutated
+        reconciled = original(**kwargs)  # type: ignore[arg-type]
+        if reconciled and not mutated:
+            files[ROLE_WHEEL].write_bytes(b"source-drift-after-target-check")
+            mutated = True
+        return reconciled
+
+    monkeypatch.setattr(
+        module,
+        "_reconcile_existing_publication",
+        reconcile_then_mutate_source,
+    )
+    with pytest.raises(FullC6PublicationError, match="input changed during"):
+        _publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=request,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
+        )
+
+
+def test_concurrent_target_reconciliation_rejects_public_key_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir(mode=0o700)
+    public_key_path = tmp_path / "gate" / "owner.pub"
+    import rextio.build.full_c6_publication as module
+
+    original = module._atomic_rename_noreplace
+
+    def commit_concurrently_then_mutate_key(
+        directory_fd: int,
+        *,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        original(
+            directory_fd,
+            source_name=source_name,
+            destination_name=destination_name,
+        )
+        public_key_path.write_bytes(b"x" * 32)
+        raise module._FullC6TargetExists(
+            "synthetic exact concurrent publication target"
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_atomic_rename_noreplace",
+        commit_concurrently_then_mutate_key,
+    )
+    with pytest.raises(FullC6PublicationError, match="public key changed during"):
+        _publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=request,
+            gate_result=result,
+            public_key_path=public_key_path,
+        )
+
+    assert (publication_root / "candidate").is_dir()
+    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+
+
+@pytest.mark.parametrize("interruption", (KeyboardInterrupt, SystemExit))
+def test_retry_recovers_exact_bundle_after_post_commit_async_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: type[BaseException],
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir(mode=0o700)
+    import rextio.build.full_c6_publication as module
+
+    original = module._atomic_rename_noreplace
+
+    def rename_then_interrupt(
+        directory_fd: int,
+        *,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        original(
+            directory_fd,
+            source_name=source_name,
+            destination_name=destination_name,
+        )
+        raise interruption()
+
+    monkeypatch.setattr(module, "_atomic_rename_noreplace", rename_then_interrupt)
+    with pytest.raises(interruption):
+        _publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=request,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
+        )
+
+    monkeypatch.setattr(module, "_atomic_rename_noreplace", original)
+    recovered = _publish_full_c6_bundle(
+        publication_root=publication_root,
+        bundle_name="candidate",
+        bundle_files=files,
+        request=request,
+        gate_result=result,
+        public_key_path=tmp_path / "gate" / "owner.pub",
+    )
+    repeated = _publish_full_c6_bundle(
+        publication_root=publication_root,
+        bundle_name="candidate",
+        bundle_files=files,
+        request=request,
+        gate_result=result,
+        public_key_path=tmp_path / "gate" / "owner.pub",
+    )
+
+    assert recovered == repeated
+    assert recovered.publication_completed is True
+    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+
+
 def test_direct_fake_authorization_is_rejected(tmp_path: Path) -> None:
     files, request, result = _authorized_bundle(tmp_path)
     publication_root = tmp_path / "dist"
@@ -600,6 +759,15 @@ def test_post_commit_tamper_cannot_turn_completed_rename_into_false_failure(
     assert receipt.publication_completed is True
     assert published_evidence.read_bytes() == b"tampered-after-rename"
     assert hashlib.sha256(published_evidence.read_bytes()).hexdigest() != expected.sha256
+    with pytest.raises(FullC6PublicationError, match="already exists"):
+        _publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=request,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
+        )
 
 
 def test_post_commit_directory_fsync_failure_keeps_completed_receipt(

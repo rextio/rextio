@@ -412,7 +412,19 @@ def _publish_full_c6_bundle(
     staging_fd: int | None = None
     renamed = False
     try:
-        _require_missing_directory_member(root_fd, bundle_name)
+        if _reconcile_existing_publication_transaction(
+            root_path=root_path,
+            root_fd=root_fd,
+            root_stat=root_stat,
+            bundle_name=bundle_name,
+            sources=sources,
+            captured=captured,
+            public_key_source=public_key_source,
+            public_key=public_key,
+            files=published_files,
+            manifest_bytes=manifest_bytes,
+        ):
+            return receipt
         os.mkdir(staging_name, mode=0o700, dir_fd=root_fd)
         staging_fd = os.open(
             staging_name,
@@ -496,11 +508,33 @@ def _publish_full_c6_bundle(
             label="staging",
         )
         _require_missing_directory_member(root_fd, bundle_name)
-        _atomic_rename_noreplace(
-            root_fd,
-            source_name=staging_name,
-            destination_name=bundle_name,
-        )
+        try:
+            _atomic_rename_noreplace(
+                root_fd,
+                source_name=staging_name,
+                destination_name=bundle_name,
+            )
+        except _FullC6TargetExists:
+            # A concurrent publisher may have committed the exact same
+            # authorized bundle after our final absence check.  Reconcile only
+            # an exact, safely revalidated destination; every other existing
+            # object remains a fail-closed collision.
+            if not _reconcile_existing_publication_transaction(
+                root_path=root_path,
+                root_fd=root_fd,
+                root_stat=root_stat,
+                bundle_name=bundle_name,
+                sources=sources,
+                captured=captured,
+                public_key_source=public_key_source,
+                public_key=public_key,
+                files=published_files,
+                manifest_bytes=manifest_bytes,
+            ):
+                raise FullC6PublicationError(
+                    "Full C6 publication target vanished during reconciliation"
+                ) from None
+            return receipt
         renamed = True
         _best_effort_postcommit_fsync(root_fd)
     except FullC6PublicationError:
@@ -1033,6 +1067,158 @@ def _verify_staging_directory(
     if expected_members is not None and observed_members != expected_members:
         raise FullC6PublicationError("Full C6 staged member identity changed")
     return observed_members
+
+
+def _reconcile_existing_publication(
+    *,
+    root_path: Path,
+    root_fd: int,
+    root_stat: os.stat_result,
+    bundle_name: str,
+    captured: dict[str, _CapturedFile],
+    files: tuple[FullC6PublishedFile, ...],
+    manifest_bytes: bytes,
+) -> bool:
+    """Revalidate an exact previously committed publication for retry.
+
+    The atomic rename is the commit point.  An asynchronous exception can be
+    delivered after the kernel commits that rename but before the caller sees
+    a receipt.  A later invocation may therefore recover only when the named
+    directory is owner-private, remains bound to one inode, and contains the
+    exact independently reverified authorized payload and manifest expected by
+    this invocation.  Any preexisting mismatch is still a hard collision.
+    """
+    try:
+        named = os.stat(bundle_name, dir_fd=root_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise FullC6PublicationError(
+            "Full C6 publication target cannot be inspected"
+        ) from exc
+
+    descriptor: int | None = None
+    try:
+        if (
+            not stat.S_ISDIR(named.st_mode)
+            or stat.S_ISLNK(named.st_mode)
+            or stat.S_IMODE(named.st_mode) != 0o700
+            or named.st_dev != root_stat.st_dev
+            or (hasattr(os, "geteuid") and named.st_uid != os.geteuid())
+        ):
+            raise FullC6PublicationError(
+                "Full C6 existing publication directory metadata differs"
+            )
+        descriptor = os.open(
+            bundle_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_fd,
+        )
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            identity != (named.st_dev, named.st_ino)
+            or not stat.S_ISDIR(opened.st_mode)
+            or stat.S_IMODE(opened.st_mode) != 0o700
+            or (hasattr(os, "geteuid") and opened.st_uid != os.geteuid())
+        ):
+            raise FullC6PublicationError(
+                "Full C6 existing publication directory changed during open"
+            )
+        observed_members = _verify_staging_directory(
+            descriptor,
+            captured=captured,
+            files=files,
+            manifest_bytes=manifest_bytes,
+        )
+        _revalidate_directory(root_path, root_stat, label="publication root")
+        _require_directory_member_identity(
+            root_fd,
+            bundle_name,
+            expected_identity=identity,
+            label="publication target",
+        )
+        _verify_staging_directory(
+            descriptor,
+            captured=captured,
+            files=files,
+            manifest_bytes=manifest_bytes,
+            expected_members=observed_members,
+        )
+        _require_directory_member_identity(
+            root_fd,
+            bundle_name,
+            expected_identity=identity,
+            label="publication target",
+        )
+        return True
+    except FullC6PublicationError as exc:
+        raise _FullC6TargetExists(
+            "Full C6 publication target already exists with different or unsafe content"
+        ) from exc
+    except OSError as exc:
+        raise _FullC6TargetExists(
+            "Full C6 publication target already exists with different or unsafe content"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _reconcile_existing_publication_transaction(
+    *,
+    root_path: Path,
+    root_fd: int,
+    root_stat: os.stat_result,
+    bundle_name: str,
+    sources: dict[str, Path],
+    captured: dict[str, _CapturedFile],
+    public_key_source: Path,
+    public_key: _CapturedFile,
+    files: tuple[FullC6PublishedFile, ...],
+    manifest_bytes: bytes,
+) -> bool:
+    """Reconcile target and original inputs as one bounded retry transaction."""
+    def reconcile_target() -> bool:
+        return _reconcile_existing_publication(
+            root_path=root_path,
+            root_fd=root_fd,
+            root_stat=root_stat,
+            bundle_name=bundle_name,
+            captured=captured,
+            files=files,
+            manifest_bytes=manifest_bytes,
+        )
+
+    if not reconcile_target():
+        return False
+
+    # Match the fresh-publication path's pre-commit input invariant.  An exact
+    # existing target alone cannot authorize a retry if any original payload or
+    # trusted public-key path changed after initial semantic verification.
+    second_capture = _capture_sources(sources)
+    if second_capture != captured:
+        raise FullC6PublicationError(
+            "Full C6 publication input changed during existing-target reconciliation"
+        )
+    second_public_key = _capture_path(
+        public_key_source,
+        max_bytes=_RAW_ED25519_PUBLIC_KEY_BYTES,
+    )
+    if second_public_key != public_key:
+        raise FullC6PublicationError(
+            "Full C6 public key changed during existing-target reconciliation"
+        )
+
+    # Recheck the target after recapturing inputs so neither side of the
+    # equality claim is accepted solely from an earlier observation.
+    if not reconcile_target():
+        raise FullC6PublicationError(
+            "Full C6 publication target vanished during reconciliation"
+        )
+    return True
 
 
 def _remove_owned_staging(
