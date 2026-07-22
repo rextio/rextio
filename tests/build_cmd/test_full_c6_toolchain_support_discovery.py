@@ -298,6 +298,156 @@ def test_bootstrap_materializes_canonical_lock_and_exactly_reuses(
     assert reused.to_dict() == {**projection, "result": "reused"}
 
 
+@pytest.mark.parametrize(
+    ("target_triple", "expected_events"),
+    (
+        (MACOS, ("generate", "generate", "verify")),
+        (LINUX, ("generate", "verify")),
+    ),
+    ids=("macos-quiescence", "linux-unchanged"),
+)
+def test_bootstrap_quiesces_only_freshly_installed_macos_toolchains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_triple: str,
+    expected_events: tuple[str, ...],
+) -> None:
+    plan = _fixed_plan(tmp_path / "plan", target_triple=target_triple)
+    fixture_lock = support.generate_full_c6_toolchain_support_lock(
+        _fixed_plan(tmp_path / "fixture-lock")
+    )
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+    events: list[str] = []
+
+    def generate(
+        observed_plan: support.FullC6ToolchainSupportPlan,
+    ) -> object:
+        assert observed_plan is plan
+        events.append("generate")
+        return fixture_lock
+
+    def verify(
+        observed_plan: support.FullC6ToolchainSupportPlan,
+        observed_lock: object,
+    ) -> bool:
+        assert observed_plan is plan
+        assert observed_lock is fixture_lock
+        events.append("verify")
+        return True
+
+    monkeypatch.setattr(
+        support,
+        "generate_full_c6_toolchain_support_lock",
+        generate,
+    )
+    monkeypatch.setattr(
+        support,
+        "verify_full_c6_toolchain_support_lock",
+        verify,
+    )
+    monkeypatch.setattr(
+        support.AppleAPFSPlatformAnchorProvider,
+        "verify_active_anchor",
+        lambda _self, _expected: None,
+    )
+
+    result = support.materialize_full_c6_toolchain_support_lock(
+        project_root=tmp_path,
+        output="authority/support.json",
+        plan=plan,
+        configured_artifact_paths=(),
+    )
+
+    assert events == list(expected_events)
+    assert result.target == target_triple
+
+
+def test_macos_quiescence_does_not_accept_continuous_verification_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _fixed_plan(tmp_path / "plan", target_triple=MACOS)
+    fixture_lock = support.generate_full_c6_toolchain_support_lock(
+        _fixed_plan(tmp_path / "fixture-lock")
+    )
+    authority = tmp_path / "authority"
+    authority.mkdir(mode=0o700)
+    events: list[str] = []
+    drift = ToolchainSupportVerificationDriftError(
+        manifest_difference_count=0,
+        root_difference_count=1,
+        first_difference_kind="root",
+        first_logical_role="rust-sysroot",
+        before_merkle_sha256="a" * 64,
+        after_merkle_sha256="b" * 64,
+        hardlink_before_observation_sha256=None,
+        hardlink_after_observation_sha256=None,
+        tree_changed_fields=(
+            "root_metadata",
+            "xattr_count",
+            "xattr_bytes",
+            "merkle",
+        ),
+    )
+
+    def generate(
+        observed_plan: support.FullC6ToolchainSupportPlan,
+    ) -> object:
+        assert observed_plan is plan
+        events.append("generate")
+        return fixture_lock
+
+    def verify(
+        observed_plan: support.FullC6ToolchainSupportPlan,
+        observed_lock: object,
+    ) -> bool:
+        assert observed_plan is plan
+        assert observed_lock is fixture_lock
+        events.append("verify")
+        raise support.FullC6ToolchainSupportError(
+            "Full C6 support bytes differ from the exact configured lock"
+        ) from drift
+
+    monkeypatch.setattr(
+        support,
+        "generate_full_c6_toolchain_support_lock",
+        generate,
+    )
+    monkeypatch.setattr(
+        support,
+        "verify_full_c6_toolchain_support_lock",
+        verify,
+    )
+    monkeypatch.setattr(
+        support.AppleAPFSPlatformAnchorProvider,
+        "verify_active_anchor",
+        lambda _self, _expected: None,
+    )
+
+    with pytest.raises(
+        support.FullC6ToolchainSupportError,
+        match="support bytes differ",
+    ) as caught:
+        support.materialize_full_c6_toolchain_support_lock(
+            project_root=tmp_path,
+            output="authority/support.json",
+            plan=plan,
+            configured_artifact_paths=(),
+        )
+
+    assert events == ["generate", "generate", "verify"]
+    assert caught.value.__cause__ is drift
+    assert drift.tree_changed_fields == (
+        "root_metadata",
+        "xattr_count",
+        "xattr_bytes",
+        "merkle",
+    )
+    assert drift.tree_changed_field_mask == "2181"
+    assert not (authority / "support.json").exists()
+
+
 def test_bootstrap_accepts_disjoint_non_json_artifact_paths(
     tmp_path: Path,
 ) -> None:

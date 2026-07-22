@@ -567,6 +567,20 @@ def generate_full_c6_toolchain_support_lock(
         ) from exc
 
 
+def _quiesce_freshly_installed_macos_toolchain(
+    plan: FullC6ToolchainSupportPlan,
+) -> None:
+    """Discard one complete capture while a fresh macOS toolchain settles."""
+    if plan.target_triple != "aarch64-apple-darwin":
+        return
+    # A freshly installed macOS toolchain can acquire OS-managed provenance
+    # metadata after its first complete read.  This one bounded, read-only
+    # capture is never accepted or persisted.  The following generation is
+    # authoritative, and the existing immediate verification must still
+    # reproduce it exactly.
+    generate_full_c6_toolchain_support_lock(plan)
+
+
 def materialize_full_c6_toolchain_support_lock(
     *,
     project_root: Path | str,
@@ -583,6 +597,7 @@ def materialize_full_c6_toolchain_support_lock(
         relative,
         configured_artifact_paths=configured_artifact_paths,
     )
+    _quiesce_freshly_installed_macos_toolchain(trusted_plan)
     lock = generate_full_c6_toolchain_support_lock(trusted_plan)
     if expected_raw_sha256 is not None and (
         _SHA256_RE.fullmatch(expected_raw_sha256) is None
