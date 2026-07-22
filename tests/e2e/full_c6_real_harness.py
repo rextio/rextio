@@ -41,6 +41,32 @@ _D = (-121665 * pow(121666, _Q - 2, _Q)) % _Q
 _I = pow(2, (_Q - 1) // 4, _Q)
 
 _SUPPORT_LOCK_OUTPUT = "authority/rextio.toolchain-support.lock.json"
+_FULL_C6_BUILD_FAILURE_REPORT_MAX_BYTES = 128 * 1024
+_FULL_C6_BUILD_FAILURE_DOMAINS = frozenset(
+    {
+        "FullC6GateError",
+        "FullC6HostInputsError",
+        "FullC6PipelineError",
+        "FullC6PolicyBootstrapError",
+        "FullC6ProductionError",
+        "FullC6PublicationError",
+    }
+)
+_FULL_C6_BUILD_FAILURE_STAGES = frozenset(
+    {
+        "host-prerequisites",
+        "production-authority",
+        "policy-bootstrap",
+        "signing-request",
+        "prepublication-cleanup",
+        "publication-plan",
+        "publication",
+        "host-cleanup",
+    }
+)
+_FULL_C6_BUILD_FAILURE_UNAVAILABLE = (
+    '{"event":"full-c6-build-failure-report-unavailable"}'
+)
 _XCODE_HARDLINK_ROLE = "xcode-clang-resource"
 _XCODE_HARDLINK_RELATIVE_PATH = "include/__clang_cuda_builtin_vars.h"
 _XCODE_HARDLINK_RELATIVE_PATH_SHA256 = (
@@ -2508,6 +2534,133 @@ def _assert_exact_two_cargo_pids(stage: str, cargo_pids: set[int]) -> None:
         )
 
 
+def _failure_report_file_stamp(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_gid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_full_c6_build_failure_report(project: Path) -> str:
+    """Return one path-free diagnostic line from the fixed build report."""
+    report_path = project / ".rextio" / "reports" / "build.json"
+    try:
+        linked = report_path.lstat()
+        if (
+            not stat.S_ISREG(linked.st_mode)
+            or linked.st_nlink != 1
+            or not 0 < linked.st_size <= _FULL_C6_BUILD_FAILURE_REPORT_MAX_BYTES
+        ):
+            raise ValueError("unsafe Full C6 failure report file")
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if nofollow == 0:
+            raise ValueError("no-follow report open is unavailable")
+        descriptor = os.open(
+            report_path,
+            os.O_RDONLY
+            | os.O_NONBLOCK
+            | nofollow
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or _failure_report_file_stamp(opened)
+                != _failure_report_file_stamp(linked)
+            ):
+                raise ValueError("Full C6 failure report changed before open")
+            payload = bytearray()
+            while len(payload) <= _FULL_C6_BUILD_FAILURE_REPORT_MAX_BYTES:
+                chunk = os.read(
+                    descriptor,
+                    min(
+                        8_192,
+                        _FULL_C6_BUILD_FAILURE_REPORT_MAX_BYTES + 1 - len(payload),
+                    ),
+                )
+                if not chunk:
+                    break
+                payload.extend(chunk)
+            if (
+                len(payload) != opened.st_size
+                or len(payload) > _FULL_C6_BUILD_FAILURE_REPORT_MAX_BYTES
+                or _failure_report_file_stamp(os.fstat(descriptor))
+                != _failure_report_file_stamp(opened)
+            ):
+                raise ValueError("Full C6 failure report changed during read")
+        finally:
+            os.close(descriptor)
+
+        def reject_duplicate_keys(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate Full C6 failure report key")
+                result[key] = value
+            return result
+
+        document = json.loads(
+            bytes(payload).decode("utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        if type(document) is not dict:
+            raise ValueError("Full C6 failure report must be an object")
+        error = document.get("error")
+        if type(error) is not dict:
+            raise ValueError("Full C6 failure report lacks an error object")
+        error_code = error.get("code")
+        error_domain = error.get("domain")
+        stage = document.get("stage")
+        status_value = document.get("status")
+        lifecycle = document.get("lifecycle")
+        distribution_authorized = document.get("distribution_authorized")
+        if (
+            type(error_code) is not str
+            or error_code != "RXT060"
+            or type(error_domain) is not str
+            or error_domain not in _FULL_C6_BUILD_FAILURE_DOMAINS
+            or type(stage) is not str
+            or stage not in _FULL_C6_BUILD_FAILURE_STAGES
+            or type(status_value) is not str
+            or status_value != "full-c6-required-failed"
+            or type(lifecycle) is not str
+            or lifecycle != "failed"
+            or distribution_authorized is not False
+        ):
+            raise ValueError("Full C6 failure report fields are not allowlisted")
+        return json.dumps(
+            {
+                "distribution_authorized": distribution_authorized,
+                "error_code": error_code,
+                "error_domain": error_domain,
+                "event": "full-c6-build-failure-report",
+                "lifecycle": lifecycle,
+                "stage": stage,
+                "status": status_value,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        return _FULL_C6_BUILD_FAILURE_UNAVAILABLE
+
+
+def _emit_full_c6_build_failure_report(project: Path) -> None:
+    print(_read_full_c6_build_failure_report(project), file=sys.stderr, flush=True)
+
+
 def _run_fresh_rextio(
     command: list[str],
     *,
@@ -2516,6 +2669,7 @@ def _run_fresh_rextio(
     timeout: int,
     expect_two_cargo_builds: bool,
     support_lock_diagnostic_project: Path | None = None,
+    build_failure_report_project: Path | None = None,
 ) -> tuple[str, str, tuple[int, ...]]:
     before_quarantines = _active_quarantine_names()
     child_environment = _child_environment()
@@ -2581,6 +2735,8 @@ def _run_fresh_rextio(
             f"stdout:\n{stdout}\nstderr:\n{stderr}"
         ) from (cleanup_failure or failure)
     if process.returncode != 0:
+        if build_failure_report_project is not None:
+            _emit_full_c6_build_failure_report(build_failure_report_project)
         if support_lock_diagnostic_project is not None:
             try:
                 diagnostic = _diagnose_support_lock_generation(
@@ -2947,6 +3103,7 @@ def _invoke_build_lifecycle(
         stage=f"build/{lifecycle}",
         timeout=1_500,
         expect_two_cargo_builds=True,
+        build_failure_report_project=project,
     )
     return _assert_lifecycle_report(
         project,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import importlib.util
+import json
 import os
 from pathlib import Path, PurePosixPath
 import signal
@@ -210,6 +211,138 @@ def test_exact_two_cargo_pid_policy_rejects_other_counts(
 def test_exact_two_cargo_pid_policy_accepts_two_distinct_pids() -> None:
     harness = _load_harness_module()
     harness._assert_exact_two_cargo_pids("build/test", {101, 102})
+
+
+def _full_c6_failure_report(**extra: object) -> dict[str, object]:
+    return {
+        "distribution_authorized": False,
+        "error": {
+            "code": "RXT060",
+            "domain": "FullC6ProductionError",
+            "message": "RXT060 strict Full C6 production-authority failed closed.",
+        },
+        "lifecycle": "failed",
+        "stage": "production-authority",
+        "status": "full-c6-required-failed",
+        **extra,
+    }
+
+
+def _failure_report_path(project: Path) -> Path:
+    path = project / ".rextio" / "reports" / "build.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _emit_failure_report_line(
+    project: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> str:
+    harness = _load_harness_module()
+    harness._emit_full_c6_build_failure_report(project)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    return captured.err
+
+
+def test_build_failure_report_diagnostic_emits_only_allowlisted_scalars(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = _failure_report_path(tmp_path)
+    path.write_text(json.dumps(_full_c6_failure_report()), encoding="utf-8")
+
+    line = _emit_failure_report_line(tmp_path, capsys)
+
+    assert line == (
+        '{"distribution_authorized":false,"error_code":"RXT060",'
+        '"error_domain":"FullC6ProductionError",'
+        '"event":"full-c6-build-failure-report","lifecycle":"failed",'
+        '"stage":"production-authority",'
+        '"status":"full-c6-required-failed"}\n'
+    )
+
+
+def test_build_failure_report_diagnostic_is_fixed_when_report_is_missing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _emit_failure_report_line(tmp_path, capsys) == (
+        '{"event":"full-c6-build-failure-report-unavailable"}\n'
+    )
+
+
+def test_build_failure_report_diagnostic_rejects_symlink(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private = tmp_path / "private-report.json"
+    private.write_text(
+        json.dumps(_full_c6_failure_report(private="do-not-leak")),
+        encoding="utf-8",
+    )
+    _failure_report_path(tmp_path).symlink_to(private)
+
+    line = _emit_failure_report_line(tmp_path, capsys)
+
+    assert line == '{"event":"full-c6-build-failure-report-unavailable"}\n'
+    assert "do-not-leak" not in line
+
+
+def test_build_failure_report_diagnostic_rejects_oversized_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = _load_harness_module()
+    _failure_report_path(tmp_path).write_bytes(
+        b"x" * (harness._FULL_C6_BUILD_FAILURE_REPORT_MAX_BYTES + 1)
+    )
+
+    assert _emit_failure_report_line(tmp_path, capsys) == (
+        '{"event":"full-c6-build-failure-report-unavailable"}\n'
+    )
+
+
+@pytest.mark.parametrize("payload", (b"{malformed", b'"not-an-object"', b"\xff"))
+def test_build_failure_report_diagnostic_rejects_malformed_payload(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    payload: bytes,
+) -> None:
+    _failure_report_path(tmp_path).write_bytes(payload)
+
+    assert _emit_failure_report_line(tmp_path, capsys) == (
+        '{"event":"full-c6-build-failure-report-unavailable"}\n'
+    )
+
+
+def test_build_failure_report_diagnostic_does_not_leak_untrusted_nested_data(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _full_c6_failure_report(
+        analysis={
+            "project_root": "/private/project",
+            "diagnostics": [{"message": "nested-secret"}],
+        },
+        config={"token": "credential-secret"},
+    )
+    error = report["error"]
+    assert type(error) is dict
+    error["message"] = "private-error-secret"
+    error["details"] = {"path": "/private/project/source.py"}
+    _failure_report_path(tmp_path).write_text(json.dumps(report), encoding="utf-8")
+
+    line = _emit_failure_report_line(tmp_path, capsys)
+
+    assert '"event":"full-c6-build-failure-report"' in line
+    for secret in (
+        "/private/project",
+        "nested-secret",
+        "credential-secret",
+        "private-error-secret",
+    ):
+        assert secret not in line
 
 
 def test_support_lock_diagnostic_exposes_only_bounded_static_causes() -> None:
