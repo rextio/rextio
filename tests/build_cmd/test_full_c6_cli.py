@@ -1002,12 +1002,10 @@ def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
         "native-permission",
         "native-missing-path",
         "native-compile",
-        "linux-launcher-cpython-runtime",
-        "linux-launcher-environment-argv",
-        "linux-launcher-pyo3-config",
-        "linux-launcher-descriptors",
-        "linux-launcher-landlock",
-        "linux-launcher-cargo-exec",
+        *(
+            f"linux-launcher-{stage}"
+            for stage in build_cmd.FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES
+        ),
     ],
 )
 def test_full_c6_failure_reason_code_prefers_static_native_stderr_category(

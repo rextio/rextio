@@ -502,6 +502,121 @@ def test_launcher_main_emits_only_the_exact_static_failure_stage(
     assert len(writes[0][1]) < 128
 
 
+@pytest.mark.parametrize(
+    ("case", "expected_stage"),
+    (
+        ("unexpected-pwd", "environment-argv-unexpected-pwd"),
+        ("unexpected-lc-ctype", "environment-argv-unexpected-lc-ctype"),
+        (
+            "unexpected-pwd-lc-ctype",
+            "environment-argv-unexpected-pwd-lc-ctype",
+        ),
+        ("closed-set-missing", "environment-argv-closed-set"),
+        ("closed-set-other", "environment-argv-closed-set"),
+        ("closed-set-pwd-and-missing", "environment-argv-closed-set"),
+        ("fixed-value", "environment-argv-fixed-value"),
+        ("variable-value", "environment-argv-variable-value"),
+        ("malformed-row", "environment-argv-malformed-row"),
+        ("argv-shape", "environment-argv-argv-shape"),
+        ("environment-digest", "environment-argv-environment-digest"),
+        ("malformed-argument", "environment-argv-malformed-argument"),
+        ("payload-executable", "environment-argv-payload-executable"),
+    ),
+)
+def test_launcher_main_classifies_exact_environment_argv_failures(
+    case: str,
+    expected_stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment()
+    argv = list(_argv(environment))
+    if case == "unexpected-pwd":
+        environment["PWD"] = "/private/owner/project"
+    elif case == "unexpected-lc-ctype":
+        environment["LC_CTYPE"] = "owner-controlled"
+    elif case == "unexpected-pwd-lc-ctype":
+        environment["PWD"] = "/private/owner/project"
+        environment["LC_CTYPE"] = "owner-controlled"
+    elif case == "closed-set-missing":
+        environment.pop("LANG")
+    elif case == "closed-set-other":
+        environment["PRIVATE_OWNER_KEY"] = "private-owner-value"
+    elif case == "closed-set-pwd-and-missing":
+        environment["PWD"] = "/private/owner/project"
+        environment.pop("LANG")
+    elif case == "fixed-value":
+        environment["LANG"] = "private-owner-value"
+    elif case == "variable-value":
+        environment["SOURCE_DATE_EPOCH"] = "private-owner-value"
+    elif case == "malformed-row":
+        class EqualStr(str):
+            pass
+
+        environment["LANG"] = EqualStr("C")
+    elif case == "argv-shape":
+        argv[1] = "--private-owner-flag"
+    elif case == "environment-digest":
+        argv[2] = "e" * 64
+    elif case == "malformed-argument":
+        argv.append("private-owner\nargument")
+    elif case == "payload-executable":
+        argv[4] = "/private/owner/cargo"
+    else:  # pragma: no cover - the parameter table is closed above
+        raise AssertionError("unknown environment/argv test case")
+
+    writes: list[tuple[int, bytes]] = []
+    monkeypatch.setattr(launcher.sys, "argv", argv)
+    monkeypatch.setattr(launcher.os, "environ", environment)
+    monkeypatch.setattr(launcher, "validate_isolated_python_runtime", lambda: None)
+    monkeypatch.setattr(
+        launcher.os,
+        "write",
+        lambda descriptor, data: writes.append((descriptor, data)) or len(data),
+    )
+
+    assert launcher._main() == 125
+    assert writes == [
+        (2, launcher.linux_launcher_failure_marker(expected_stage))
+    ]
+    marker = writes[0][1]
+    for private in (
+        b"PRIVATE_OWNER_KEY",
+        b"private-owner",
+        b"/private/owner",
+        b"owner-controlled",
+    ):
+        assert private not in marker
+
+
+def test_launcher_main_rejects_injected_environment_argv_error_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = _environment()
+    writes: list[tuple[int, bytes]] = []
+    private = "private-owner-error-text"
+
+    def injected_failure(*_args: object) -> tuple[str, ...]:
+        raise launcher.FullC6LinuxLauncherError(
+            f"Full C6 Linux fixed environment value differs: {private}"
+        )
+
+    monkeypatch.setattr(launcher.sys, "argv", list(_argv(environment)))
+    monkeypatch.setattr(launcher.os, "environ", environment)
+    monkeypatch.setattr(launcher, "validate_isolated_python_runtime", lambda: None)
+    monkeypatch.setattr(launcher, "validate_linux_launcher_argv", injected_failure)
+    monkeypatch.setattr(
+        launcher.os,
+        "write",
+        lambda descriptor, data: writes.append((descriptor, data)) or len(data),
+    )
+
+    assert launcher._main() == 125
+    assert writes == [
+        (2, launcher.linux_launcher_failure_marker("environment-argv"))
+    ]
+    assert private.encode("utf-8") not in writes[0][1]
+
+
 def test_launcher_file_uses_no_external_imports() -> None:
     source = Path(launcher.__file__).read_text(encoding="utf-8")
 

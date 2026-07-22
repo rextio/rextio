@@ -21,6 +21,9 @@ from types import ModuleType
 
 import pytest
 
+from rextio.build.full_c6_linux_launcher import (
+    FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES,
+)
 from rextio.build.full_c6_toolchain_support import FullC6ToolchainSupportError
 from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
@@ -271,13 +274,9 @@ def test_build_failure_report_diagnostic_emits_only_allowlisted_scalars(
 
 @pytest.mark.parametrize(
     "reason_code",
-    (
-        "linux-launcher-cpython-runtime",
-        "linux-launcher-environment-argv",
-        "linux-launcher-pyo3-config",
-        "linux-launcher-descriptors",
-        "linux-launcher-landlock",
-        "linux-launcher-cargo-exec",
+    tuple(
+        f"linux-launcher-{stage}"
+        for stage in FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES
     ),
 )
 def test_build_failure_report_diagnostic_allows_static_launcher_stage(

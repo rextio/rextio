@@ -27,9 +27,23 @@ FULL_C6_LINUX_LAUNCHER_DOMAIN = "rextio.full-c6-linux-launcher.v1"
 FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX = (
     "Rextio Full C6 Linux launcher failed closed: "
 )
+FULL_C6_LINUX_ENVIRONMENT_ARGV_FAILURE_STAGES = (
+    "environment-argv-unexpected-pwd",
+    "environment-argv-unexpected-lc-ctype",
+    "environment-argv-unexpected-pwd-lc-ctype",
+    "environment-argv-closed-set",
+    "environment-argv-fixed-value",
+    "environment-argv-variable-value",
+    "environment-argv-malformed-row",
+    "environment-argv-argv-shape",
+    "environment-argv-environment-digest",
+    "environment-argv-malformed-argument",
+    "environment-argv-payload-executable",
+)
 FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES = (
     "cpython-runtime",
     "environment-argv",
+    *FULL_C6_LINUX_ENVIRONMENT_ARGV_FAILURE_STAGES,
     "pyo3-config",
     "descriptors",
     "landlock",
@@ -171,6 +185,64 @@ _LANDLOCK_RULES = (
 
 class FullC6LinuxLauncherError(RuntimeError):
     """The post-namespace launcher contract is unavailable or inconsistent."""
+
+
+_ENVIRONMENT_ARGV_ERROR_STAGES = {
+    "Full C6 Linux fixed environment value differs": (
+        "environment-argv-fixed-value"
+    ),
+    "Full C6 Linux variable environment value is invalid": (
+        "environment-argv-variable-value"
+    ),
+    "Full C6 Linux environment row is malformed": (
+        "environment-argv-malformed-row"
+    ),
+    "Full C6 Linux launcher argv is invalid": "environment-argv-argv-shape",
+    "Full C6 Linux launcher environment digest differs": (
+        "environment-argv-environment-digest"
+    ),
+    "Full C6 Linux launcher argument is malformed": (
+        "environment-argv-malformed-argument"
+    ),
+    "Full C6 Linux payload executable is not the fixed Cargo binary": (
+        "environment-argv-payload-executable"
+    ),
+}
+_CLOSED_ENVIRONMENT_MESSAGE = (
+    "Full C6 Linux environment does not match the closed contract"
+)
+
+
+def _environment_argv_failure_stage(
+    error: BaseException,
+    environment: object,
+) -> str:
+    """Reduce one exact validation failure to a path-free static stage."""
+    if (
+        type(error) is not FullC6LinuxLauncherError
+        or len(error.args) != 1
+        or type(error.args[0]) is not str
+    ):
+        return "environment-argv"
+    message = error.args[0]
+    if message != _CLOSED_ENVIRONMENT_MESSAGE:
+        return _ENVIRONMENT_ARGV_ERROR_STAGES.get(message, "environment-argv")
+    if type(environment) is not dict:
+        return "environment-argv"
+    try:
+        expected = set(_FIXED_ENVIRONMENT).union(_VARIABLE_ENVIRONMENT)
+        observed = set(environment)
+    except BaseException:
+        return "environment-argv"
+    if observed == expected.union({"PWD"}):
+        return "environment-argv-unexpected-pwd"
+    if observed == expected.union({"LC_CTYPE"}):
+        return "environment-argv-unexpected-lc-ctype"
+    if observed == expected.union({"PWD", "LC_CTYPE"}):
+        return "environment-argv-unexpected-pwd-lc-ctype"
+    if observed != expected:
+        return "environment-argv-closed-set"
+    return "environment-argv"
 
 
 def linux_launcher_failure_marker(stage: object) -> bytes:
@@ -598,11 +670,14 @@ def _main() -> int:
         validate_isolated_python_runtime()
     except BaseException:
         return _fail_linux_launcher_stage("cpython-runtime")
+    environment: dict[str, str] | None = None
     try:
         environment = dict(os.environ)
         payload = validate_linux_launcher_argv(sys.argv, environment)
-    except BaseException:
-        return _fail_linux_launcher_stage("environment-argv")
+    except BaseException as exc:
+        return _fail_linux_launcher_stage(
+            _environment_argv_failure_stage(exc, environment)
+        )
     try:
         verify_full_c6_pyo3_config()
     except BaseException:
@@ -638,6 +713,7 @@ __all__ = [
     "FULL_C6_LINUX_CARGO",
     "FULL_C6_LINUX_LAUNCHER",
     "FULL_C6_LINUX_LAUNCHER_DOMAIN",
+    "FULL_C6_LINUX_ENVIRONMENT_ARGV_FAILURE_STAGES",
     "FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX",
     "FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES",
     "FULL_C6_LINUX_PYTHON",
