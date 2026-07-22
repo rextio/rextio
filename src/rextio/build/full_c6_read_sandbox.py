@@ -84,6 +84,21 @@ _FULL_C6_SECCOMP_REQUIRED_SEALS = (
     _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL
 )
 _LINUX_SECCOMP_LEASE_TOKEN = object()
+_LINUX_SOCKETPAIR_SYSCALL_X86_64 = 53
+_LINUX_AF_UNIX = 1
+_LINUX_SOCK_SEQPACKET = 5
+_LINUX_SOCK_CLOEXEC = 0x00080000
+_LINUX_RUST_PROCESS_SOCKETPAIR_TYPE = (
+    _LINUX_SOCK_SEQPACKET | _LINUX_SOCK_CLOEXEC
+)
+_SECCOMP_DATA_ARGUMENT_WORDS = (
+    (16, _LINUX_AF_UNIX),
+    (20, 0),
+    (24, _LINUX_RUST_PROCESS_SOCKETPAIR_TYPE),
+    (28, 0),
+    (32, 0),
+    (36, 0),
+)
 
 # x86_64 socket, System V/POSIX IPC, and async-I/O syscall numbers.  This
 # filter is handed to bubblewrap rather than installed in Python's preexec
@@ -107,7 +122,6 @@ _DENIED_PAYLOAD_SYSCALLS_X86_64 = frozenset(
         50,  # listen
         51,  # getsockname
         52,  # getpeername
-        53,  # socketpair
         54,  # setsockopt
         55,  # getsockopt
         64,  # semget
@@ -1006,6 +1020,24 @@ def linux_full_c6_seccomp_program() -> bytes:
     # Reject the x32 ABI range before matching the ordinary x86_64 table.
     rows.append((0x35, 0, 1, _X32_SYSCALL_BIT))
     rows.append((0x06, 0, 0, _SECCOMP_RET_KILL_PROCESS))
+    # Rust 1.93.1 std::process uses this exact AF_UNIX socketpair as its
+    # close-on-exec child-spawn error channel on Linux.  Permit only that
+    # local, unnamed shape; every other socketpair remains EPERM, while the
+    # socket/connect/network syscall deny rows below remain unchanged.
+    socketpair_gate_length = len(_SECCOMP_DATA_ARGUMENT_WORDS) * 3 + 1
+    rows.append(
+        (
+            0x15,
+            0,
+            socketpair_gate_length,
+            _LINUX_SOCKETPAIR_SYSCALL_X86_64,
+        )
+    )
+    for offset, expected in _SECCOMP_DATA_ARGUMENT_WORDS:
+        rows.append((0x20, 0, 0, offset))
+        rows.append((0x15, 1, 0, expected))
+        rows.append((0x06, 0, 0, _SECCOMP_RET_ERRNO | _EPERM))
+    rows.append((0x06, 0, 0, _SECCOMP_RET_ALLOW))
     for number in sorted(_DENIED_PAYLOAD_SYSCALLS_X86_64):
         rows.append((0x15, 0, 1, number))
         rows.append((0x06, 0, 0, _SECCOMP_RET_ERRNO | _EPERM))

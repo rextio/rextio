@@ -61,6 +61,45 @@ _LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS = frozenset(
         "/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a",
     }
 )
+_SECCOMP_ALLOW = 0x7FFF0000
+_SECCOMP_KILL_PROCESS = 0x80000000
+_SECCOMP_EPERM = 0x00050001
+_AUDIT_ARCH_X86_64 = 0xC000003E
+
+
+def _evaluate_seccomp(
+    program: bytes,
+    *,
+    syscall: int,
+    args: tuple[int, ...] = (),
+    arch: int = _AUDIT_ARCH_X86_64,
+) -> int:
+    """Evaluate the small classic-BPF subset emitted by the Full C6 filter."""
+    if len(args) > 6:
+        raise ValueError("seccomp_data only contains six syscall arguments")
+    padded_args = (*args, *((0,) * (6 - len(args))))
+    seccomp_data = struct.pack("=iI7Q", syscall, arch, 0, *padded_args)
+    rows = tuple(struct.iter_unpack("=HBBI", program))
+    accumulator = 0
+    program_counter = 0
+    for _step in range(len(rows) + 1):
+        code, jump_true, jump_false, value = rows[program_counter]
+        if code == 0x20:  # BPF_LD | BPF_W | BPF_ABS
+            accumulator = struct.unpack_from("=I", seccomp_data, value)[0]
+            program_counter += 1
+            continue
+        if code == 0x15:  # BPF_JMP | BPF_JEQ | BPF_K
+            jump = jump_true if accumulator == value else jump_false
+            program_counter += jump + 1
+            continue
+        if code == 0x35:  # BPF_JMP | BPF_JGE | BPF_K
+            jump = jump_true if accumulator >= value else jump_false
+            program_counter += jump + 1
+            continue
+        if code == 0x06:  # BPF_RET | BPF_K
+            return value
+        raise AssertionError(f"unsupported BPF opcode: {code:#x}")
+    raise AssertionError("seccomp program did not return")
 
 
 def _rules(tmp_path: Path) -> tuple[SandboxPathRule, ...]:
@@ -1073,6 +1112,38 @@ def test_linux_seccomp_filter_rejects_x32_network_and_ipc_syscalls() -> None:
     assert (0x15, 0, 1, 29) in rows  # shmget
     assert (0x15, 0, 1, 240) in rows  # mq_open
     assert (0x15, 0, 1, 425) in rows  # io_uring_setup
+
+
+def test_linux_seccomp_allows_only_rust_process_socketpair_shape() -> None:
+    program = linux_full_c6_seccomp_program()
+    rust_process_socketpair = (1, 5 | 0x00080000, 0)
+
+    assert (
+        _evaluate_seccomp(program, syscall=53, args=rust_process_socketpair)
+        == _SECCOMP_ALLOW
+    )
+    denied_socketpairs = (
+        (2, rust_process_socketpair[1], 0),  # AF_INET
+        (10, rust_process_socketpair[1], 0),  # AF_INET6
+        (1, 1 | 0x00080000, 0),  # SOCK_STREAM | SOCK_CLOEXEC
+        (1, 5, 0),  # missing SOCK_CLOEXEC
+        (1, rust_process_socketpair[1] | 0x00000800, 0),
+        (1, rust_process_socketpair[1], 1),
+        (1 | (1 << 32), rust_process_socketpair[1], 0),
+        (1, rust_process_socketpair[1] | (1 << 32), 0),
+        (1, rust_process_socketpair[1], 1 << 32),
+    )
+    assert all(
+        _evaluate_seccomp(program, syscall=53, args=args) == _SECCOMP_EPERM
+        for args in denied_socketpairs
+    )
+    assert _evaluate_seccomp(program, syscall=41, args=(1, 5, 0)) == _SECCOMP_EPERM
+    assert _evaluate_seccomp(program, syscall=42, args=(0, 0, 0)) == _SECCOMP_EPERM
+    assert _evaluate_seccomp(program, syscall=0) == _SECCOMP_ALLOW
+    assert (
+        _evaluate_seccomp(program, syscall=0, arch=0xC00000B7)
+        == _SECCOMP_KILL_PROCESS
+    )
 
 
 def test_linux_rejects_nonzero_seccomp_offset(
