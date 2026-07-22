@@ -974,6 +974,33 @@ def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
     assert build_cmd._full_c6_failure_reason_code(error) == "native-build-exit-101"
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "native-sandbox-bubblewrap",
+        "native-cargo-dependency-config",
+        "native-rustc",
+        "native-linker",
+        "native-pyo3",
+        "native-permission",
+        "native-missing-path",
+        "native-compile",
+    ],
+)
+def test_full_c6_failure_reason_code_prefers_static_native_stderr_category(
+    reason_code: str,
+) -> None:
+    detail = build_cmd.FullC6ExecutorError(
+        f"strict native sandbox build failed: {reason_code}"
+    )
+    error = build_cmd.FullC6ExecutorError(
+        "strict Cargo build failed with exit status 1"
+    )
+    error.__cause__ = detail
+
+    assert build_cmd._full_c6_failure_reason_code(error) == reason_code
+
+
 def test_full_c6_failure_reason_code_never_returns_unknown_message() -> None:
     private = "/private/runner/project secret diagnostics"
     error = build_cmd.FullC6ProductionError(private)
@@ -1012,6 +1039,42 @@ def test_full_c6_failure_report_serializes_only_static_deep_reason_code(
     )
     report = json.loads(serialized)
     assert report["error"]["reason_code"] == "linux-launcher-exit-125"
+    assert "/private" not in serialized
+    assert "secret" not in serialized
+
+
+def test_full_c6_failure_report_serializes_only_static_native_stderr_category(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path.resolve()
+    detail = build_cmd.FullC6ExecutorError(
+        "strict native sandbox build failed: native-sandbox-bubblewrap"
+    )
+    executor = build_cmd.FullC6ExecutorError(
+        "strict Cargo build failed with exit status 1"
+    )
+    executor.__cause__ = detail
+    private = build_cmd.FullC6ProductionError("/private/runner/project secret")
+    private.__cause__ = executor
+    reporter, _stdout, _stderr = _reporter()
+
+    assert (
+        build_cmd._report_full_c6_pipeline_failure(
+            project,
+            _analysis(project),
+            "cpython",
+            private,
+            reporter,
+            stage="production-authority",
+        )
+        == 1
+    )
+
+    serialized = (project / ".rextio" / "reports" / "build.json").read_text(
+        encoding="utf-8"
+    )
+    report = json.loads(serialized)
+    assert report["error"]["reason_code"] == "native-sandbox-bubblewrap"
     assert "/private" not in serialized
     assert "secret" not in serialized
 

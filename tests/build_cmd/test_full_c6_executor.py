@@ -104,6 +104,45 @@ def _project(tmp_path: Path, *, lock: bool = True) -> Path:
     return root
 
 
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("bwrap: Creating new namespace failed: Permission denied", "native-sandbox-bubblewrap"),
+        ("error: failed to get `demo` as a dependency", "native-cargo-dependency-config"),
+        ("error: rustc 1.92.0 is not supported", "native-rustc"),
+        ("error: linking with `cc` failed: exit status: 1", "native-linker"),
+        (
+            "error: failed to run custom build command for `pyo3-ffi v0.24.0`",
+            "native-pyo3",
+        ),
+        ("error: access failed: Permission denied", "native-permission"),
+        ("error: input failed: No such file or directory", "native-missing-path"),
+        ("error[E0308]: mismatched types\nerror: could not compile `demo`", "native-compile"),
+        ("opaque private failure", None),
+    ],
+)
+def test_native_sandbox_stderr_classifier_returns_only_static_categories(
+    stderr: str,
+    expected: str | None,
+) -> None:
+    import rextio.build.full_c6_executor as executor
+
+    assert executor._classify_native_sandbox_stderr(stderr) == expected
+
+
+def test_native_sandbox_stderr_error_never_retains_private_input() -> None:
+    import rextio.build.full_c6_executor as executor
+
+    private = "/private/runner/project secret"
+    error = executor._native_sandbox_stderr_error(
+        f"bwrap: mount {private}: Permission denied"
+    )
+
+    assert error is not None
+    assert str(error) == "strict native sandbox build failed: native-sandbox-bubblewrap"
+    assert private not in str(error)
+
+
 def _external_contract():
     from rextio.build.wheel_builder import (
         ExternalWheelContract,

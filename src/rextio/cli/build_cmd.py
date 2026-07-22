@@ -186,6 +186,38 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     ): "native-build-exit-1",
     (
         FullC6ExecutorError,
+        "strict native sandbox build failed: native-sandbox-bubblewrap",
+    ): "native-sandbox-bubblewrap",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-cargo-dependency-config",
+    ): "native-cargo-dependency-config",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-rustc",
+    ): "native-rustc",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-linker",
+    ): "native-linker",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-pyo3",
+    ): "native-pyo3",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-permission",
+    ): "native-permission",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-missing-path",
+    ): "native-missing-path",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-compile",
+    ): "native-compile",
+    (
+        FullC6ExecutorError,
         "strict Cargo build failed with exit status 101",
     ): "native-build-exit-101",
     (

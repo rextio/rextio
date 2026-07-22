@@ -202,6 +202,107 @@ class FullC6ExecutorError(ReproducibilityError):
     """The strict Full C6 executor could not establish its bounded receipt."""
 
 
+_NATIVE_SANDBOX_STDERR_MESSAGES = {
+    reason: f"strict native sandbox build failed: {reason}"
+    for reason in (
+        "native-sandbox-bubblewrap",
+        "native-cargo-dependency-config",
+        "native-rustc",
+        "native-linker",
+        "native-pyo3",
+        "native-permission",
+        "native-missing-path",
+        "native-compile",
+    )
+}
+
+
+def _classify_native_sandbox_stderr(stderr: object) -> str | None:
+    """Reduce captured native stderr to one non-authorizing static category."""
+    if type(stderr) is not str or not stderr:
+        return None
+    lowered = stderr.casefold()
+    if re.search(r"(?m)^bwrap:", lowered) is not None:
+        return "native-sandbox-bubblewrap"
+    if any(
+        marker in lowered
+        for marker in (
+            "failed to get `",
+            "failed to load source for dependency",
+            "failed to select a version for",
+            "no matching package named",
+            "failed to parse manifest",
+            "failed to parse lock file",
+            "failed to read root of directory source",
+            "needs to be updated but --locked was passed",
+            "http request, but --offline was specified",
+            "could not find cargo.toml",
+        )
+    ):
+        return "native-cargo-dependency-config"
+    if any(
+        marker in lowered
+        for marker in (
+            "failed to run custom build command for `pyo3",
+            "pyo3_config_file",
+            "pyo3_python",
+            "unable to find a python interpreter",
+            "failed to find the python interpreter",
+        )
+    ):
+        return "native-pyo3"
+    if any(
+        marker in lowered
+        for marker in (
+            "linking with `",
+            "linker command failed",
+            "undefined reference to",
+            "ld returned ",
+            "symbol(s) not found",
+        )
+    ):
+        return "native-linker"
+    if any(
+        marker in lowered
+        for marker in (
+            "permission denied",
+            "operation not permitted",
+            "read-only file system",
+        )
+    ):
+        return "native-permission"
+    if any(
+        marker in lowered
+        for marker in (
+            "no such file or directory",
+            "(os error 2)",
+            "file not found",
+        )
+    ):
+        return "native-missing-path"
+    if (
+        "error: rustc " in lowered
+        or ("could not execute process" in lowered and "rustc" in lowered)
+        or "rustc: error while loading shared libraries" in lowered
+    ):
+        return "native-rustc"
+    if (
+        re.search(r"(?m)^error(?:\[e[0-9]{4}\])?:", lowered) is not None
+        or "could not compile `" in lowered
+        or "aborting due to" in lowered
+    ):
+        return "native-compile"
+    return None
+
+
+def _native_sandbox_stderr_error(stderr: object) -> FullC6ExecutorError | None:
+    """Create an error containing only an allowlisted category, never stderr."""
+    reason = _classify_native_sandbox_stderr(stderr)
+    if reason is None:
+        return None
+    return FullC6ExecutorError(_NATIVE_SANDBOX_STDERR_MESSAGES[reason])
+
+
 def _rebuild_external_wheel_contract(
     value: ExternalWheelContract,
 ) -> ExternalWheelContract:
@@ -2197,9 +2298,13 @@ def execute_full_c6_two_build(
                     receipt_bound_config=receipt_bound_config,
                 )
             if completed.returncode != 0:
-                raise FullC6ExecutorError(
+                failure = FullC6ExecutorError(
                     f"strict Cargo build failed with exit status {completed.returncode}"
                 )
+                detail = _native_sandbox_stderr_error(completed.stderr)
+                if detail is not None:
+                    raise failure from detail
+                raise failure
             _verify_native_toolchain_invocation(
                 host_argv,
                 environment=environment,
