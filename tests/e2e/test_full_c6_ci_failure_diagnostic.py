@@ -28,6 +28,137 @@ def _load_diagnostic() -> ModuleType:
 DIAGNOSTIC = _load_diagnostic()
 
 
+def _zero_counts(names: tuple[str, ...]) -> dict[str, int]:
+    return {name: 0 for name in names}
+
+
+def test_macos_sandbox_log_parser_emits_only_closed_count_families() -> None:
+    messages = [
+        "Sandbox: cargo(1) deny(1) file-read-data /dev/null",
+        "Sandbox: rustc(2) deny(2) file-write-create /private/var/db/secret",
+        "Sandbox: clang(3) deny(3) file-map-executable /Applications/Xcode.app/bin/clang",
+        "Sandbox: ld(4) deny(4) process-exec /private/etc/private-tool",
+        "Sandbox: cc(5) deny(5) sysctl-read hw.ncpu",
+        "Sandbox: ar(6) deny(6) mach-lookup private.owner.service",
+        "Sandbox: ranlib(7) deny(7) ipc-posix-shm-read private-owner",
+        "Sandbox: build-script-build(8) deny(8) network-outbound private.example:443",
+        "Sandbox: cargo(9) deny(9) file-write-data /private/var/folders/private/T/item",
+        "Sandbox: untrusted(10) deny(10) file-read-data /owner/private",
+        "prefix Sandbox: cargo(11) deny(11) file-read-data /owner/private",
+    ]
+    document = [
+        {
+            "subsystem": "com.apple.sandbox.reporting",
+            "eventMessage": message,
+            "privateIgnoredField": "/must/not/escape",
+        }
+        for message in messages
+    ]
+
+    summary = DIAGNOSTIC._parse_macos_sandbox_log_json(
+        json.dumps(document).encode("utf-8")
+    )
+
+    assert summary == {
+        "status": "ok",
+        "accepted_count": 9,
+        "operation_counts": {
+            "file-read": 1,
+            "file-write": 2,
+            "file-map-exec": 1,
+            "process-exec": 1,
+            "sysctl-read": 1,
+            "mach-lookup": 1,
+            "ipc": 1,
+            "network": 1,
+            "other": 0,
+        },
+        "root_counts": {
+            "/dev": 1,
+            "private-var": 1,
+            "private-etc": 1,
+            "Library": 0,
+            "Preboot": 0,
+            "host-temp": 1,
+            "Xcode": 1,
+            "other-absolute": 0,
+            "non-path": 4,
+        },
+    }
+    assert "/must/not/escape" not in json.dumps(summary)
+    assert (
+        DIAGNOSTIC._macos_sandbox_root_family("/Users/runner/work/_temp/private")
+        == "host-temp"
+    )
+
+
+def test_macos_sandbox_log_query_uses_fixed_bounded_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+    payload = json.dumps(
+        [
+            {
+                "subsystem": "com.apple.sandbox.reporting",
+                "eventMessage": "Sandbox: cargo(42) deny(1) file-read-data /Library/private",
+            }
+        ]
+    ).encode("utf-8")
+
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        seen["command"] = command
+        seen.update(kwargs)
+        return type("Completed", (), {"returncode": 0, "stdout": payload})()
+
+    monkeypatch.setattr(DIAGNOSTIC.subprocess, "run", fake_run)
+    summary = DIAGNOSTIC._query_macos_sandbox_log()
+
+    assert seen["command"] == [
+        "/usr/bin/log",
+        "show",
+        "--last",
+        "15m",
+        "--style",
+        "json",
+        "--predicate",
+        (
+            'subsystem == "com.apple.sandbox.reporting" AND '
+            'eventMessage BEGINSWITH "Sandbox:"'
+        ),
+    ]
+    assert seen["timeout"] == DIAGNOSTIC.MACOS_SANDBOX_LOG_TIMEOUT_SECONDS
+    assert seen["stdout"] == DIAGNOSTIC.subprocess.PIPE
+    assert seen["stderr"] == DIAGNOSTIC.subprocess.DEVNULL
+    assert summary["status"] == "ok"
+    assert summary["root_counts"]["Library"] == 1
+
+
+@pytest.mark.parametrize("failure", ("malformed", "oversized"))
+def test_macos_sandbox_log_query_fails_closed_with_static_zero_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    payload = (
+        b"not-json-private-owner-data"
+        if failure == "malformed"
+        else b"x" * (DIAGNOSTIC.MAX_MACOS_SANDBOX_LOG_BYTES + 1)
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> object:
+        return type("Completed", (), {"returncode": 0, "stdout": payload})()
+
+    monkeypatch.setattr(DIAGNOSTIC.subprocess, "run", fake_run)
+    summary = DIAGNOSTIC._query_macos_sandbox_log()
+
+    assert summary == {
+        "status": "failed-closed",
+        "accepted_count": 0,
+        "operation_counts": _zero_counts(DIAGNOSTIC.MACOS_SANDBOX_OPERATION_FAMILIES),
+        "root_counts": _zero_counts(DIAGNOSTIC.MACOS_SANDBOX_ROOT_FAMILIES),
+    }
+    assert "private-owner-data" not in json.dumps(summary)
+
+
 def _canonical_sha256(domain: str, fields: dict[str, object]) -> str:
     encoded = json.dumps(
         {"domain": domain, **fields},

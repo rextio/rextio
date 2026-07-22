@@ -7,11 +7,13 @@ user-selected paths.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import posixpath
+import re
 import stat
+import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -43,6 +45,54 @@ MAX_DIRECTORY_ENTRIES = 65_536
 MAX_PATH_BYTES = 8_192
 MAX_LINE_BYTES = 8_192
 MAX_OUTPUT_BYTES = 256 * 1_024
+MAX_MACOS_SANDBOX_LOG_BYTES = 512 * 1_024
+MAX_MACOS_SANDBOX_LOG_RECORDS = 4_096
+MAX_MACOS_SANDBOX_MESSAGE_BYTES = 8_192
+MACOS_SANDBOX_LOG_TIMEOUT_SECONDS = 20.0
+
+MACOS_SANDBOX_OPERATION_FAMILIES = (
+    "file-read",
+    "file-write",
+    "file-map-exec",
+    "process-exec",
+    "sysctl-read",
+    "mach-lookup",
+    "ipc",
+    "network",
+    "other",
+)
+MACOS_SANDBOX_ROOT_FAMILIES = (
+    "/dev",
+    "private-var",
+    "private-etc",
+    "Library",
+    "Preboot",
+    "host-temp",
+    "Xcode",
+    "other-absolute",
+    "non-path",
+)
+_MACOS_SANDBOX_PROCESSES = (
+    "cargo",
+    "rustc",
+    "clang",
+    "ld",
+    "cc",
+    "ar",
+    "ranlib",
+    "build-script-build",
+)
+_MACOS_SANDBOX_LOG_PREDICATE = (
+    'subsystem == "com.apple.sandbox.reporting" AND '
+    'eventMessage BEGINSWITH "Sandbox:"'
+)
+_MACOS_SANDBOX_DENIAL = re.compile(
+    r"^Sandbox: (?P<process>"
+    + "|".join(re.escape(item) for item in _MACOS_SANDBOX_PROCESSES)
+    + r")\([0-9]{1,20}\) deny\([0-9]{1,20}\) "
+    + r"(?P<operation>[a-z][a-z0-9-]{0,63}) "
+    + r"(?P<resource>[^\r\n]+)$"
+)
 
 XCODE_SUPPORT_PATH_POLICY_DOMAIN = "rextio.full-c6-xcode-hardlink-topology-support-path.v1"
 XCODE_ALIAS_PATH_POLICY_DOMAIN = "rextio.full-c6-xcode-hardlink-topology-alias-path.v1"
@@ -131,6 +181,145 @@ def _policy_sha256(domain: str, fields: dict[str, object]) -> str:
 
 def _path_policy_sha256(*, domain: str, field_name: str, path: str) -> str:
     return _policy_sha256(domain, {field_name: _bounded_text(path)})
+
+
+def _empty_macos_sandbox_log_summary(*, status: str) -> dict[str, object]:
+    return {
+        "status": status,
+        "accepted_count": 0,
+        "operation_counts": {
+            name: 0 for name in MACOS_SANDBOX_OPERATION_FAMILIES
+        },
+        "root_counts": {name: 0 for name in MACOS_SANDBOX_ROOT_FAMILIES},
+    }
+
+
+def _macos_sandbox_operation_family(operation: str) -> str:
+    if operation.startswith("file-read"):
+        return "file-read"
+    if operation.startswith("file-write"):
+        return "file-write"
+    if operation == "file-map-executable":
+        return "file-map-exec"
+    if operation == "process-exec":
+        return "process-exec"
+    if operation == "sysctl-read":
+        return "sysctl-read"
+    if operation == "mach-lookup":
+        return "mach-lookup"
+    if operation.startswith("ipc-"):
+        return "ipc"
+    if operation == "network" or operation.startswith("network-"):
+        return "network"
+    return "other"
+
+
+def _resource_is_within(resource: str, root: str) -> bool:
+    return resource == root or resource.startswith(root + "/")
+
+
+def _macos_sandbox_root_family(resource: str) -> str:
+    for root in (
+        "/private/var/folders",
+        "/var/folders",
+        "/private/tmp",
+        "/tmp",
+        "/Users/runner/work/_temp",
+    ):
+        if _resource_is_within(resource, root):
+            return "host-temp"
+    for root, family in (
+        ("/dev", "/dev"),
+        ("/private/var", "private-var"),
+        ("/var", "private-var"),
+        ("/private/etc", "private-etc"),
+        ("/etc", "private-etc"),
+        ("/Library", "Library"),
+        ("/System/Volumes/Preboot", "Preboot"),
+        ("/Applications/Xcode.app", "Xcode"),
+    ):
+        if _resource_is_within(resource, root):
+            return family
+    return "other-absolute" if resource.startswith("/") else "non-path"
+
+
+def _parse_macos_sandbox_log_json(payload: bytes) -> dict[str, object]:
+    if len(payload) > MAX_MACOS_SANDBOX_LOG_BYTES:
+        raise _ScanBoundExceeded("macos-sandbox-log-byte-bound")
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("macos-sandbox-log-json") from exc
+    if type(document) is not list or len(document) > MAX_MACOS_SANDBOX_LOG_RECORDS:
+        raise RuntimeError("macos-sandbox-log-document")
+    summary = _empty_macos_sandbox_log_summary(status="ok")
+    operation_counts = summary["operation_counts"]
+    root_counts = summary["root_counts"]
+    assert isinstance(operation_counts, dict)
+    assert isinstance(root_counts, dict)
+    accepted_count = 0
+    for record in document:
+        if type(record) is not dict:
+            raise RuntimeError("macos-sandbox-log-record")
+        subsystem = record.get("subsystem")
+        message = record.get("eventMessage")
+        if subsystem != "com.apple.sandbox.reporting" or type(message) is not str:
+            continue
+        if (
+            len(message.encode("utf-8")) > MAX_MACOS_SANDBOX_MESSAGE_BYTES
+            or any(ord(character) < 32 for character in message)
+        ):
+            raise RuntimeError("macos-sandbox-log-message")
+        matched = _MACOS_SANDBOX_DENIAL.fullmatch(message)
+        if matched is None:
+            continue
+        operation = _macos_sandbox_operation_family(matched.group("operation"))
+        root = _macos_sandbox_root_family(matched.group("resource"))
+        operation_counts[operation] += 1
+        root_counts[root] += 1
+        accepted_count += 1
+    summary["accepted_count"] = accepted_count
+    return summary
+
+
+def _query_macos_sandbox_log() -> dict[str, object]:
+    try:
+        completed = subprocess.run(
+            [
+                "/usr/bin/log",
+                "show",
+                "--last",
+                "15m",
+                "--style",
+                "json",
+                "--predicate",
+                _MACOS_SANDBOX_LOG_PREDICATE,
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=MACOS_SANDBOX_LOG_TIMEOUT_SECONDS,
+            env={"LANG": "C", "LC_ALL": "C"},
+        )
+        if completed.returncode != 0 or type(completed.stdout) is not bytes:
+            raise RuntimeError("macos-sandbox-log-command")
+        return _parse_macos_sandbox_log_json(completed.stdout)
+    except (
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        _ScanBoundExceeded,
+    ):
+        return _empty_macos_sandbox_log_summary(status="failed-closed")
+
+
+def _emit_macos_sandbox_log_summary(reporter: _Reporter) -> None:
+    try:
+        summary = _query_macos_sandbox_log()
+    except Exception:  # CI diagnostics must not hide the original failure.
+        summary = _empty_macos_sandbox_log_summary(status="failed-closed")
+    reporter.emit("macos-sandbox-denial-summary", **summary)
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -602,6 +791,7 @@ def main() -> int:
     )
     try:
         if sys.platform == "darwin":
+            _emit_macos_sandbox_log_summary(reporter)
             _diagnose_macos(reporter)
         elif sys.platform.startswith("linux"):
             _diagnose_linux(reporter)
