@@ -28,9 +28,7 @@ FULL_C6_LINUX_LAUNCHER_FAILURE_PREFIX = (
     "Rextio Full C6 Linux launcher failed closed: "
 )
 FULL_C6_LINUX_ENVIRONMENT_ARGV_FAILURE_STAGES = (
-    "environment-argv-unexpected-pwd",
     "environment-argv-unexpected-lc-ctype",
-    "environment-argv-unexpected-pwd-lc-ctype",
     "environment-argv-closed-set",
     "environment-argv-fixed-value",
     "environment-argv-variable-value",
@@ -156,6 +154,7 @@ _FIXED_ENVIRONMENT = {
     "PATH": "/rextio/toolchain/bin:/rextio/python/bin",
     "PYO3_CONFIG_FILE": _PYO3_CONFIG_PATH,
     "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
+    "PWD": "/rextio/project",
     "PYTHONHASHSEED": "0",
     "RANLIB": "/rextio/toolchain/bin/ranlib",
     "RUSTC": "/rextio/toolchain/bin/rustc",
@@ -234,12 +233,8 @@ def _environment_argv_failure_stage(
         observed = set(environment)
     except BaseException:
         return "environment-argv"
-    if observed == expected.union({"PWD"}):
-        return "environment-argv-unexpected-pwd"
     if observed == expected.union({"LC_CTYPE"}):
         return "environment-argv-unexpected-lc-ctype"
-    if observed == expected.union({"PWD", "LC_CTYPE"}):
-        return "environment-argv-unexpected-pwd-lc-ctype"
     if observed != expected:
         return "environment-argv-closed-set"
     return "environment-argv"

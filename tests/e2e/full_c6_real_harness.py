@@ -86,8 +86,6 @@ _FULL_C6_BUILD_FAILURE_REASON_CODES = frozenset(
         "linux-launcher-environment-argv-malformed-row",
         "linux-launcher-environment-argv-payload-executable",
         "linux-launcher-environment-argv-unexpected-lc-ctype",
-        "linux-launcher-environment-argv-unexpected-pwd",
-        "linux-launcher-environment-argv-unexpected-pwd-lc-ctype",
         "linux-launcher-environment-argv-variable-value",
         "linux-launcher-exit-125",
         "linux-launcher-landlock",

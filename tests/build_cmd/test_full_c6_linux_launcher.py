@@ -51,6 +51,7 @@ def _environment() -> dict[str, str]:
         "PYO3_ENVIRONMENT_SIGNATURE": (
             launcher.expected_linux_pyo3_environment_signature()
         ),
+        "PWD": "/rextio/project",
         "PYTHONHASHSEED": "0",
         "RANLIB": "/rextio/toolchain/bin/ranlib",
         "RUSTC": "/rextio/toolchain/bin/rustc",
@@ -126,6 +127,7 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
         ("LD_LIBRARY_PATH", "/host/lib"),
         ("LIBRARY_PATH", "/host/lib"),
         ("PYO3_ENVIRONMENT_SIGNATURE", "not-a-digest"),
+        ("PWD", "/private/owner/project"),
         ("RANLIB", "/host/ranlib"),
         ("SOURCE_DATE_EPOCH", "-1"),
     ),
@@ -505,12 +507,8 @@ def test_launcher_main_emits_only_the_exact_static_failure_stage(
 @pytest.mark.parametrize(
     ("case", "expected_stage"),
     (
-        ("unexpected-pwd", "environment-argv-unexpected-pwd"),
+        ("pwd-fixed-value", "environment-argv-fixed-value"),
         ("unexpected-lc-ctype", "environment-argv-unexpected-lc-ctype"),
-        (
-            "unexpected-pwd-lc-ctype",
-            "environment-argv-unexpected-pwd-lc-ctype",
-        ),
         ("closed-set-missing", "environment-argv-closed-set"),
         ("closed-set-other", "environment-argv-closed-set"),
         ("closed-set-pwd-and-missing", "environment-argv-closed-set"),
@@ -530,12 +528,9 @@ def test_launcher_main_classifies_exact_environment_argv_failures(
 ) -> None:
     environment = _environment()
     argv = list(_argv(environment))
-    if case == "unexpected-pwd":
+    if case == "pwd-fixed-value":
         environment["PWD"] = "/private/owner/project"
     elif case == "unexpected-lc-ctype":
-        environment["LC_CTYPE"] = "owner-controlled"
-    elif case == "unexpected-pwd-lc-ctype":
-        environment["PWD"] = "/private/owner/project"
         environment["LC_CTYPE"] = "owner-controlled"
     elif case == "closed-set-missing":
         environment.pop("LANG")

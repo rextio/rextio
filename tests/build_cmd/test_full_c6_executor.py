@@ -204,9 +204,7 @@ def test_native_sandbox_stderr_classifier_returns_only_static_categories(
     (
         "cpython-runtime",
         "environment-argv",
-        "environment-argv-unexpected-pwd",
         "environment-argv-unexpected-lc-ctype",
-        "environment-argv-unexpected-pwd-lc-ctype",
         "environment-argv-closed-set",
         "environment-argv-fixed-value",
         "environment-argv-variable-value",
@@ -1472,7 +1470,18 @@ def test_native_orchestrator_rejects_caller_linker_environment_override(
         )
 
 
-def test_executor_rejects_caller_tmpdir_override(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("PWD", "/private/owner/project"),
+        ("TMPDIR", "/private/owner/tmp"),
+    ),
+)
+def test_executor_rejects_caller_owned_path_override(
+    tmp_path: Path,
+    name: str,
+    value: str,
+) -> None:
     import rextio.build.full_c6_executor as executor
 
     source = _project(tmp_path)
@@ -1482,7 +1491,7 @@ def test_executor_rejects_caller_tmpdir_override(tmp_path: Path) -> None:
             *_roots(tmp_path),
             build=lambda request: _outputs(request.context.build_root),
             cargo_command=STRICT_BUILD,
-            base_environment={"TMPDIR": "/private/owner/tmp"},
+            base_environment={name: value},
             source_date_epoch=1,
         )
 
@@ -1615,6 +1624,7 @@ def test_linux_payload_environment_projects_receipted_runtime_topology(
     assert projected["PATH"] == (
         "/rextio/toolchain/bin:/rextio/python/bin"
     )
+    assert projected["PWD"] == "/rextio/project"
     assert projected["LIBRARY_PATH"].split(":") == [
         "/rextio/support/gcc-toolchain",
         "/x86_64-linux-gnu",

@@ -161,6 +161,7 @@ _RESERVED_ENV = frozenset(
         "PYO3_CONFIG_FILE",
         "PYO3_ENVIRONMENT_SIGNATURE",
         "PYO3_PYTHON",
+        "PWD",
         "RUSTC",
         "RUSTFLAGS",
         "SOURCE_DATE_EPOCH",
@@ -170,7 +171,7 @@ _RESERVED_ENV = frozenset(
 ) | _NATIVE_LINKER_ENV_NAMES
 _EXECUTOR_ENV_ALLOWLIST = (
     STRICT_BUILD_ENV_ALLOWLIST
-    | frozenset({"HOME", "TMPDIR"})
+    | frozenset({"HOME", "PWD", "TMPDIR"})
     | _PYO3_ENV_NAMES
 )
 _FORBIDDEN_ENV = frozenset(
@@ -4842,6 +4843,7 @@ def _linux_native_payload_environment(
     result["PATH"] = (
         f"/rextio/toolchain/bin:{FULL_C6_LINUX_PYTHON_ROOT}/bin"
     )
+    result["PWD"] = _PROJECT_ROOT_TOKEN
     gcc_support = _native_support_virtual_path(
         support_plan,
         "support-gcc-toolchain",
