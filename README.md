@@ -5,16 +5,14 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio **0.1.4** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-18 with plugin API **1.3** and tooling contract
-**2.2.0**, superseding 0.1.3. It finds
+Rextio **0.1.5** is an alpha-stage local build tool for Python projects,
+published to PyPI on 2026-07-23 with plugin API **1.4**, tooling contract
+**2.24.0**, and readiness policy **11**, superseding 0.1.4. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
-**Unreleased branch note:** `main` remains at the released 0.1.4 commit while
-Release Train C integrates on the next-version branch `0.1.5`; feature PRs
-target `0.1.5` until the final release PR. Release Train C adds experimental host source/
+**0.1.5 Release Train C:** this published release adds experimental host source/
 artifact planning, a narrow initializer-before-main Rust executable slice, and
 plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
 host-executable), plus a C5.1 external pure-Python source inventory/gate
@@ -109,12 +107,11 @@ rendered profile contains process-local paths and is neither public nor signed.
 This is a bounded Alpha integrity contract, not general hermetic execution.
 Plugins, executables, rust-crate output,
 top-level AOT, embedding, Windows, recursive promotion, and general
-external-source translation remain excluded. This branch emits additive
-tooling contract **2.24.0** and plugin API **1.4** while keeping package version
-**0.1.4**; those changes are not yet a tagged or PyPI release. Published 0.1.4
-remains the plugin API **1.3** / contract **2.2.0** producer. This Alpha does
-not authorize merging `0.1.5` into `main`, tagging a release, or uploading to
-PyPI. See
+external-source translation remain excluded. These surfaces ship in package
+**0.1.5** with tooling contract **2.24.0**, plugin API **1.4**, and readiness
+policy **11**. They remain Experimental/Alpha and do not claim broad Full C6,
+general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
+CI certification. See
 [Host source-AOT and native executables](docs/source-aot-and-executables.md) and
 [plugin lowering](docs/specs/plugin-lowering.md) §10.
 
@@ -177,8 +174,8 @@ The main commands:
 | `rextio init` | Creates `rextio.toml`, `REXTIO.md`, and `.rextioignore`. |
 | `rextio check` | Analyzes native candidates and prints diagnostics (structured JSON via `--format json`). |
 | `rextio capabilities` | Prints the machine-readable capability manifest: supported types, promotion rules with guidance, and active plugins (experimental). |
-| `rextio policy bootstrap-support-lock` | Creates or exactly reuses the canonical, non-authorizing Full-C6 host support lock and returns the two config values to pin (unreleased/experimental). |
-| `rextio policy finalize` | Combines one exact Full-C6 bootstrap v2 and explicit owner completion into an unsigned, non-authorizing policy manifest v2 (unreleased/experimental). |
+| `rextio policy bootstrap-support-lock` | Creates or exactly reuses the canonical, non-authorizing Full-C6 host support lock and returns the two config values to pin (0.1.5 Experimental). |
+| `rextio policy finalize` | Combines one exact Full-C6 bootstrap v2 and explicit owner completion into an unsigned, non-authorizing policy manifest v2 (0.1.5 Experimental). |
 | `rextio generate` | Writes generated Rust and Python source without compiling. |
 | `rextio build` | Generates, compiles, packages, and writes build reports. |
 | `rextio bench` | Compares Python fallback and Rust native timing for one function. |
@@ -521,7 +518,7 @@ argv handling and the entrypoint. Source hashes and statement indexes are
 revalidated. The assigned values are discarded: they are not Rust globals,
 are not published back to Python, and cannot be read by native functions.
 Anything broader makes the executable unavailable before Cargo. This
-unreleased slice is documented in
+0.1.5 Experimental slice is documented in
 [Host source-AOT and native executables](docs/source-aot-and-executables.md).
 
 When direct Rust functions are useful from a Rust application, build an
@@ -604,7 +601,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.4.
+Rust is the only implemented native target in 0.1.5.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -627,7 +624,7 @@ default_external_policy = "fallback"
 "known_pkg" = { policy = "plugin", plugin = "known-rust" }
 ```
 
-The unreleased C5.1 surface has a deliberately non-building preview for one
+The 0.1.5 Experimental C5.1 surface has a deliberately non-building preview for one
 exact installed pure-Python distribution:
 
 ```toml
@@ -671,7 +668,7 @@ verified lock still reports `external-source-c5-not-implemented`; only the
 strict signed profile below may attempt to create same-transaction C5.2 build
 authority, subject to every later hard gate.
 
-### Bounded Full C6 + C5.2 Alpha (unreleased)
+### Bounded Full C6 + C5.2 Alpha (0.1.5 Experimental)
 
 `artifact_distribution_policy = "strict-evidence"` selects the separate
 strict evidence distribution profile. It fails closed, and its configuration
@@ -997,8 +994,10 @@ claims/lowering, and **structured `ClaimExpr` trees plus leaves-mode
 lowering** enable fusion. **0.1.3** ships additive plugin API **1.3**:
 opaque resident values/native chaining plus static receiver,
 callable-body/native-symbol, and declared-schema claim metadata, with
-version-gated static `bool`/`str` named-keyword literals. API 1.1/1.2
-providers keep their legacy shapes; API 1.3 remains Experimental. The
+version-gated static `bool`/`str` named-keyword literals. **0.1.5** ships
+additive plugin API **1.4** for optional, fail-closed standalone artifact
+capability. API 1.1/1.2/1.3 providers keep their legacy shapes; API 1.4 remains
+Experimental. The
 first-party [rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is
 installed separately (core has no reverse dependency on it). PyPI **0.1.1** is
 the published API-1.2 consumer with literal-axis and fusion support and
@@ -1014,6 +1013,9 @@ Release Train B in strict consumer-first order. It retains plugin API 1.3 and
 emits tooling contract **2.2.0**, adding isolated promotion assessments,
 trusted marker intent, and reliable function/name ranges without changing
 legacy route/status/rejection meanings.
+Core **0.1.5** was published on 2026-07-23 with plugin API **1.4**, tooling
+contract **2.24.0**, and readiness policy **11**. Its Train C surfaces remain
+Experimental/Alpha under the bounded scope described above.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
 
@@ -1098,7 +1100,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.4 supports a deliberately small subset. This is the code
+Rextio 0.1.5 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:
@@ -1323,8 +1325,8 @@ gates.
 
 Plans, not promises - priorities can shift with alpha feedback:
 
-The unreleased Train C branch now contains the bounded Full-C6/C5.2 Alpha
-described above. Broader external-package promotion remains deferred; the next
+Rextio 0.1.5 ships the bounded Full-C6/C5.2 Alpha described above. Broader
+external-package promotion remains deferred; the next
 platform milestone is bounded WASM work after the host release gate is ready.
 
 1. Stabilization first: hardening the 0.1.0 surface based on real
@@ -1346,9 +1348,9 @@ platform milestone is bounded WASM work after the host release gate is ready.
 - [Feature stability](docs/stability.md) — what is stable vs. experimental in 0.1.0.
 - [Versioning policy](docs/versioning.md) — SemVer with pre-1.0 caveats.
 - [Unsupported features](docs/unsupported-features.md) — the 0.1.0 subset boundaries.
-- [Host source-AOT and native executables](docs/source-aot-and-executables.md) — unreleased Train C planning and initializer limits.
+- [Host source-AOT and native executables](docs/source-aot-and-executables.md) — 0.1.5 Experimental Train C planning and initializer limits.
 - [Device-provider API draft](docs/specs/device-provider.md) — non-operational hardware/runtime contract boundary.
-- [CUDA Driver API inventory validation](docs/testing/cuda-driver-validation.md) — Windows+Linux bounded probe instructions; not a CUDA support claim.
+- [CUDA Driver API inventory validation](docs/testing/cuda-driver-validation.md) — repository-only Windows+Linux bounded probe instructions; not installed by the PyPI package and not a CUDA support claim.
 - [Security model](SECURITY.md) — trust boundary and how to report vulnerabilities.
 - [Contributing](CONTRIBUTING.md) — setup, gates, and conventions.
 - [Changelog](CHANGELOG.md).

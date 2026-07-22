@@ -1,7 +1,8 @@
 # CUDA Driver API inventory validation (Windows + Linux)
 
-The Train C validation tool is an unpublished, no-dependency Rust probe. It is
-for collecting bounded host facts before a future CUDA provider exists. It is
+The Train C validation tool is a repository-only, no-dependency Rust probe; it
+is not installed as part of the PyPI package. It collects bounded host facts
+before a future CUDA provider exists and is
 **not** CUDA support, a provider implementation, or a performance test.
 
 Supported probe hosts:

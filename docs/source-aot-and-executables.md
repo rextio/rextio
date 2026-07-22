@@ -1,11 +1,11 @@
 # Host source-AOT and native executables
 
-Status: **Unreleased Release Train C**, experimental. The latest published
-Rextio release remains **0.1.4** with tooling contract **2.2.0**. The Train C
-branch emits the additive, unreleased tooling contract **2.24.0**; none of the
-surfaces on this page should be treated as already available from PyPI. The
-strict artifact authority described here does not authorize merging `0.1.5`
-into `main`, tagging a release, or uploading any package to PyPI.
+Status: shipped in Rextio **0.1.5** as **Experimental/Alpha**. Core 0.1.5 was
+published to PyPI on 2026-07-23 with plugin API **1.4**, tooling contract
+**2.24.0**, and readiness policy **11**, superseding 0.1.4. The bounded strict
+artifact authority described here is not broad Full C6, general package AOT,
+general hermetic execution, CUDA support, or heavy host-lifecycle CI
+certification.
 
 Train C introduces a fail-closed planning layer for host source, output
 artifacts, and native executable entry graphs. It also connects one deliberately
@@ -986,7 +986,7 @@ model Python module global state.
 
 ## Tooling-contract 2.6 reports
 
-The unreleased additive contract exposes:
+The additive contract shipped in 0.1.5 exposes:
 
 - top-level `host_source_plan` in `rextio check --format json` and
   `.rextio/reports/check.json`;
@@ -1013,8 +1013,9 @@ future hardware/runtime providers. There is no discovery, provider selection,
 build/link hook, runtime dispatch, or CUDA provider in this train. See the
 [device-provider API draft](specs/device-provider.md).
 
-The no-dependency Rust probe inventories a bounded set of NVIDIA Driver API
-symbols and device facts on Windows x64 and Linux x86_64/aarch64. It never
+The repository-only, no-dependency Rust probe (not installed by the PyPI
+package) inventories a bounded set of NVIDIA Driver API symbols and device
+facts on Windows x64 and Linux x86_64/aarch64. It never
 creates a context, manages memory, launches a kernel, or links generated code.
 Every result has `support_claim: false`, including a report that successfully
 enumerates a GPU. See

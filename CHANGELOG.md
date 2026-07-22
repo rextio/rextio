@@ -1,20 +1,19 @@
 # Changelog
 
-## Unreleased — Release Train C
+## 0.1.5 — 2026-07-23
 
-**Experimental branch work; not tagged or published to PyPI.** The latest
-published package remains Rextio **0.1.4** with plugin API **1.3** and tooling
-contract **2.2.0**. This branch advances the unreleased producer to plugin API
-**1.4** and tooling contract **2.24.0** (package version stays **0.1.4**). Prior
-Train C host-planning work remains under the same unreleased line. Unreleased
-feature PRs target the `0.1.5` integration branch; `main` stays at the published
-0.1.4 commit until the final authorized release PR. Nothing in this Alpha
-authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
+**Published release.** Package version `0.1.5` is tagged and published to PyPI
+with plugin API **1.4**, tooling contract **2.24.0**, and readiness policy
+**11**, superseding `0.1.4`. Release Train C ships the host source/artifact and
+native-executable architecture plus the frozen, bounded Full-C6/C5.2 Alpha.
+Those new surfaces remain Experimental/Alpha: this release does not claim
+broad Full C6, general package AOT, general hermeticity, CUDA support, or heavy
+host-lifecycle CI certification.
 
-- Rename the unreleased public artifact distribution policy from its internal
+- Rename the public artifact distribution policy from its internal
   milestone-derived label to `strict-evidence`, and rename
   its serialized failure status to `strict-evidence-failed`. The old names are
-  not accepted because this contract has not been released.
+  not accepted; those spellings were internal and were never released.
 - Preserve CPython source-order semantics for eager function annotations in
   bounded module initialization, and fail closed on native-symbol collisions
   (including duplicate qualnames) within each artifact's actual emitted set.
@@ -102,8 +101,8 @@ authorizes the `0.1.5` → `main` merge, a tag, or a PyPI upload.
   enter the wheel, and uses isolated build/install environments plus the
   existing real-Cargo E2E harness. Its result is evidence for that host and
   exact recorded commit, not CI certification.
-- Advance only the unreleased tooling contract to **2.24.0**. Package
-  **0.1.4** and plugin API **1.4** remain unchanged.
+- Publish tooling contract **2.24.0**, plugin API **1.4**, and readiness policy
+  **11** with package **0.1.5**.
 
 ### C5.2 / Full C6 bounded Alpha coordinator and owner-policy handoff (tooling contracts 2.22.0-2.23.0)
 

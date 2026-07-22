@@ -1,10 +1,10 @@
 # Spec: Machine-Readable Tooling Contract
 
 Status: **draft** (experimental tier). The current published producer is core
-0.1.4, released on 2026-07-18 with `contract_version` `2.2.0` and plugin API
-**1.3**. The Release Train C branch contains the additive, **unreleased**
-`2.24.0` producer (plugin API **1.4**) described below; it is not yet a PyPI
-contract. Package version on the branch remains **0.1.4**.
+**0.1.5**, released on 2026-07-23 with `contract_version` **`2.24.0`**, plugin
+API **1.4**, and readiness policy **11**, superseding core 0.1.4 / contract
+2.2.0. The Train C surfaces described below ship in 0.1.5 but remain
+Experimental/Alpha.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -22,13 +22,7 @@ consume instead:
 
 ## Contract versioning
 
-Both JSON surfaces carry a top-level field. The published 0.1.4 producer emits:
-
-```json
-{ "contract_version": "2.2.0" }
-```
-
-The unreleased Train C branch emits:
+Both JSON surfaces carry a top-level field. The published 0.1.5 producer emits:
 
 ```json
 { "contract_version": "2.24.0" }
@@ -67,7 +61,11 @@ to generic guidance when the major is outside what they support.
 | `2.21.0` | **Unreleased additive strict Full-C6 primitive shape** (Train C intermediate). Adds immutable preauthorization/final evidence, complete frozen owner policy, two-isolated-build executor/reproducibility, toolchain/input/runtime/supply-chain receipts, external detached-signature verification, a sealed distribution-authorization token, and create-if-absent atomic bundle publication. This is a separate hard-authority chain; it does not promote or reinterpret C6.2-C6.15 preview evidence/readiness. The frozen scope is CPython/PyO3/Cargo on macOS arm64 or Linux x86_64, one exact depth-1 pure-Python wheel, and no plugins/executable/rust-crate/top-level/embedding/Windows. |
 | `2.22.0` | **Unreleased additive bounded C5.2 and initial CLI-coordinator shape** (Train C intermediate). Adds a sealed same-transaction external build context, direct typed scalar leaf-call linkage, private external Rust IR, an exact output-wheel `Requires-Dist`/runtime-guard contract, and a three-stage lifecycle: non-authorizing owner-policy bootstrap; pinned-policy signing request; then externally detached-signed publication. Rextio never accepts, creates, or retains a private key. General external-source AOT and every scope excluded in 2.21.0 remain unsupported. |
 | `2.23.0` | **Unreleased exact Full-C6 owner-policy handoff and closure hardening** (Train C intermediate). Bootstrap schema/domain v2 embeds the canonical C6.14+C5.2 technical template, transformation set, and exact project/Cargo plus external-wheel license observations. A separate explicit owner completion is combined by `rextio policy finalize` into manifest/policy v2 with bootstrap lineage; every later production run recollects and rederives those facts. Every lifecycle still performs two actual isolated builds, while `FullC6ProductionAuthority` remains an uncopyable, unserializable process seal rather than distribution authority. Strict analysis binds the complete bounded Python namespace and forbids `.rextioignore`; preanalysis failure is stderr-only. Runtime admission never imports/introspects the external dependency module/callable and descriptor-relatively verifies exact installed source bytes. Exact external PEP 639 payloads are final-wheel license members under `external/<distribution>/<version>/`. Cargo lock/vendor pins prove owner-selected integrity, not registry/publisher origin. All prior frozen-scope exclusions remain. |
-| `2.24.0` | **Unreleased Full-C6 host support closure and production sandbox receipts** (current Train C producer). Adds the public, non-authorizing `policy bootstrap-support-lock` result and config pair; rejects exact/ancestor/descendant aliasing between that output and every configured lifecycle artifact or source archive; binds the fixed platform support plan plus canonical raw/Merkle lock identities; records path-free, engine-specific semantic sandbox profile digests for Linux bwrap/seccomp/isolated-CPython/Landlock or macOS sandbox-exec/Xcode/SDK/SSV execution in both invocation receipts; denies inherited macOS mutable-volume executable mappings; and carries those identities into strict SBOM/SLSA materials. Each strict build verifies the complete support tree once during host collection and twice inside the executor. This remains the frozen narrow Alpha, not a general hermetic-build claim. |
+| `2.24.0` | **Published Full-C6 host support closure and production sandbox receipts** (core 0.1.5; Experimental/Alpha). Adds the public, non-authorizing `policy bootstrap-support-lock` result and config pair; rejects exact/ancestor/descendant aliasing between that output and every configured lifecycle artifact or source archive; binds the fixed platform support plan plus canonical raw/Merkle lock identities; records path-free, engine-specific semantic sandbox profile digests for Linux bwrap/seccomp/isolated-CPython/Landlock or macOS sandbox-exec/Xcode/SDK/SSV execution in both invocation receipts; denies inherited macOS mutable-volume executable mappings; and carries those identities into strict SBOM/SLSA materials. Each strict build verifies the complete support tree once during host collection and twice inside the executor. This remains the frozen narrow Alpha, not a general hermetic-build claim. |
+
+Contracts 2.3.0-2.23.0 above are labeled unreleased because they were
+unpublished internal Train C intermediates, not because the final 2.24.0
+surface is absent from the published 0.1.5 package.
 
 Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
 on the contract **major** and applied a special-case RXT000 code-point map.
@@ -393,8 +391,9 @@ initialization option or custom protocol, and does not change the existing
 
 ## Host source and artifact planning (contract 2.3.0)
 
-This section describes the **unreleased** Release Train C additive shape.
-Published core 0.1.4 stops at contract 2.2.0.
+This section describes an additive shape first staged in the unpublished
+internal Train C contract 2.3.0 and now included in published core 0.1.5 /
+contract 2.24.0. Published core 0.1.4 stopped at contract 2.2.0.
 
 ### `host_source_plan`
 
@@ -2403,9 +2402,11 @@ owner-policy digest is absent only for bootstrap and mandatory
 for signing/publication. The detached signature is produced entirely outside
 Rextio and configured only for the publication stage.
 
-This contract remains integration-branch Alpha work. Neither its sealed
-distribution authorization nor an atomic local artifact bundle authorizes the
-`0.1.5` → `main` merge, a release tag, or a PyPI upload.
+This contract ships in 0.1.5 as Experimental/Alpha. Its sealed distribution
+authorization applies only to the bounded generated artifact bundle; it is not
+Rextio release automation and does not imply broad Full C6, general package
+AOT, general hermeticity, CUDA support, or heavy host-lifecycle CI
+certification.
 
 This strict chain does not change `artifact_distribution_authorization` below:
 that C6.5-C6.15 record remains readiness-only, always blocked, and incapable of
@@ -3114,7 +3115,7 @@ class RextioPluginV2(Protocol):
    source bytes descriptor-relatively, and carry exact external PEP 639 license
    payloads into the final wheel. Preserve two actual isolated builds per
    lifecycle and process-local-only production evidence authority.
-27. **Release Train C / contract 2.24.0 (unreleased):** add the public
+27. **0.1.5 / Release Train C / contract 2.24.0 (published 2026-07-23):** add the public
    non-authorizing support-lock bootstrap and exact config pair, fixed
    platform support closure, production Linux/macOS sandbox execution, and
    path-free semantic sandbox/support receipt bindings in executor,

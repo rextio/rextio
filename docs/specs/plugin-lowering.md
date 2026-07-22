@@ -4,11 +4,11 @@ Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 →
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** published core **0.1.4** ships plugin API **1.3** and tooling
-contract **2.2.0**. The unreleased Train C branch (package version still
-**0.1.4**) advances to plugin API **1.4**; the standalone artifact capability
-shape below was added in tooling contract **2.4.0**. The current branch producer
-is **2.24.0** because C5.1/C6.1-C6.15 and the strict Full-C6/C5.2 Alpha add unrelated external-source
+**Release framing:** published core **0.1.5** ships plugin API **1.4**, tooling
+contract **2.24.0**, and readiness policy **11**. The standalone artifact
+capability shape below first appeared in unpublished/internal intermediate
+tooling contract **2.4.0**. The published producer is **2.24.0** because
+C5.1/C6.1-C6.15 and the strict Full-C6/C5.2 Alpha add unrelated external-source
 inventory, authorization-contract evidence, host-extension wheel artifact
 evidence, its opt-in required gate, and a direct native runtime linkage
 inventory plus an always-blocked distribution-readiness assessment and bounded
@@ -20,8 +20,8 @@ project-source license-policy verification, C6.13 scoped analysis-input
 verification, C6.14 compact artifact-policy coverage inventory, and C6.15
 scoped artifact-class policy verification. Plugin API
 remains **1.4**; C6.4-C6.15 do
-not add runtime-bearing plugin support. These unreleased contracts do not
-authorize merging `0.1.5` into `main`, tagging, or publishing to PyPI.
+not add runtime-bearing plugin support. These 0.1.5 surfaces remain
+Experimental/Alpha and do not claim broad Full C6 or general package AOT.
 
 Contracts 2.21.0-2.24.0 do not widen this plugin API. Their strict C5.2 path is
 a separate core-owned linkage contract for exactly one SourceLock-authorized,
@@ -559,7 +559,7 @@ result equivalence with hypothesis — the same posture as core's own
   hint on accelerator-decorated functions is unchanged (decorator still
   wins: explicit decorator > plugin > fallback).
 
-## 8. Versioning and rollout (released 1.2 / 1.3)
+## 8. Versioning and rollout (released 1.2 / 1.3 / 1.4)
 
 - `PLUGIN_API_VERSION` bumps **1.0 → 1.1** for the lowering members; all new
   members are optional, so 1.0 describe-only plugins keep loading (major
@@ -576,13 +576,19 @@ result equivalence with hypothesis — the same posture as core's own
   schema metadata (§9), and bool/string static named keyword literals.
   Defaults and per-provider projection keep 1.1/1.2 providers source- and
   behavior-compatible; a resident type and every 1.3 metadata addition
-  require `api_version >= 1.3`. Core advertises
+  require `api_version >= 1.3`. Core 0.1.3 and 0.1.4 advertised
   `PLUGIN_API_VERSION = "1.3"`. API 1.3 remains Experimental.
+- **Plugin API 1.4** (additive, same major; published with core **0.1.5** on
+  2026-07-23): adds the optional fail-closed standalone artifact capability for
+  exact `rust-crate` / `host-executable` profiles. Core advertises
+  `PLUGIN_API_VERSION = "1.4"`; older 1.x providers keep their projected legacy
+  shapes. API 1.4 remains Experimental.
 - Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package
   release is separate). The 1.3 resident/chaining/metadata surface ships on
-  the **0.1.3** core line without a package major bump.
+  the **0.1.3** core line without a package major bump. The 1.4 standalone
+  artifact-capability surface ships on the **0.1.5** core line.
 - **Related-package publish order** for the 1.2 consumer surface (strict, not
   simultaneous): **rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1**. The
   published rextio-numpy 0.1.1 (literal-axis / fusion / leaves-mode) requires

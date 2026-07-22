@@ -1,16 +1,17 @@
 # Unsupported Features in 0.1.x
 
-Rextio is a focused, alpha-stage hybrid build tool. The package version on this
-branch is **0.1.4** (published to PyPI on 2026-07-18; plugin API 1.3; tooling
-contract **2.2.0**). The direct-Rust subset and boundary rules below still rest
+Rextio is a focused, alpha-stage hybrid build tool. The current package version
+is **0.1.5** (published to PyPI on 2026-07-23; plugin API **1.4**; tooling
+contract **2.24.0**; readiness policy **11**), superseding 0.1.4. The
+direct-Rust subset and boundary rules below still rest
 on the original **0.1.0** design; historical “0.1.0” wording in later sections
 is preserved as design scope, not as a claim that 0.1.0 is the only shipped
 version. Rextio compiles eligible Python functions with statically resolved
 types to Rust native modules and keeps the rest of the project as Python
 fallback.
 
-The Release Train C branch adds experimental host source/executable planning,
-plugin standalone capability, the C5.1 external-source inventory gate, and the
+Release Train C shipped in 0.1.5 with experimental host source/executable
+planning, plugin standalone capability, the C5.1 external-source inventory gate, and the
 C6.1 bounded prebuild authorization-contract preview (not full C6). It emits
 tooling contract **2.24.0**, including C6.2 preview evidence, the C6.3
 required-evidence gate, and the C6.4 macOS/Linux direct native runtime linkage
@@ -27,12 +28,11 @@ and C6.15's exact scoped artifact-class policy receipt,
 plus the separate strict Full-C6 primitives in 2.21.0, bounded C5.2/initial CLI
 coordinator in 2.22.0, exact policy handoff/closure hardening in 2.23.0, and
 the public support-lock bootstrap plus path-free production sandbox/support
-receipt surface in 2.24.0, but
-remains **unreleased**. PyPI 0.1.4 does not
-include those additions. Train C boundaries are called out explicitly below so
-planning records are not mistaken for broad source-AOT support. Its local
-artifact authority does not authorize merging `0.1.5` to `main`, tagging a
-release, or uploading to PyPI.
+receipt surface in 2.24.0. These surfaces are shipped but remain
+Experimental/Alpha. Train C boundaries are called out explicitly below so
+planning records are not mistaken for broad source-AOT support, broad Full C6,
+general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
+CI certification.
 
 Unsupported native features are not bugs in the fallback path. When a native
 candidate uses unsupported syntax, unsupported types, or unsafe boundaries,
@@ -68,7 +68,7 @@ variables must share one supported value type so the initializer can return
 `dict[str, T]`. Rextio still keeps a full original fallback module for
 `REXTIO_NATIVE_MODE=fallback` and native import failures.
 
-### Train C Rust-executable initializer boundary (unreleased)
+### Train C Rust-executable initializer boundary (0.1.5 Experimental)
 
 The Rust executable's initializer-before-main path is separate from, and much
 narrower than, the Python/PyO3 top-level path above. With `native_top_level`
@@ -690,7 +690,7 @@ local time).
 - native code generation for target languages other than Rust
 - concrete third-party plugin transformations
 
-The unreleased Train C planning records do not change these additional limits:
+The Train C planning records shipped in 0.1.5 do not change these additional limits:
 
 - A `SourceModule` or `ModuleInitIR` report is descriptive evidence, not
   permission to execute or translate that source.

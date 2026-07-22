@@ -3,9 +3,10 @@
 Thanks for your interest in Rextio. This guide covers the development setup, the
 quality gates your change must pass, and the conventions we follow.
 
-Rextio **0.1.4** is the published package version on this branch (plugin API
-1.3; tooling contract **2.2.0**; released on PyPI 2026-07-18, superseding
-**0.1.3**). The supported subset is intentionally small and the public surface
+Rextio **0.1.5** is the published package version (plugin API **1.4**; tooling
+contract **2.24.0**; readiness policy **11**; released on PyPI 2026-07-23,
+superseding **0.1.4**). The supported subset is intentionally small and the
+public surface
 is still moving; see [docs/stability.md](docs/stability.md) for what is stable
 versus experimental, and [docs/versioning.md](docs/versioning.md) for the
 versioning policy.
@@ -14,6 +15,8 @@ rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (see
 [docs/specs/tooling-contract.md](docs/specs/tooling-contract.md)).
 Release Train B likewise completed consumer first: rextio-lsp 0.1.2 → core
 0.1.4.
+Release Train C shipped in core 0.1.5; its host source-AOT, executable, and
+bounded Full-C6/C5.2 surfaces remain Experimental/Alpha.
 
 ## Development setup
 
