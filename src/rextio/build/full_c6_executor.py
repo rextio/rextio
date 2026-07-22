@@ -206,6 +206,11 @@ _NATIVE_SANDBOX_STDERR_MESSAGES = {
     reason: f"strict native sandbox build failed: {reason}"
     for reason in (
         "native-sandbox-bubblewrap",
+        "native-bwrap-user-namespace-denied",
+        "native-bwrap-bind-path-missing",
+        "native-bwrap-mount-failed",
+        "native-bwrap-exec-failed",
+        "native-bwrap-seccomp-failed",
         "native-cargo-dependency-config",
         "native-rustc",
         "native-linker",
@@ -223,6 +228,37 @@ def _classify_native_sandbox_stderr(stderr: object) -> str | None:
         return None
     lowered = stderr.casefold()
     if re.search(r"(?m)^bwrap:", lowered) is not None:
+        if "seccomp" in lowered:
+            return "native-bwrap-seccomp-failed"
+        if any(marker in lowered for marker in ("execvp", "can't exec", "failed to exec")):
+            return "native-bwrap-exec-failed"
+        if any(
+            marker in lowered
+            for marker in (
+                "no such file or directory",
+                "(os error 2)",
+                "file not found",
+            )
+        ) and any(
+            marker in lowered
+            for marker in (
+                "bind mount",
+                "bind-mount",
+                "mount source",
+                "mount target",
+                "can't open source",
+                "can't stat source",
+                "can't mkdir parents",
+            )
+        ):
+            return "native-bwrap-bind-path-missing"
+        if any(marker in lowered for marker in ("namespace", "userns", "uid map")) and any(
+            marker in lowered
+            for marker in ("operation not permitted", "permission denied", "no permissions")
+        ):
+            return "native-bwrap-user-namespace-denied"
+        if "mount" in lowered:
+            return "native-bwrap-mount-failed"
         return "native-sandbox-bubblewrap"
     if any(
         marker in lowered

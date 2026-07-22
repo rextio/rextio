@@ -190,6 +190,26 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     ): "native-sandbox-bubblewrap",
     (
         FullC6ExecutorError,
+        "strict native sandbox build failed: native-bwrap-user-namespace-denied",
+    ): "native-bwrap-user-namespace-denied",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-bwrap-bind-path-missing",
+    ): "native-bwrap-bind-path-missing",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-bwrap-mount-failed",
+    ): "native-bwrap-mount-failed",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-bwrap-exec-failed",
+    ): "native-bwrap-exec-failed",
+    (
+        FullC6ExecutorError,
+        "strict native sandbox build failed: native-bwrap-seccomp-failed",
+    ): "native-bwrap-seccomp-failed",
+    (
+        FullC6ExecutorError,
         "strict native sandbox build failed: native-cargo-dependency-config",
     ): "native-cargo-dependency-config",
     (

@@ -107,7 +107,22 @@ def _project(tmp_path: Path, *, lock: bool = True) -> Path:
 @pytest.mark.parametrize(
     ("stderr", "expected"),
     [
-        ("bwrap: Creating new namespace failed: Permission denied", "native-sandbox-bubblewrap"),
+        (
+            "bwrap: Creating new namespace failed: Operation not permitted",
+            "native-bwrap-user-namespace-denied",
+        ),
+        (
+            "bwrap: Can't bind mount /private/source on /target: No such file or directory",
+            "native-bwrap-bind-path-missing",
+        ),
+        (
+            "bwrap: Can't mkdir parents for /private/target: No such file or directory",
+            "native-bwrap-bind-path-missing",
+        ),
+        ("bwrap: Can't mount tmpfs on /newroot: Invalid argument", "native-bwrap-mount-failed"),
+        ("bwrap: execvp /private/cargo: No such file or directory", "native-bwrap-exec-failed"),
+        ("bwrap: Can't install seccomp filter: Invalid argument", "native-bwrap-seccomp-failed"),
+        ("bwrap: private unclassified detail", "native-sandbox-bubblewrap"),
         ("error: failed to get `demo` as a dependency", "native-cargo-dependency-config"),
         ("error: rustc 1.92.0 is not supported", "native-rustc"),
         ("error: linking with `cc` failed: exit status: 1", "native-linker"),
@@ -134,9 +149,7 @@ def test_native_sandbox_stderr_error_never_retains_private_input() -> None:
     import rextio.build.full_c6_executor as executor
 
     private = "/private/runner/project secret"
-    error = executor._native_sandbox_stderr_error(
-        f"bwrap: mount {private}: Permission denied"
-    )
+    error = executor._native_sandbox_stderr_error(f"bwrap: {private}")
 
     assert error is not None
     assert str(error) == "strict native sandbox build failed: native-sandbox-bubblewrap"

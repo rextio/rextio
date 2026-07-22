@@ -978,6 +978,11 @@ def test_full_c6_failure_reason_code_classifies_normal_cargo_failure() -> None:
     "reason_code",
     [
         "native-sandbox-bubblewrap",
+        "native-bwrap-user-namespace-denied",
+        "native-bwrap-bind-path-missing",
+        "native-bwrap-mount-failed",
+        "native-bwrap-exec-failed",
+        "native-bwrap-seccomp-failed",
         "native-cargo-dependency-config",
         "native-rustc",
         "native-linker",
