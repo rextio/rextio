@@ -71,6 +71,72 @@ def test_full_c6_distribution_config_defaults_are_inactive(tmp_path: Path) -> No
     assert config.build.artifact_final_signature is None
     assert config.build.artifact_signing_request_output is None
     assert config.build.artifact_repeat_builds == 2
+    assert config.target.device_provider is None
+    assert config.target.device_capability is None
+    assert config.target.device_options == {}
+
+
+def test_device_provider_selection_and_private_options_load_explicitly(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(
+        """
+[target]
+device_provider = "rextio-device-cuda"
+device_capability = "cuda-linux-x86_64"
+
+[target.device_options]
+toolkit_root = "/opt/cuda-12.8"
+probe_manifest = "locks/cuda-probe.json"
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+
+    assert config.target.device_provider == "rextio-device-cuda"
+    assert config.target.device_capability == "cuda-linux-x86_64"
+    assert config.target.device_options == {
+        "probe_manifest": "locks/cuda-probe.json",
+        "toolkit_root": "/opt/cuda-12.8",
+    }
+
+
+@pytest.mark.parametrize(
+    "target_text, match",
+    [
+        (
+            '[target]\ndevice_provider = "rextio-device-cuda"\n',
+            "device_provider and device_capability",
+        ),
+        (
+            '[target.device_options]\ntoolkit_root = "/opt/cuda"\n',
+            "device_options requires device_provider",
+        ),
+    ],
+)
+def test_device_provider_partial_configuration_fails_closed(
+    tmp_path: Path,
+    target_text: str,
+    match: str,
+) -> None:
+    (tmp_path / "rextio.toml").write_text(target_text, encoding="utf-8")
+    with pytest.raises(ConfigError, match=match):
+        load_config(tmp_path)
+
+
+def test_strict_evidence_rejects_device_provider_selection(tmp_path: Path) -> None:
+    configured = _full_c6_toml(
+        extra=(
+            '\n[target]\n'
+            'device_provider = "rextio-device-cuda"\n'
+            'device_capability = "cuda-linux-x86_64"\n'
+        )
+    )
+    (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="does not support a selected device provider"):
+        load_config(tmp_path)
 
 
 def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path) -> None:

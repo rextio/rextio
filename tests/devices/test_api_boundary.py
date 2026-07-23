@@ -24,7 +24,9 @@ from rextio.devices import (
     DeviceProvider,
     DeviceProviderError,
     DeviceProviderManifest,
+    DeviceProviderOptions,
     DeviceProviderSelection,
+    DeviceProviderSource,
     DeviceResourceAccess,
     DeviceResourceContract,
     DeviceResourceOwner,
@@ -307,6 +309,9 @@ class _ExplodingProvider:
 
 def test_explicit_resolution_preflights_then_projects_lock_and_report() -> None:
     provider = _StructuralProvider()
+    options = DeviceProviderOptions(
+        (("toolkit_root", "/private/cuda-12.8"), ("probe_manifest", "locks/probe.json"))
+    )
     plan = resolve_device_plan(
         artifact_profile=_cuda_profile(),
         selection=_selection(),
@@ -314,6 +319,7 @@ def test_explicit_resolution_preflights_then_projects_lock_and_report() -> None:
             "ignored-provider": _ExplodingProvider(),
             "example-device": provider,
         },
+        options=options,
     )
 
     assert plan is not None
@@ -323,10 +329,132 @@ def test_explicit_resolution_preflights_then_projects_lock_and_report() -> None:
     assert lock["provider_version"] == "1.2.3"
     assert lock["capability_id"] == "windows-cuda-build-only"
     assert re.fullmatch(r"[0-9a-f]{64}", str(lock["manifest_sha256"]))
+    assert re.fullmatch(r"[0-9a-f]{64}", str(lock["artifact_profile_sha256"]))
+    assert re.fullmatch(r"[0-9a-f]{64}", str(lock["contribution_sha256"]))
+    assert lock["option_keys"] == ["probe_manifest", "toolkit_root"]
+    assert re.fullmatch(r"[0-9a-f]{64}", str(lock["options_sha256"]))
     report = plan.report_record().to_dict()
     assert report["certification_tier"] == "build-only"
     assert report["support_claim"] is False
     assert report["evidence_references"] == ["cuda-driver-probe"]
+    serialized = json.dumps(plan.to_dict(), sort_keys=True)
+    assert "/private/cuda-12.8" not in serialized
+    assert "locks/probe.json" not in serialized
+
+
+class _DifferentContributionProvider(_StructuralProvider):
+    def build_contribution(
+        self, request: DevicePreflightRequest
+    ) -> DeviceBuildContribution:
+        del request
+        return DeviceBuildContribution(native_libraries=("cuda",))
+
+
+def test_provider_lock_binds_profile_contribution_and_private_options() -> None:
+    baseline = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _StructuralProvider()},
+        options=DeviceProviderOptions((("toolkit_root", "/opt/cuda-a"),)),
+    )
+    changed_profile = resolve_device_plan(
+        artifact_profile=host_executable_profile(
+            "x86_64-pc-windows-msvc",
+            fallback="error",
+            device_requirements=(
+                DeviceRequirement(
+                    logical_device="cuda:0",
+                    backend="cuda",
+                    architectures=("sm_90",),
+                ),
+            ),
+        ),
+        selection=_selection(),
+        providers={"example-device": _StructuralProvider()},
+        options=DeviceProviderOptions((("toolkit_root", "/opt/cuda-a"),)),
+    )
+    changed_contribution = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _DifferentContributionProvider()},
+        options=DeviceProviderOptions((("toolkit_root", "/opt/cuda-a"),)),
+    )
+    changed_options = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _StructuralProvider()},
+        options=DeviceProviderOptions((("toolkit_root", "/opt/cuda-b"),)),
+    )
+
+    assert baseline is not None
+    assert changed_profile is not None
+    assert changed_contribution is not None
+    assert changed_options is not None
+    base_lock = baseline.lock_record()
+    assert (
+        base_lock.artifact_profile_sha256
+        != changed_profile.lock_record().artifact_profile_sha256
+    )
+    assert (
+        base_lock.contribution_sha256
+        != changed_contribution.lock_record().contribution_sha256
+    )
+    assert base_lock.options_sha256 != changed_options.lock_record().options_sha256
+
+
+def test_provider_lock_binds_exact_entry_point_target_and_distribution() -> None:
+    first_source = DeviceProviderSource(
+        entry_point_group="rextio.device_providers",
+        entry_point_name="example-device",
+        entry_point_value="rextio_device_example:provider",
+        distribution_name="rextio-device-example",
+        distribution_version="1.2.3",
+    )
+    second_source = DeviceProviderSource(
+        entry_point_group="rextio.device_providers",
+        entry_point_name="example-device",
+        entry_point_value="rextio_device_example:alternate_provider",
+        distribution_name="rextio-device-example",
+        distribution_version="1.2.3",
+    )
+    third_source = DeviceProviderSource(
+        entry_point_group="rextio.device_providers",
+        entry_point_name="example-device",
+        entry_point_value="rextio_device_example:provider",
+        distribution_name="rextio-device-example",
+        distribution_version="1.2.4",
+    )
+    first = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _StructuralProvider()},
+        provider_sources={"example-device": first_source},
+    )
+    second = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _StructuralProvider()},
+        provider_sources={"example-device": second_source},
+    )
+    third = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _StructuralProvider()},
+        provider_sources={"example-device": third_source},
+    )
+
+    assert first is not None
+    assert second is not None
+    assert third is not None
+    assert first.lock_record().source_identity_sha256
+    assert (
+        first.lock_record().source_identity_sha256
+        != second.lock_record().source_identity_sha256
+    )
+    assert (
+        first.lock_record().source_identity_sha256
+        != third.lock_record().source_identity_sha256
+    )
 
 
 def test_no_selection_preserves_cpu_only_and_rejects_accelerator_profiles() -> None:
@@ -350,6 +478,18 @@ def test_no_selection_preserves_cpu_only_and_rejects_accelerator_profiles() -> N
         )
 
 
+def test_accelerator_provider_requires_typed_non_cpu_artifact_requirement() -> None:
+    with pytest.raises(DeviceProviderError, match="typed non-CPU artifact"):
+        resolve_device_plan(
+            artifact_profile=host_executable_profile(
+                "x86_64-pc-windows-msvc",
+                fallback="error",
+            ),
+            selection=_selection(),
+            providers={"example-device": _StructuralProvider()},
+        )
+
+
 def test_incompatible_capability_fails_before_preflight() -> None:
     with pytest.raises(DeviceProviderError, match="incompatible"):
         resolve_device_plan(
@@ -361,6 +501,99 @@ def test_incompatible_capability_fails_before_preflight() -> None:
             ),
             selection=_selection(),
             providers={"example-device": _StructuralProvider()},
+        )
+
+
+class _ManifestProvider(_StructuralProvider):
+    def __init__(self, manifest: DeviceProviderManifest) -> None:
+        self._manifest = manifest
+
+    def manifest(self) -> DeviceProviderManifest:
+        return self._manifest
+
+
+@pytest.mark.parametrize(
+    ("manifest", "match"),
+    [
+        (
+            DeviceProviderManifest(
+                provider_id="example-device",
+                display_name="Unsupported",
+                provider_version="1",
+                backend="cuda",
+                capabilities=(TargetCapability(id="windows-cuda-build-only"),),
+            ),
+            "explicitly unsupported",
+        ),
+        (
+            DeviceProviderManifest(
+                provider_id="example-device",
+                display_name="No backend",
+                provider_version="1",
+                backend="cuda",
+                capabilities=(
+                    TargetCapability(
+                        id="windows-cuda-build-only",
+                        target_triples=("x86_64-pc-windows-msvc",),
+                        artifact_kinds=(ArtifactKind.HOST_EXECUTABLE,),
+                        architectures=("sm_80",),
+                        certification_tier=CertificationTier.BUILD_ONLY,
+                        evidence_references=("evidence.json",),
+                    ),
+                ),
+            ),
+            "incompatible",
+        ),
+        (
+            DeviceProviderManifest(
+                provider_id="example-device",
+                display_name="No architecture",
+                provider_version="1",
+                backend="cuda",
+                capabilities=(
+                    TargetCapability(
+                        id="windows-cuda-build-only",
+                        target_triples=("x86_64-pc-windows-msvc",),
+                        artifact_kinds=(ArtifactKind.HOST_EXECUTABLE,),
+                        accelerator_backends=("cuda",),
+                        certification_tier=CertificationTier.BUILD_ONLY,
+                        evidence_references=("evidence.json",),
+                    ),
+                ),
+            ),
+            "incompatible",
+        ),
+        (
+            DeviceProviderManifest(
+                provider_id="example-device",
+                display_name="Backend mismatch",
+                provider_version="1",
+                backend="rocm",
+                capabilities=(
+                    TargetCapability(
+                        id="windows-cuda-build-only",
+                        target_triples=("x86_64-pc-windows-msvc",),
+                        artifact_kinds=(ArtifactKind.HOST_EXECUTABLE,),
+                        accelerator_backends=("cuda",),
+                        architectures=("sm_80",),
+                        certification_tier=CertificationTier.BUILD_ONLY,
+                        evidence_references=("evidence.json",),
+                    ),
+                ),
+            ),
+            "does not match artifact requirements",
+        ),
+    ],
+)
+def test_unsupported_or_underdeclared_capabilities_fail_closed(
+    manifest: DeviceProviderManifest,
+    match: str,
+) -> None:
+    with pytest.raises(DeviceProviderError, match=match):
+        resolve_device_plan(
+            artifact_profile=_cuda_profile(),
+            selection=_selection(),
+            providers={"example-device": _ManifestProvider(manifest)},
         )
 
 
@@ -381,12 +614,53 @@ class _UnavailableProvider(_StructuralProvider):
 
 
 def test_non_ready_preflight_fails_before_build_contribution() -> None:
-    with pytest.raises(DeviceProviderError, match="DRIVER_MISSING"):
+    with pytest.raises(DeviceProviderError) as raised:
         resolve_device_plan(
             artifact_profile=_cuda_profile(),
             selection=_selection(),
             providers={"example-device": _UnavailableProvider()},
         )
+    assert "status 'unavailable'" in str(raised.value)
+    assert "DRIVER_MISSING" not in str(raised.value)
+
+
+class _LeakingProvider(_StructuralProvider):
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+
+    def manifest(self) -> DeviceProviderManifest:
+        if self.stage == "manifest":
+            raise RuntimeError("/private/provider-option")
+        return super().manifest()
+
+    def preflight(self, request: DevicePreflightRequest) -> DevicePreflightResult:
+        if self.stage == "preflight":
+            raise RuntimeError("/private/provider-option")
+        return super().preflight(request)
+
+    def build_contribution(
+        self, request: DevicePreflightRequest
+    ) -> DeviceBuildContribution:
+        if self.stage == "build-contribution":
+            raise RuntimeError("/private/provider-option")
+        return super().build_contribution(request)
+
+
+@pytest.mark.parametrize("stage", ["manifest", "preflight", "build-contribution"])
+def test_provider_stage_errors_do_not_echo_private_exception_text(stage: str) -> None:
+    with pytest.raises(DeviceProviderError) as raised:
+        resolve_device_plan(
+            artifact_profile=_cuda_profile(),
+            selection=_selection(),
+            providers={"example-device": _LeakingProvider(stage)},
+            options=DeviceProviderOptions(
+                (("toolkit_root", "/private/provider-option"),)
+            ),
+        )
+
+    assert stage in str(raised.value)
+    assert "/private/provider-option" not in str(raised.value)
+    assert isinstance(raised.value.__cause__, RuntimeError)
 
 
 def _strip_rust_line_comments(source: str) -> str:

@@ -3935,8 +3935,9 @@ def _validate_compare_types(
             # strings), lowered to a raw Rust comparison, and COMPILED for
             # ndarray: scalar bool natively vs NumPy's elementwise bool array
             # on the fallback - a silent divergence (council round 6, 7/8
-            # reviewers). Plugins have no comparison claim vocabulary this
-            # release, so the site always rejects.
+            # reviewers). API-1.5 providers can claim a non-chained comparison
+            # before this fallback guard; pre-1.5 or unclaimed sites still
+            # reject here instead of emitting a raw Rust comparison.
             _add_unsupported_syntax(
                 function,
                 node,

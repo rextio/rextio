@@ -103,7 +103,11 @@ from __future__ import annotations
 # Contract 2.25.0 adds the plugin-API-1.5 ``compare`` claim kind and preserves
 # a plugin-defined comparison result type through later claimed expressions.
 # Existing call/binop claims and all position semantics remain unchanged.
+# Contract 2.26.0 adds explicit selected-only Device Provider API 1 config,
+# redacted lock/report records, and bounded generated native-link inputs.
+# Installed-but-unselected providers remain invisible to report shape and
+# behavior; accelerator providers still require a typed domain requirement.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.25.0"
+TOOLING_CONTRACT_VERSION = "2.26.0"

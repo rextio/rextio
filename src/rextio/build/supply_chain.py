@@ -325,7 +325,8 @@ def capture_generated_rust_inputs(
     """Hash generated Rust inputs after write, before cargo compilation.
 
     Always requires ``Cargo.toml`` and ``src/lib.rs``. Includes
-    ``.cargo/config.toml`` and maturin ``pyproject.toml`` when present.
+    ``.cargo/config.toml``, maturin ``pyproject.toml``, a provider ``build.rs``,
+    and the redacted device-provider lock when present.
     """
     if snapshot.unavailable_reason is not None:
         return snapshot
@@ -337,6 +338,8 @@ def capture_generated_rust_inputs(
         optional = (
             layout.rust_dir / ".cargo" / "config.toml",
             layout.rust_dir / "pyproject.toml",
+            layout.rust_dir / "build.rs",
+            layout.rust_dir / "device-provider.lock.json",
         )
         refs: list[EvidenceFileRef] = []
         for path in required:
@@ -352,7 +355,11 @@ def capture_generated_rust_inputs(
                         logical_path=logical,
                         sha256=digest,
                         size=size,
-                        role="generated-rust-input",
+                        role=(
+                            "device-provider-lock"
+                            if path.name == "device-provider.lock.json"
+                            else "generated-rust-input"
+                        ),
                     )
                 )
             except ArtifactEvidenceError as error:
@@ -374,7 +381,11 @@ def capture_generated_rust_inputs(
                         logical_path=logical,
                         sha256=digest,
                         size=size,
-                        role="generated-rust-input",
+                        role=(
+                            "device-provider-lock"
+                            if path.name == "device-provider.lock.json"
+                            else "generated-rust-input"
+                        ),
                     )
                 )
             except ArtifactEvidenceError as error:

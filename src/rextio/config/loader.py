@@ -63,7 +63,13 @@ CONFIG_KEYS = {
     },
     "rust": {"binding", "build_tool", "importable", "crate_name"},
     "fallback": {"nuitka"},
-    "target": {"version", "build_options"},
+    "target": {
+        "version",
+        "build_options",
+        "device_provider",
+        "device_capability",
+        "device_options",
+    },
     "plugins": {"enabled"},
     "imports": {"default_external_policy", "packages"},
     "embedding": {"enabled"},
@@ -110,6 +116,9 @@ ENVIRONMENT_OVERRIDES = {
     "REXTIO_NUITKA_FALLBACK": ("fallback", "nuitka", "string"),
     "REXTIO_TARGET_VERSION": ("target", "version", "optional_string"),
     "REXTIO_TARGET_BUILD_OPTIONS": ("target", "build_options", "string_map"),
+    "REXTIO_DEVICE_PROVIDER": ("target", "device_provider", "optional_string"),
+    "REXTIO_DEVICE_CAPABILITY": ("target", "device_capability", "optional_string"),
+    "REXTIO_DEVICE_OPTIONS": ("target", "device_options", "string_map"),
     "REXTIO_PLUGINS_ENABLED": ("plugins", "enabled", "string_list"),
     "REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY": ("imports", "default_external_policy", "string"),
     "REXTIO_IMPORTS_PACKAGES": ("imports", "packages", "package_policy_map"),
@@ -386,6 +395,22 @@ def _validate_config_values(
     _require_string("fallback", "nuitka", fallback["nuitka"])
     _require_optional_string("target", "version", target["version"])
     _require_string_map("target", "build_options", target["build_options"])
+    _require_optional_string("target", "device_provider", target["device_provider"])
+    _require_optional_string("target", "device_capability", target["device_capability"])
+    _require_string_map("target", "device_options", target["device_options"])
+    if (target["device_provider"] is None) != (target["device_capability"] is None):
+        raise ConfigError(
+            "[target].device_provider and device_capability must be configured together"
+        )
+    if target["device_options"] and target["device_provider"] is None:
+        raise ConfigError("[target].device_options requires device_provider")
+    if (
+        build["artifact_distribution_policy"] == "strict-evidence"
+        and target["device_provider"] is not None
+    ):
+        raise ConfigError(
+            'strict-evidence does not support a selected device provider'
+        )
     _require_string_list("plugins", "enabled", plugins["enabled"])
     _require_string("imports", "default_external_policy", imports["default_external_policy"])
     _require_package_policy_map("imports", "packages", imports["packages"])

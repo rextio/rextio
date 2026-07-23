@@ -34,10 +34,18 @@ _PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _OBSERVATION_KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _MAX_OBSERVATION_KEY_LENGTH = 64
 _MAX_OBSERVATION_VALUE_LENGTH = 256
+_MAX_PROVIDER_OPTION_VALUE_LENGTH = 4096
+_MAX_SOURCE_IDENTITY_VALUE_LENGTH = 256
 _DEVICE_ID_PATTERN = re.compile(
     r"^(?:(?:/)?device:)?(cpu|gpu|tpu|npu|cuda|rocm|mps)(?::([0-9]+))?$",
     re.IGNORECASE,
 )
+_BUILD_INPUT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$")
+_ENTRY_POINT_VALUE_PATTERN = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z_][A-Za-z0-9_.]*)?$"
+)
+_SOURCE_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]{0,255}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _canonical_strings(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -115,6 +123,22 @@ def _validate_optional_string(value: str | None, *, label: str) -> str | None:
     return value.strip()
 
 
+def _validate_source_identity_string(value: str, *, label: str) -> str:
+    """Return one bounded public identity component, never a file locator."""
+    normalized = _validate_optional_string(value, label=label)
+    if normalized is None:
+        raise ValueError(f"{label} must be a non-empty string")
+    if (
+        len(normalized) > _MAX_SOURCE_IDENTITY_VALUE_LENGTH
+        or _SOURCE_IDENTITY_PATTERN.fullmatch(normalized) is None
+        or ".." in normalized
+    ):
+        raise ValueError(
+            f"{label} must be a bounded package/version identity, not a filesystem locator"
+        )
+    return normalized
+
+
 def _validate_project_relative_references(
     values: tuple[str, ...], *, label: str
 ) -> tuple[str, ...]:
@@ -129,6 +153,20 @@ def _validate_project_relative_references(
         ):
             raise ValueError(f"{label} must contain only project-relative references")
     return normalized
+
+
+def _validate_build_input_ids(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
+    """Canonicalize bounded identifiers safe for generated Cargo/Rust text."""
+    normalized = _canonical_strings(values, label=label)
+    if any(_BUILD_INPUT_ID_PATTERN.fullmatch(value) is None for value in normalized):
+        raise ValueError(f"{label} must contain only bounded build identifiers")
+    return normalized
+
+
+def _canonical_json_sha256(value: object) -> str:
+    """Hash one deterministic JSON value."""
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -283,7 +321,8 @@ class DeviceResourceContract:
         resource_kind = _validate_optional_string(
             self.resource_kind, label="resource_kind"
         )
-        assert resource_kind is not None
+        if resource_kind is None:  # defensive: helper contract permits None
+            raise ValueError("resource_kind must be a non-empty string")
         object.__setattr__(self, "resource_kind", resource_kind)
         object.__setattr__(self, "owner", DeviceResourceOwner(self.owner))
         object.__setattr__(self, "access", DeviceResourceAccess(self.access))
@@ -335,7 +374,7 @@ class DeviceBuildContribution:
             object.__setattr__(
                 self,
                 field_name,
-                _canonical_strings(getattr(self, field_name), label=field_name),
+                _validate_build_input_ids(getattr(self, field_name), label=field_name),
             )
         object.__setattr__(
             self,
@@ -398,7 +437,8 @@ class DeviceProviderManifest:
         provider_version = _validate_optional_string(
             self.provider_version, label="provider_version"
         )
-        assert provider_version is not None
+        if provider_version is None:  # defensive: helper contract permits None
+            raise ValueError("provider_version must be a non-empty string")
         object.__setattr__(self, "provider_version", provider_version)
         backend = _validate_optional_string(self.backend, label="provider backend")
         object.__setattr__(self, "backend", backend.lower() if backend is not None else None)
@@ -469,7 +509,8 @@ class DeviceProviderSelection:
         capability_id = _validate_optional_string(
             self.capability_id, label="capability_id"
         )
-        assert capability_id is not None
+        if capability_id is None:  # defensive: helper contract permits None
+            raise ValueError("capability_id must be a non-empty string")
         object.__setattr__(self, "capability_id", capability_id)
 
     def to_dict(self) -> dict[str, object]:
@@ -481,11 +522,74 @@ class DeviceProviderSelection:
 
 
 @dataclass(frozen=True)
+class DeviceProviderOptions:
+    """Private explicit provider inputs with a public redacted projection."""
+
+    values: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        """Canonicalize keys while retaining raw values only in memory."""
+        if not isinstance(self.values, tuple):
+            raise ValueError("device provider options must be a tuple of string pairs")
+        by_key: dict[str, str] = {}
+        for pair in self.values:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise ValueError("device provider options must be a tuple of string pairs")
+            key, value = pair
+            if (
+                not isinstance(key, str)
+                or _OBSERVATION_KEY_PATTERN.fullmatch(key.strip()) is None
+            ):
+                raise ValueError("device provider option keys must be lowercase identifiers")
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > _MAX_PROVIDER_OPTION_VALUE_LENGTH
+                or any(not character.isprintable() for character in value)
+            ):
+                raise ValueError(
+                    "device provider option values must be bounded printable strings"
+                )
+            normalized_key = key.strip()
+            previous = by_key.get(normalized_key)
+            if previous is not None and previous != value:
+                raise ValueError(
+                    f"conflicting device provider option {normalized_key!r}"
+                )
+            by_key[normalized_key] = value
+        object.__setattr__(self, "values", tuple(sorted(by_key.items())))
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """Return option names safe for public reports."""
+        return tuple(key for key, _value in self.values)
+
+    @property
+    def sha256(self) -> str:
+        """Bind exact key/value bytes without exposing values."""
+        return _canonical_json_sha256(
+            [{"key": key, "value": value} for key, value in self.values]
+        )
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        """Return one raw option value to the explicitly selected provider."""
+        return dict(self.values).get(key, default)
+
+    def public_dict(self) -> dict[str, object]:
+        """Return a redacted deterministic projection."""
+        return {
+            "option_keys": list(self.keys),
+            "options_sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True)
 class DevicePreflightRequest:
     """One side-effect-free compatibility request for an artifact profile."""
 
     artifact_profile: ArtifactProfile
     selection: DeviceProviderSelection
+    options: DeviceProviderOptions = DeviceProviderOptions()
 
     def __post_init__(self) -> None:
         """Reject malformed requests before a provider can inspect them."""
@@ -493,12 +597,15 @@ class DevicePreflightRequest:
             raise ValueError("artifact_profile must be an ArtifactProfile")
         if not isinstance(self.selection, DeviceProviderSelection):
             raise ValueError("selection must be a DeviceProviderSelection")
+        if not isinstance(self.options, DeviceProviderOptions):
+            raise ValueError("options must be DeviceProviderOptions")
 
     def to_dict(self) -> dict[str, object]:
         """Return the deterministic JSON-serializable representation."""
         return {
             "artifact_profile": self.artifact_profile.to_dict(),
             "selection": self.selection.to_dict(),
+            "options": self.options.public_dict(),
         }
 
 
@@ -567,6 +674,62 @@ class DeviceProvider(Protocol):
 
 
 @dataclass(frozen=True)
+class DeviceProviderSource:
+    """Installed entry-point distribution identity used by one resolution."""
+
+    entry_point_group: str
+    entry_point_name: str
+    entry_point_value: str
+    distribution_name: str
+    distribution_version: str
+
+    def __post_init__(self) -> None:
+        """Validate stable public package metadata, never filesystem locators."""
+        if self.entry_point_group != DEVICE_PROVIDER_ENTRY_POINT:
+            raise ValueError(
+                f"device provider entry-point group must be {DEVICE_PROVIDER_ENTRY_POINT!r}"
+            )
+        object.__setattr__(
+            self,
+            "entry_point_name",
+            _validate_provider_id(self.entry_point_name),
+        )
+        entry_point_value = _validate_optional_string(
+            self.entry_point_value,
+            label="entry_point_value",
+        )
+        if (
+            entry_point_value is None
+            or len(entry_point_value) > _MAX_SOURCE_IDENTITY_VALUE_LENGTH
+            or _ENTRY_POINT_VALUE_PATTERN.fullmatch(entry_point_value) is None
+        ):
+            raise ValueError(
+                "entry_point_value must be a module or module:attribute import target"
+            )
+        object.__setattr__(self, "entry_point_value", entry_point_value)
+        for field_name in ("distribution_name", "distribution_version"):
+            value = _validate_source_identity_string(
+                getattr(self, field_name),
+                label=field_name,
+            )
+            object.__setattr__(
+                self,
+                field_name,
+                value,
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "entry_point_group": self.entry_point_group,
+            "entry_point_name": self.entry_point_name,
+            "entry_point_value": self.entry_point_value,
+            "distribution_name": self.distribution_name,
+            "distribution_version": self.distribution_version,
+        }
+
+
+@dataclass(frozen=True)
 class DeviceProviderLock:
     """Exact provider decision suitable for a source/build lock."""
 
@@ -577,6 +740,50 @@ class DeviceProviderLock:
     capability_id: str
     target_triple: str
     manifest_sha256: str
+    artifact_profile_sha256: str
+    contribution_sha256: str
+    source_identity_sha256: str | None = None
+    option_keys: tuple[str, ...] = ()
+    options_sha256: str = _canonical_json_sha256([])
+
+    def __post_init__(self) -> None:
+        """Validate every lock digest and stable identity field."""
+        object.__setattr__(self, "provider_id", _validate_provider_id(self.provider_id))
+        for field_name in (
+            "provider_version",
+            "api_version",
+            "capability_id",
+            "target_triple",
+        ):
+            value = _validate_optional_string(getattr(self, field_name), label=field_name)
+            if value is None:
+                raise ValueError(f"{field_name} must be a non-empty string")
+            object.__setattr__(self, field_name, value)
+        object.__setattr__(
+            self,
+            "backend",
+            _validate_optional_string(self.backend, label="backend"),
+        )
+        for field_name in (
+            "manifest_sha256",
+            "artifact_profile_sha256",
+            "contribution_sha256",
+        ):
+            digest = getattr(self, field_name)
+            if not isinstance(digest, str) or _SHA256_PATTERN.fullmatch(digest) is None:
+                raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+        if self.source_identity_sha256 is not None and (
+            not isinstance(self.source_identity_sha256, str)
+            or _SHA256_PATTERN.fullmatch(self.source_identity_sha256) is None
+        ):
+            raise ValueError("source_identity_sha256 must be a lowercase SHA-256 digest")
+        object.__setattr__(
+            self,
+            "option_keys",
+            _canonical_strings(self.option_keys, label="option_keys"),
+        )
+        if _SHA256_PATTERN.fullmatch(self.options_sha256) is None:
+            raise ValueError("options_sha256 must be a lowercase SHA-256 digest")
 
     def to_dict(self) -> dict[str, object]:
         """Return the deterministic JSON-serializable representation."""
@@ -588,6 +795,11 @@ class DeviceProviderLock:
             "capability_id": self.capability_id,
             "target_triple": self.target_triple,
             "manifest_sha256": self.manifest_sha256,
+            "artifact_profile_sha256": self.artifact_profile_sha256,
+            "contribution_sha256": self.contribution_sha256,
+            "source_identity_sha256": self.source_identity_sha256,
+            "option_keys": list(self.option_keys),
+            "options_sha256": self.options_sha256,
         }
 
 
@@ -650,14 +862,11 @@ class ResolvedDevicePlan:
     capability: TargetCapability
     preflight: DevicePreflightResult
     contribution: DeviceBuildContribution
+    source: DeviceProviderSource | None = None
+    options: DeviceProviderOptions = DeviceProviderOptions()
 
     def lock_record(self) -> DeviceProviderLock:
         """Project the exact provider/capability decision into a lock."""
-        manifest_json = json.dumps(
-            self.manifest.to_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
         return DeviceProviderLock(
             provider_id=self.manifest.provider_id,
             provider_version=self.manifest.provider_version,
@@ -665,7 +874,20 @@ class ResolvedDevicePlan:
             backend=self.manifest.backend,
             capability_id=self.capability.id,
             target_triple=self.artifact_profile.target_triple,
-            manifest_sha256=hashlib.sha256(manifest_json).hexdigest(),
+            manifest_sha256=_canonical_json_sha256(self.manifest.to_dict()),
+            artifact_profile_sha256=_canonical_json_sha256(
+                self.artifact_profile.to_dict()
+            ),
+            contribution_sha256=_canonical_json_sha256(
+                self.contribution.to_dict()
+            ),
+            source_identity_sha256=(
+                _canonical_json_sha256(self.source.to_dict())
+                if self.source is not None
+                else None
+            ),
+            option_keys=self.options.keys,
+            options_sha256=self.options.sha256,
         )
 
     def report_record(self) -> DeviceProviderReport:
@@ -688,6 +910,8 @@ class ResolvedDevicePlan:
             "capability": self.capability.to_dict(),
             "preflight": self.preflight.to_dict(),
             "contribution": self.contribution.to_dict(),
+            "source": self.source.to_dict() if self.source is not None else None,
+            "options": self.options.public_dict(),
             "lock": self.lock_record().to_dict(),
             "report": self.report_record().to_dict(),
         }
@@ -754,6 +978,8 @@ def resolve_device_plan(
     artifact_profile: ArtifactProfile,
     selection: DeviceProviderSelection | None,
     providers: Mapping[str, DeviceProvider],
+    provider_sources: Mapping[str, DeviceProviderSource] | None = None,
+    options: DeviceProviderOptions | None = None,
 ) -> ResolvedDevicePlan | None:
     """Resolve exactly one explicitly selected provider and preflight it.
 
@@ -764,6 +990,10 @@ def resolve_device_plan(
     if not isinstance(artifact_profile, ArtifactProfile):
         raise DeviceProviderError("artifact_profile must be an ArtifactProfile")
     if selection is None:
+        if options is not None and options.values:
+            raise DeviceProviderError(
+                "device provider options require an explicit provider selection"
+            )
         if _profile_requires_provider(artifact_profile):
             raise DeviceProviderError(
                 "artifact profile requires an explicit device provider selection"
@@ -783,7 +1013,7 @@ def resolve_device_plan(
         manifest = provider.manifest()
     except Exception as exc:
         raise DeviceProviderError(
-            f"device provider {selection.provider_id!r} manifest() failed: {exc}"
+            f"selected device provider {selection.provider_id!r} manifest stage failed"
         ) from exc
     if not isinstance(manifest, DeviceProviderManifest):
         raise DeviceProviderError("device provider manifest() returned an invalid record")
@@ -802,6 +1032,10 @@ def resolve_device_plan(
             f"{selection.capability_id!r}"
         )
     capability = matches[0]
+    if capability.certification_tier is CertificationTier.UNSUPPORTED:
+        raise DeviceProviderError(
+            f"device capability {selection.capability_id!r} is explicitly unsupported"
+        )
     requested_backends: set[str] = set()
     try:
         for requirement in artifact_profile.device_requirements:
@@ -813,6 +1047,11 @@ def resolve_device_plan(
                 requested_backends.add(device.backend)
     except ValueError as exc:
         raise DeviceProviderError(f"invalid artifact device requirement: {exc}") from exc
+    if manifest.backend is not None and not requested_backends:
+        raise DeviceProviderError(
+            f"accelerator device provider {selection.provider_id!r} requires a "
+            "matching typed non-CPU artifact device requirement"
+        )
     if (
         manifest.backend is not None
         and requested_backends
@@ -822,20 +1061,35 @@ def resolve_device_plan(
             f"device provider {selection.provider_id!r} backend "
             f"{manifest.backend!r} does not match artifact requirements"
         )
+    if (
+        manifest.backend is not None
+        and capability.accelerator_backends
+        and set(capability.accelerator_backends) != {manifest.backend}
+    ):
+        raise DeviceProviderError(
+            f"device capability {selection.capability_id!r} backend declaration "
+            "does not match its provider manifest"
+        )
+    if requested_backends and manifest.backend is None:
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} must declare the required backend"
+        )
     if not _capability_matches_profile(capability, artifact_profile):
         raise DeviceProviderError(
             f"device capability {selection.capability_id!r} is incompatible with "
             f"{artifact_profile.kind.value} for {artifact_profile.target_triple}"
         )
+    resolved_options = options or DeviceProviderOptions()
     request = DevicePreflightRequest(
         artifact_profile=artifact_profile,
         selection=selection,
+        options=resolved_options,
     )
     try:
         preflight = provider.preflight(request)
     except Exception as exc:
         raise DeviceProviderError(
-            f"device provider {selection.provider_id!r} preflight() failed: {exc}"
+            f"selected device provider {selection.provider_id!r} preflight stage failed"
         ) from exc
     if not isinstance(preflight, DevicePreflightResult):
         raise DeviceProviderError("device provider preflight() returned an invalid record")
@@ -844,16 +1098,16 @@ def resolve_device_plan(
             "device provider preflight result does not match the selected provider"
         )
     if preflight.status is not DevicePreflightStatus.READY:
-        reasons = ", ".join(preflight.reason_codes) or preflight.status.value
         raise DeviceProviderError(
-            f"device provider {selection.provider_id!r} failed preflight: {reasons}"
+            f"selected device provider {selection.provider_id!r} failed preflight "
+            f"with status {preflight.status.value!r}"
         )
     try:
         contribution = provider.build_contribution(request)
     except Exception as exc:
         raise DeviceProviderError(
-            f"device provider {selection.provider_id!r} build_contribution() "
-            f"failed: {exc}"
+            f"selected device provider {selection.provider_id!r} "
+            "build-contribution stage failed"
         ) from exc
     if not isinstance(contribution, DeviceBuildContribution):
         raise DeviceProviderError(
@@ -866,4 +1120,6 @@ def resolve_device_plan(
         capability=capability,
         preflight=preflight,
         contribution=contribution,
+        source=(provider_sources or {}).get(selection.provider_id),
+        options=resolved_options,
     )

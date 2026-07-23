@@ -17,8 +17,10 @@ from rextio.devices.api import (
     DeviceProviderError,
     DeviceProviderLock,
     DeviceProviderManifest,
+    DeviceProviderOptions,
     DeviceProviderReport,
     DeviceProviderSelection,
+    DeviceProviderSource,
     DeviceResourceAccess,
     DeviceResourceContract,
     DeviceResourceOwner,
@@ -27,6 +29,7 @@ from rextio.devices.api import (
     normalize_device_id,
     resolve_device_plan,
 )
+from rextio.devices.loader import load_selected_device_provider
 
 __all__ = [
     "DEVICE_PROVIDER_ENTRY_POINT",
@@ -40,13 +43,16 @@ __all__ = [
     "DeviceProviderError",
     "DeviceProviderLock",
     "DeviceProviderManifest",
+    "DeviceProviderOptions",
     "DeviceProviderReport",
     "DeviceProviderSelection",
+    "DeviceProviderSource",
     "DeviceResourceAccess",
     "DeviceResourceContract",
     "DeviceResourceOwner",
     "DeviceValueMetadata",
     "ResolvedDevicePlan",
     "normalize_device_id",
+    "load_selected_device_provider",
     "resolve_device_plan",
 ]
