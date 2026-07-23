@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Device Provider API 1 foundation (Release Train E0)
+### Device Provider API 1 foundation and bounded build wiring (tooling contract 2.26.0)
 
 - Replace the behavior-neutral device-provider draft with a bounded,
   vendor-neutral API 1.0 contract: structured device value metadata, canonical
@@ -12,8 +12,19 @@
 - Preserve existing CPU-only behavior when no provider is selected. An
   accelerator-bearing artifact profile now requires explicit resolution;
   installed-but-unselected providers are never inspected.
+- Add advanced explicit `[target]` selection/options for `generate` and
+  `build`. Core loads exactly one selected `rextio.device_providers` entry
+  point, binds its module/attribute target and distribution name/version,
+  redacts raw options to keys plus a SHA-256 binding, and completes preflight
+  before generated-output mutation.
+- Materialize only validated native-library names as a generated `build.rs`
+  in this bounded step. Bind the selected plan into a generated lock, build
+  and generate reports, plus artifact-evidence/SBOM/provenance inputs.
+  Cargo features, package references, helpers, and runtime-check ids remain
+  declared future inputs and fail closed if a provider contributes them.
 - Keep support claims separate from discovery and preflight. E0 does not ship a
-  CUDA provider and does not add Torch or TensorFlow CUDA lowering.
+  Torch or TensorFlow CUDA lowering; selecting an accelerator provider without
+  a matching typed domain `DeviceRequirement` fails closed.
 
 ### Plugin comparison expressions (plugin API 1.5; tooling contract 2.25.0)
 

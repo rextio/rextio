@@ -45,7 +45,8 @@ native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
 
 The unreleased next-version line implements plugin API **1.5** and tooling
-contract **2.25.0**. API 1.5 adds one explicitly version-gated
+contract **2.26.0**. API 1.5 was introduced by contract 2.25.0 with one
+explicitly version-gated
 ``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
 closed token set ``== != < <= > >=``. Core offers it only when at least one
 operand is owned by an API-1.5 plugin, preserves the claimed result type

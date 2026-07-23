@@ -20,16 +20,28 @@ device integration.
 
 `rextio.devices.DEVICE_PROVIDER_API_VERSION` is `1.0` and evolves
 independently from the lowering-plugin API. The reserved entry-point group is
-`rextio.device_providers`, but E0 intentionally provides no implicit
-entry-point loading.
+`rextio.device_providers`.
 
-Resolution takes an explicit `DeviceProviderSelection(provider_id,
-capability_id)` plus an `ArtifactProfile` and a caller-supplied provider map.
-Only the selected map member is inspected. Installed-but-unselected providers
-cannot alter analysis, code generation, or result semantics.
+Programmatic resolution takes an explicit
+`DeviceProviderSelection(provider_id, capability_id)` plus an
+`ArtifactProfile` and a caller-supplied provider map. The advanced
+`[target].device_provider` / `device_capability` build configuration instead
+loads exactly the named installed entry point. It does not enumerate, import,
+or execute any unselected payload. The source lock binds the selected entry
+point's group, name, `module:attribute` value, and installed distribution
+name/version without recording filesystem locators.
 
 No selection preserves the existing CPU-only behavior. A non-CPU
-`DeviceRequirement` without an explicit selection fails closed.
+`DeviceRequirement` without an explicit selection fails closed. Conversely,
+selecting an accelerator provider without a matching typed non-CPU
+`DeviceRequirement` also fails closed. Merely installing/configuring
+`rextio-device-cuda` therefore cannot turn a CPU-only domain route into CUDA.
+
+`[target.device_options]` is a string map passed only to the explicitly
+selected provider. It is not a secret store: provider code receives the raw
+values. Rextio's public lock/report surfaces emit only sorted option keys and
+a SHA-256 binding digest, and stable public errors do not echo provider
+exception text or raw option values.
 
 ## Structured records
 
@@ -53,21 +65,27 @@ No selection preserves the existing CPU-only behavior. A non-CPU
   `support_claim: false`; preflight is not certification.
 - `DeviceBuildContribution` records bounded declarative Cargo features, native
   libraries, project-relative package references, generated-helper ids,
-  runtime-check ids, and resource contracts.
+  runtime-check ids, and resource contracts. API 1 records the future surface;
+  the current build materializer accepts only native-library names. Non-empty
+  Cargo features, package references, helper ids, or runtime-check ids fail
+  closed rather than being misrepresented as active integration.
 - `ResolvedDevicePlan` combines the selected capability, successful preflight,
   and contribution, and projects deterministic `DeviceProviderLock` and
   `DeviceProviderReport` records.
 
 Tuple inputs are canonicalized into stable lexical/id order and records are
-frozen. A lock includes the SHA-256 of canonical manifest JSON, so provider
-identity/version/capability and the target triple cannot drift silently.
+frozen. A lock includes canonical manifest, artifact-profile, contribution,
+source-identity, and redacted-options SHA-256 values, so the selected
+distribution/entry-point target, provider identity/version/capability, target,
+and admitted inputs cannot drift silently.
 
 ## Fail-closed order
 
 `resolve_device_plan()` performs the following order:
 
 1. require an explicit selection for accelerator profiles;
-2. select exactly one caller-supplied provider by id;
+2. select exactly one caller-supplied provider by id, or load exactly one
+   explicitly named installed entry point;
 3. validate manifest/API/provider identity;
 4. resolve exactly one named capability and check target, artifact kind,
    backend, and requested architecture compatibility;
@@ -76,9 +94,26 @@ identity/version/capability and the target triple cannot drift silently.
 7. only then request declarative build contributions.
 
 Provider exceptions, malformed records, unavailable/incompatible results, and
-identity mismatches become `DeviceProviderError`. A failed native operation is
-not replayable as Python; E0 fallback is allowed only before native side
-effects, at this preflight boundary.
+identity mismatches become `DeviceProviderError`. Public errors identify only
+the stable stage/provider/status; the original exception remains chained for
+local debugging and is not serialized. A failed native operation is not
+replayable as Python; fallback is allowed only before native side effects, at
+this preflight boundary.
+
+For `rextio generate` and `rextio build`, selection and preflight complete
+before generated directories or build outputs are reset. A successfully
+resolved bounded host-extension contribution may emit:
+
+- a validated native-link-only `build.rs`;
+- `device-provider.lock.json`, containing the redacted resolved plan;
+- conditional `device_provider_plans` in generate/build reports; and
+- hashes of the generated link/lock inputs in artifact evidence, SBOM, and
+  provenance when that evidence lane applies.
+
+No-selection commands retain the prior report/file shape. The current
+materializer has no concrete consumer for generic Cargo feature names, package
+references, generated helpers, or runtime checks, so those inputs fail before
+any generated-output write.
 
 ## Ownership boundary
 
@@ -101,13 +136,20 @@ A successful preflight cannot promote build-only evidence to certified device
 support. Standard GitHub-hosted compilation and the Windows/Linux CUDA Driver
 API inventory probe do not establish CUDA execution support.
 
-## E0 limitations
+## E0 / bounded integration limitations
 
-E0 freezes the composition contract, not a CUDA product. Core does not yet
-auto-discover providers or inject contributions into ordinary `rextio build`.
-There is no first-party `rextio-device-cuda` package in this milestone, no GPU
-kernel generation, no runtime dispatch, and no Torch/TensorFlow CUDA lowering.
-Those require E1, E2, and E3 respectively, plus real NVIDIA hardware evidence.
+This work freezes the composition contract and selected-provider build wiring,
+not a CUDA framework product. Core deliberately does not auto-discover
+providers. The separate first-party `rextio-device-cuda` E1 package can prove
+driver/toolkit preflight and provider-owned raw-resource primitives, but E1
+alone supplies no Python-domain semantics and cannot satisfy an ordinary
+CPU-only artifact profile.
+
+There is no GPU kernel generation, framework tensor/allocator/current-stream
+handoff, or Torch/TensorFlow CUDA lowering in this milestone. Those require
+separate E2 and E3 domain integrations plus exact real-NVIDIA-hardware
+evidence. Until then, framework CUDA source remains Python fallback or fails a
+native-only closure.
 
 ROCm, Metal/MPS, PJRT/TPU, and NPU adapters remain outside the first-party
 commitment.
