@@ -52,7 +52,11 @@ operand is owned by an API-1.5 plugin, preserves the claimed result type
 (including a non-scalar plugin type) through later claimed calls, and carries
 the exact direct operands through IR to ``lower()``. Providers below 1.5 are
 never offered these sites; chained comparisons, identity/membership operators,
-and unclaimed plugin comparisons remain fail-closed.
+and unclaimed plugin comparisons remain fail-closed. A claimed comparison must
+state a non-empty result type registered either as a Core type or plugin type;
+`result_type=None` is an invalid claim. Peek inference never chooses between
+multiple claiming providers, even if they report the same result type; the
+authoritative recording pass reports that overlap.
 
 ## Purpose
 

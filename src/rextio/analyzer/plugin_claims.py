@@ -437,6 +437,7 @@ class ClaimEngine:
             callables=callables,
         )
         result_type: str | None = None
+        claimed_count = 0
         for plugin_id in plugin_ids:
             try:
                 verdict = self._claim(plugin_id, self._site_for_provider(site, plugin_id))
@@ -446,9 +447,11 @@ class ClaimEngine:
                 # path with full metadata; a peek must never raise or pre-empt it.
                 return None
             if isinstance(verdict, Claimed):
-                if result_type is not None and verdict.result_type != result_type:
-                    # Overlapping claims are an error the recording path reports;
-                    # stay silent here rather than pick a winner.
+                claimed_count += 1
+                if claimed_count > 1:
+                    # Any overlap is ambiguous even when providers report the
+                    # same type. The authoritative path raises the actionable
+                    # multiple-provider error; inference must not pick a winner.
                     return None
                 result_type = verdict.result_type
         return result_type
@@ -663,13 +666,15 @@ class ClaimEngine:
             ),
         )
         result_type: str | None = None
+        claimed_count = 0
         for plugin_id in plugin_ids:
             try:
                 verdict = self._claim(plugin_id, site)
             except PluginError:
                 return None
             if isinstance(verdict, Claimed):
-                if result_type is not None and verdict.result_type != result_type:
+                claimed_count += 1
+                if claimed_count > 1:
                     return None
                 result_type = verdict.result_type
         return result_type

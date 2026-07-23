@@ -7,6 +7,7 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.codegen.rust.generator import generate_rust_module
 from rextio.config.schema import RextioConfig
 from rextio.ir.lowering import PluginTypeMaps, lower_project
+from rextio.ir.nodes import CallIR, CompareIR, ReturnIR
 from rextio.ir.types import RxtPluginType
 from rextio.plugins.api import (
     BoundaryConversion,
@@ -191,8 +192,13 @@ def test_compare_claim_reaches_ir_and_plugin_lowering_with_direct_operands(
     )
 
     module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
-    compare = module_ir.functions[0].body.statements[0].value
-    assert compare.to_dict()["args"][0]["claim"]["kind"] == "compare"  # type: ignore[attr-defined]
+    statement = module_ir.functions[0].body.statements[0]
+    assert isinstance(statement, ReturnIR)
+    assert isinstance(statement.value, CallIR)
+    compare = statement.value.args[0]
+    assert isinstance(compare, CompareIR)
+    assert compare.claim is not None
+    assert compare.claim.kind == "compare"
 
     source = generate_rust_module(
         module_ir,

@@ -122,7 +122,7 @@ def load(*payloads: tuple[str, Any], enabled: tuple[str, ...] = ("rextio-demo",)
     )
 
 
-def test_plugin_api_version_is_14() -> None:
+def test_plugin_api_version_is_15() -> None:
     assert PLUGIN_API_VERSION == "1.5"
 
 
