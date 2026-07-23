@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `0.1.6` is the unreleased integration branch. This bootstrap commit is
+    # intentionally placed on that branch: before it exists here, a PR whose
+    # base is `0.1.6` would not receive the normal pull-request workflow.
+    branches: [main, 0.1.6]
   pull_request:
-    branches: [main]
+    branches: [main, 0.1.6]
     # `labeled` lets the experimental Nuitka job opt in on a PR via the
     # `test-nuitka` label (see the `nuitka-e2e` job's `if:`).
     types: [opened, synchronize, reopened, labeled]
