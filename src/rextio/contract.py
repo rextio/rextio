@@ -100,7 +100,10 @@ from __future__ import annotations
 # path-free production sandbox and toolchain-support receipt surfaces. These
 # additive records bind the supported toolchain authority and executed sandbox
 # evidence without weakening the existing fail-closed authorization chain.
+# Contract 2.25.0 adds the plugin-API-1.5 ``compare`` claim kind and preserves
+# a plugin-defined comparison result type through later claimed expressions.
+# Existing call/binop claims and all position semantics remain unchanged.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.24.0"
+TOOLING_CONTRACT_VERSION = "2.25.0"

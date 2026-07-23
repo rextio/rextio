@@ -1,6 +1,6 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
@@ -43,6 +43,16 @@ plugin claim. The frozen Full-C6 profile
 requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
+
+The unreleased next-version line implements plugin API **1.5** and tooling
+contract **2.25.0**. API 1.5 adds one explicitly version-gated
+``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
+closed token set ``== != < <= > >=``. Core offers it only when at least one
+operand is owned by an API-1.5 plugin, preserves the claimed result type
+(including a non-scalar plugin type) through later claimed calls, and carries
+the exact direct operands through IR to ``lower()``. Providers below 1.5 are
+never offered these sites; chained comparisons, identity/membership operators,
+and unclaimed plugin comparisons remain fail-closed.
 
 ## Purpose
 
@@ -126,9 +136,11 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
 # at lower() time the site carries the claim's own rule_id and result_type
 ```
 
-- `ClaimSite`: one candidate construct — a call or binary operation
+- `ClaimSite`: one candidate construct — a call, binary operation, or API-1.5
+  non-chained comparison
   (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
-  allow-set rejects it, so a plugin may claim `@`). One candidate construct
+  allow-set rejects it, so a plugin may claim `@`; comparison tokens are
+  `== != < <= > >=`). One candidate construct
   whose operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types and the dotted call target. The source-location

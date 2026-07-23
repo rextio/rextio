@@ -28,11 +28,12 @@ from rextio.artifacts.models import ArtifactProfile
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
 
-# "binop" describes operator lowering surfaces (ClaimSite kind "binop"), so a
-# plugin claiming `+`/`-`/`*`/`/` can label the rule accurately (council
-# round 4: the closed set had no vocabulary for operator rules and the
-# first-party numpy elementwise rule was mislabeled "call").
-RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "binop", "import", "decorator"})
+# "binop" and "compare" describe operator lowering surfaces (ClaimSite kinds
+# with the same names), so a plugin can label element-wise arithmetic and
+# comparison rules accurately instead of presenting them as calls.
+RULE_SCOPE_KINDS = frozenset(
+    {"type", "syntax", "call", "binop", "compare", "import", "decorator"}
+)
 RULE_OUTCOMES = frozenset({"native", "fallback", "reject", "shim", "boundary"})
 RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 
@@ -53,9 +54,13 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # fail-closed declaration of standalone (boundary-free) Rust artifact support
 # for rust-crate and host-executable profiles. The hook is NOT part of the
 # all-or-none lowering member set; absence means standalone unsupported.
-# All additions are optional/defaulted, so 1.1–1.3 providers remain source-
+# 1.5 adds an explicitly version-gated ``compare`` expression claim kind.
+# Providers below 1.5 are never offered comparison sites, so an installed
+# legacy provider cannot change behavior merely because Core learned the new
+# expression vocabulary.
+# All additions are optional/defaulted, so 1.1–1.4 providers remain source-
 # and behavior-compatible for host-extension builds (major must still match).
-PLUGIN_API_VERSION = "1.4"
+PLUGIN_API_VERSION = "1.5"
 
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
@@ -1083,10 +1088,11 @@ class CallableMeta:
 class ClaimSite:
     """One candidate construct offered to a plugin's ``claim`` or ``lower``.
 
-    ``kind`` is ``call`` (dotted call target in ``target``) or ``binop``
-    (operator token in ``target``); ``operand_types`` are the resolved operand
-    or argument types in positional order (plugin type keys or core type
-    names, ``None`` when unresolved).
+    ``kind`` is ``call`` (dotted call target in ``target``), ``binop``
+    (operator token in ``target``), or API-1.5 ``compare`` (one non-chained
+    comparison operator token in ``target``). ``operand_types`` are the
+    resolved operand or argument types in positional order (plugin type keys
+    or core type names, ``None`` when unresolved).
 
     At ``claim()`` time ``rule_id``/``result_type`` are ``None`` (the claim
     has not happened yet). At ``lower()`` time core fills them with the

@@ -105,9 +105,9 @@ class PluginClaimRejection:
     """A plugin claim rejection pending boundary-pass delivery, with its site kind.
 
     The kind matters for delivery: a call-site rejection replaces RXT030 in
-    the boundary pass's call loop, while a binop rejection has no CallSite and
-    must be attached unconditionally — including when it shares a start
-    position with a (claimed) call, e.g. ``np.dot(a, b) + c``.
+    the boundary pass's call loop, while a binop/compare rejection has no
+    CallSite and must be attached unconditionally — including when it shares a
+    start position with a claimed call.
 
     ``end_line``/``end_column`` complete the source span so keyword-call RXT010
     suppression can match Claimed and Rejected plugin-managed sites by the

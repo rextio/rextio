@@ -1966,8 +1966,7 @@ class _SignatureInferencer:
                 )
             return None
         if isinstance(node, ast.Compare):
-            self.infer_compare(node)
-            return "bool"
+            return self.infer_compare(node)
         if isinstance(node, ast.Call):
             return self.infer_call(node, expected)
         if isinstance(node, ast.Subscript):
@@ -1986,13 +1985,26 @@ class _SignatureInferencer:
             return left
         return left if left in NUMERIC_TYPES and right is None else None
 
-    def infer_compare(self, node: ast.Compare) -> None:
-        left_type = self.infer_expr(node.left)
+    def infer_compare(self, node: ast.Compare) -> str | None:
+        operand_types: list[str | None] = [self.infer_expr(node.left)]
+        left_type = operand_types[0]
         for comparator in node.comparators:
             right_type = self.infer_expr(comparator, left_type)
             if left_type is None and right_type is not None:
                 left_type = self.infer_expr(node.left, right_type)
+                operand_types[0] = left_type
+            operand_types.append(right_type)
             left_type = right_type or left_type
+        engine = self.function.claim_engine
+        if engine is not None:
+            claim_type = engine.peek_compare_result_type(
+                self.function,
+                node,
+                tuple(operand_types),
+            )
+            if claim_type is not None:
+                return claim_type
+        return "bool"
 
     def _is_shadowed_callable(self, node: ast.Call) -> bool:
         """Whether this call's callee head is shadowed (shared rule).
@@ -2506,7 +2518,7 @@ def _infer_expr_type(
                 )
         return "bool"
     if isinstance(node, ast.Compare):
-        _validate_compare_types(
+        return _validate_compare_types(
             node,
             function,
             env,
@@ -2514,7 +2526,6 @@ def _infer_expr_type(
             named_expr_binding_env=binding_env,
             active_comprehension_targets=active_targets,
         )
-        return "bool"
     if isinstance(node, ast.Call):
         return _infer_call_type(
             node,
@@ -3800,7 +3811,7 @@ def _validate_compare_types(
     allow_named_expr: bool = False,
     named_expr_binding_env: dict[str, str] | None = None,
     active_comprehension_targets: set[str] | None = None,
-) -> None:
+) -> str | None:
     binding_env = named_expr_binding_env if named_expr_binding_env is not None else env
     active_targets = active_comprehension_targets or set()
 
@@ -3834,11 +3845,26 @@ def _validate_compare_types(
                 )
                 break
 
-    left_type = infer_side(node.left)
+    operand_types = [infer_side(node.left)]
+    operand_types.extend(infer_side(comparator) for comparator in node.comparators)
+    engine = function.claim_engine
+    if engine is not None and len(node.ops) == 1:
+        handled, claim_type = engine.claim_compare(
+            function,
+            node,
+            tuple(operand_types),
+        )
+        if handled:
+            return claim_type
+
+    left_type = operand_types[0]
     left_node = node.left
     reported_float_container = False
-    for op, comparator in zip(node.ops, node.comparators, strict=True):
-        right_type = infer_side(comparator)
+    for index, (op, comparator) in enumerate(
+        zip(node.ops, node.comparators, strict=True),
+        start=1,
+    ):
+        right_type = operand_types[index]
         if (
             not reported_float_container
             and not isinstance(op, (ast.Is, ast.IsNot))
@@ -3902,7 +3928,6 @@ def _validate_compare_types(
                 "ordering comparisons (<, <=, >, >=) on dict/set operands are not "
                 "supported in native functions",
             )
-        engine = function.claim_engine
         if engine is not None and (
             engine.is_plugin_type(left_type) or engine.is_plugin_type(right_type)
         ):
@@ -3931,6 +3956,7 @@ def _validate_compare_types(
             )
         left_type = right_type
         left_node = comparator
+    return "bool"
 
 
 def _add_set_iteration_rejection(function: FunctionAnalysis, node: ast.AST) -> None:

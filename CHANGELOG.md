@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Plugin comparison expressions (plugin API 1.5; tooling contract 2.25.0)
+
+- Add an explicitly version-gated `compare` claim kind for one non-chained
+  `==`, `!=`, `<`, `<=`, `>`, or `>=` expression involving a plugin-owned
+  operand. Providers below API 1.5 are never offered the new site.
+- Preserve a claimed non-scalar comparison result type through subsequent
+  plugin calls and carry the comparison's direct operands through analyzer,
+  IR, and Rust lowering. Unclaimed/chained plugin comparisons remain on the
+  fail-closed fallback path.
+
 ## 0.1.5 — 2026-07-23
 
 **Published release.** Package version `0.1.5` is tagged and published to PyPI

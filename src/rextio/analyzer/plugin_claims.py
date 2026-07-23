@@ -57,6 +57,15 @@ _BINOP_SYMBOLS: dict[type[ast.operator], str] = {
     ast.MatMult: "@",
 }
 
+_COMPARE_SYMBOLS: dict[type[ast.cmpop], str] = {
+    ast.Eq: "==",
+    ast.NotEq: "!=",
+    ast.Lt: "<",
+    ast.LtE: "<=",
+    ast.Gt: ">",
+    ast.GtE: ">=",
+}
+
 # i64 bounds for claim-literal signed ints (matches analyzer native range).
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
@@ -263,6 +272,10 @@ class ClaimEngine:
     def provider_is_api_13(self, plugin_id: str) -> bool:
         """Whether the provider declared plugin API >= 1.3."""
         return self.provider_api_version(plugin_id) >= (1, 3)
+
+    def provider_is_api_15(self, plugin_id: str) -> bool:
+        """Whether the provider declared plugin API >= 1.5."""
+        return self.provider_api_version(plugin_id) >= (1, 5)
 
     def is_plugin_type(self, type_name: str | None) -> bool:
         """Report whether a type-environment entry is a plugin type key."""
@@ -617,6 +630,78 @@ class ClaimEngine:
         )
         return self._offer(function, site, plugin_ids, _node_end(node))
 
+    def peek_compare_result_type(
+        self,
+        function: FunctionAnalysis,
+        node: ast.Compare,
+        operand_types: tuple[str | None, ...],
+    ) -> str | None:
+        """Return one unambiguous API-1.5 comparison result type without recording.
+
+        Only non-chained comparisons from the closed comparison vocabulary are
+        eligible. Legacy providers are never offered the site. As with call
+        peeking, any overlap or provider error is left to the authoritative
+        recording path and this method fails closed to ``None``.
+        """
+        if len(node.ops) != 1 or len(operand_types) != 2:
+            return None
+        symbol = _COMPARE_SYMBOLS.get(type(node.ops[0]))
+        if symbol is None:
+            return None
+        plugin_ids = self._compare_plugins(operand_types)
+        if not plugin_ids:
+            return None
+        site = ClaimSite(
+            kind="compare",
+            target=symbol,
+            operand_types=operand_types,
+            file_path=function.file_path,
+            line=getattr(node, "lineno", function.line),
+            column=getattr(node, "col_offset", function.column),
+            operand_literals=tuple(
+                extract_claim_literal(item) for item in (node.left, *node.comparators)
+            ),
+        )
+        result_type: str | None = None
+        for plugin_id in plugin_ids:
+            try:
+                verdict = self._claim(plugin_id, site)
+            except PluginError:
+                return None
+            if isinstance(verdict, Claimed):
+                if result_type is not None and verdict.result_type != result_type:
+                    return None
+                result_type = verdict.result_type
+        return result_type
+
+    def claim_compare(
+        self,
+        function: FunctionAnalysis,
+        node: ast.Compare,
+        operand_types: tuple[str | None, ...],
+    ) -> tuple[bool, str | None]:
+        """Offer one non-chained comparison to API-1.5 operand-type plugins."""
+        if len(node.ops) != 1 or len(operand_types) != 2:
+            return False, None
+        symbol = _COMPARE_SYMBOLS.get(type(node.ops[0]))
+        if symbol is None:
+            return False, None
+        plugin_ids = self._compare_plugins(operand_types)
+        if not plugin_ids:
+            return False, None
+        site = ClaimSite(
+            kind="compare",
+            target=symbol,
+            operand_types=operand_types,
+            file_path=function.file_path,
+            line=getattr(node, "lineno", function.line),
+            column=getattr(node, "col_offset", function.column),
+            operand_literals=tuple(
+                extract_claim_literal(item) for item in (node.left, *node.comparators)
+            ),
+        )
+        return self._offer(function, site, plugin_ids, _node_end(node))
+
     def covers_call(self, target: str | None, receiver_type: str | None) -> bool:
         """Report whether any active plugin covers this call/method site.
 
@@ -698,6 +783,23 @@ class ClaimEngine:
             if owner in self._providers and self.provider_is_api_13(owner):
                 matched.add(owner)
         return tuple(sorted(matched))
+
+    def _compare_plugins(
+        self, operand_types: tuple[str | None, ...]
+    ) -> tuple[str, ...]:
+        """Return API-1.5 providers owning at least one comparison operand."""
+        owners = {
+            operand.split("/", 1)[0]
+            for operand in operand_types
+            if operand is not None and operand in self._type_keys
+        }
+        return tuple(
+            sorted(
+                owner
+                for owner in owners
+                if owner in self._providers and self.provider_is_api_15(owner)
+            )
+        )
 
     def _receiver_type(
         self, node: ast.Call, type_of: Callable[[ast.AST], str | None]

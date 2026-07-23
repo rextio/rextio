@@ -1159,6 +1159,11 @@ class _FunctionRenderer:
             op = "!" if expr.op == "not" else expr.op
             return f"({op}{self.render_expr(expr.value)})"
         if isinstance(expr, CompareIR):
+            if expr.claim is not None:
+                return self.render_plugin_claim(
+                    expr.claim,
+                    [expr.left, *expr.comparators],
+                )
             return self.render_compare(expr)
         if isinstance(expr, CallIR):
             return self.render_call(expr)
@@ -2613,6 +2618,8 @@ class _FunctionRenderer:
                 return RxtBool()
             return self.infer_expr_type(expr.value)
         if isinstance(expr, CompareIR):
+            if expr.claim is not None:
+                return self._claim_result_type(expr.claim)
             return RxtBool()
         if isinstance(expr, IndexIR):
             value_type = self.infer_expr_type(expr.value)
