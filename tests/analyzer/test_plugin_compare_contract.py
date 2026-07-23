@@ -97,10 +97,7 @@ class _CompareWhereProvider:
         if site.kind == "compare":
             assert site.operand_types == (F64_KEY, "int")
             return LoweredExpr(
-                rust=(
-                    f"{ctx.operands[0]}.mapv(|value| "
-                    f"value > ({ctx.operands[1]} as f64))"
-                )
+                rust=(f"{ctx.operands[0]}.mapv(|value| value > ({ctx.operands[1]} as f64))")
             )
         if site.kind == "call" and site.target == "numpy.where":
             assert site.operand_types == (BOOL_KEY, F64_KEY, F64_KEY)
@@ -140,9 +137,8 @@ def _registry(provider: object) -> PluginRegistry:
 
 
 def _write_module(root: Path) -> None:
-    path = root / "src" / "myapp" / "kernels.py"
-    path.parent.mkdir(parents=True)
-    path.write_text(
+    _write_source(
+        root,
         """
 import numpy as np
 from rextio_array.types import F64Arr1
@@ -150,16 +146,24 @@ from rextio_array.types import F64Arr1
 def choose_positive(a: F64Arr1, fallback: F64Arr1) -> F64Arr1:
     return np.where(a > 0, a, fallback)
 """,
-        encoding="utf-8",
     )
 
 
-def _function(analysis: ProjectAnalysis) -> FunctionAnalysis:
+def _write_source(root: Path, source: str) -> None:
+    path = root / "src" / "myapp" / "kernels.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding="utf-8")
+
+
+def _function(
+    analysis: ProjectAnalysis,
+    name: str = "choose_positive",
+) -> FunctionAnalysis:
     return next(
         function
         for module in analysis.modules
         for function in module.functions
-        if function.qualname == "myapp.kernels.choose_positive"
+        if function.qualname == f"myapp.kernels.{name}"
     )
 
 
@@ -191,12 +195,101 @@ def test_result_only_compare_type_cannot_be_forged_by_source_annotation() -> Non
     imported = ast.parse("BoolArr1", mode="eval").body
 
     assert engine.resolve_annotation(direct, {}) is None
-    assert engine.resolve_annotation(
-        imported,
-        {"BoolArr1": "rextio_array.types.BoolArr1"},
-    ) is None
+    assert (
+        engine.resolve_annotation(
+            imported,
+            {"BoolArr1": "rextio_array.types.BoolArr1"},
+        )
+        is None
+    )
     assert engine.is_plugin_type(BOOL_KEY) is True
     assert engine.is_resident_type(BOOL_KEY) is True
+    assert engine.is_result_only_resident_type(BOOL_KEY) is True
+
+
+@pytest.mark.parametrize("return_annotation", ["", " -> bool"])
+def test_explicit_direct_result_only_return_is_rxt092(
+    tmp_path: Path,
+    return_annotation: str,
+) -> None:
+    _write_source(
+        tmp_path,
+        f"""
+import rextio
+from rextio_array.types import F64Arr1
+
+@rextio.native
+def positive_mask(values: F64Arr1){return_annotation}:
+    return values > 0
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "positive_mask")
+
+    assert function.accepted is False
+    assert "RXT092" in function.rejection_codes
+    assert "RXT001" not in function.rejection_codes
+    assert "RXT010" not in function.rejection_codes
+    assessment = function.to_dict()["promotion_assessment"]
+    assert assessment["status"] == "ineligible"
+    assert "RXT092" in assessment["diagnostic_codes"]
+
+
+def test_auto_direct_result_only_return_preserves_rxt092_promotion_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_source(
+        tmp_path,
+        """
+from rextio_array.types import F64Arr1
+
+def positive_mask(values: F64Arr1) -> bool:
+    return values > 0
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "positive_mask")
+
+    assert function.accepted is False
+    assert function.diagnostics == []
+    assessment = function.to_dict()["promotion_assessment"]
+    assert assessment["status"] == "ineligible"
+    assert assessment["diagnostic_codes"] == ["RXT092"]
+    assert assessment["diagnostics"][0]["kind"] == "blocker"
+
+
+def test_explicit_materialized_return_mismatch_remains_rxt010(
+    tmp_path: Path,
+) -> None:
+    _write_source(
+        tmp_path,
+        """
+import rextio
+from rextio_array.types import F64Arr1
+
+@rextio.native
+def positive_mask(values: F64Arr1) -> F64Arr1:
+    return values > 0
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "positive_mask")
+
+    assert function.accepted is False
+    assert "RXT010" in function.rejection_codes
+    assert "RXT092" not in function.rejection_codes
 
 
 def test_compare_claim_reaches_ir_and_plugin_lowering_with_direct_operands(

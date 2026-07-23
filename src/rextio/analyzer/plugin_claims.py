@@ -244,10 +244,16 @@ class ClaimEngine:
         # native-only helper the boundary pass may call native-to-native; a
         # materialized key keeps the RXT092 Python-entry-point restriction.
         self._resident_type_keys: set[str] = set()
+        # API-1.5 resident keys with no annotation spelling are claim-flow
+        # vocabulary only. They may be produced/stored/consumed by claims, but
+        # cannot honestly form a Python-visible parameter/return signature.
+        self._result_only_resident_type_keys: set[str] = set()
         for type_binding in registry.types:
             self._type_keys.add(type_binding.plugin_type.key)
             if type_binding.plugin_type.is_resident:
                 self._resident_type_keys.add(type_binding.plugin_type.key)
+                if not type_binding.plugin_type.annotations:
+                    self._result_only_resident_type_keys.add(type_binding.plugin_type.key)
             for spelling in type_binding.plugin_type.annotations:
                 self._annotations[spelling] = (
                     type_binding.plugin_id,
@@ -284,6 +290,10 @@ class ClaimEngine:
     def is_resident_type(self, type_name: str | None) -> bool:
         """Report whether a type key is a resident (opaque, no-boundary) type."""
         return type_name is not None and type_name in self._resident_type_keys
+
+    def is_result_only_resident_type(self, type_name: str | None) -> bool:
+        """Whether a resident key is claim-flow-only and has no source spelling."""
+        return type_name is not None and type_name in self._result_only_resident_type_keys
 
     def resolve_annotation(self, annotation: ast.AST, imports: Mapping[str, str]) -> str | None:
         """Resolve an annotation node to a plugin type key, or None.
@@ -789,9 +799,7 @@ class ClaimEngine:
                 matched.add(owner)
         return tuple(sorted(matched))
 
-    def _compare_plugins(
-        self, operand_types: tuple[str | None, ...]
-    ) -> tuple[str, ...]:
+    def _compare_plugins(self, operand_types: tuple[str | None, ...]) -> tuple[str, ...]:
         """Return API-1.5 providers owning at least one comparison operand."""
         owners = {
             operand.split("/", 1)[0]

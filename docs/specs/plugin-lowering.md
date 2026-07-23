@@ -62,10 +62,12 @@ authoritative recording pass reports that overlap.
 API 1.5 also permits a **result-only resident type** to declare
 `annotations=()`. It remains registered by stable key for claim results,
 subsequent claim operands, IR, and codegen, but contributes no annotation-map
-entry and therefore cannot be forged in a Python signature. This exception is
-valid only when `conversion is None` and the provider advertises API 1.5 or
-newer. Materialized types and API 1.1-1.4 resident types still require at least
-one non-empty dotted annotation spelling.
+entry and therefore cannot be forged in a Python signature. Returning one
+directly or inferring it into a parameter/return signature is an RXT092
+native-boundary escape; auto-mode retains that blocker in its promotion
+assessment. This exception is valid only when `conversion is None` and the
+provider advertises API 1.5 or newer. Materialized types and API 1.1-1.4
+resident types still require at least one non-empty dotted annotation spelling.
 
 ## Purpose
 
@@ -435,7 +437,9 @@ in §9 completes the same surface):
   materialized form. API 1.5 adds the narrower result-only form:
   `annotations=()` is accepted only for a resident type from a provider
   advertising API 1.5 or newer. It remains available by key to claim chaining
-  but is absent from source-annotation maps. Every materialized type and every
+  but is absent from source-annotation maps. A direct return or inferred
+  parameter/return signature is rejected as RXT092; it must be consumed by a
+  later claim inside the same native body. Every materialized type and every
   pre-1.5 resident type must declare an annotation spelling.
 
 - **Production / storage / consumption.** A resident value is produced by a

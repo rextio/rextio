@@ -371,7 +371,19 @@ def _validate_signature(node: ast.FunctionDef, function: FunctionAnalysis) -> No
         arg.arg for arg in (*node.args.posonlyargs, *node.args.args)
     )
     for arg in args:
-        if arg.annotation is None and arg.arg not in function.inferred_arg_types:
+        inferred_arg_type = function.inferred_arg_types.get(arg.arg)
+        if (
+            arg.annotation is None
+            and inferred_arg_type is not None
+            and _is_result_only_resident_type(function, inferred_arg_type)
+        ):
+            _add_result_only_resident_boundary_escape(
+                function,
+                arg,
+                inferred_arg_type,
+                position=f"parameter {arg.arg!r}",
+            )
+        elif arg.annotation is None and arg.arg not in function.inferred_arg_types:
             function.add_diagnostic(
                 Diagnostic(
                     code="RXT001",
@@ -937,7 +949,24 @@ def _validate_statement_types(
         value_type = "None"
         if node.value is not None:
             value_type = _infer_expr_type(node.value, function, env, expected_type=return_type)
-        if value_type is not None and return_type is not None:
+        if value_type is not None and _is_result_only_resident_type(function, value_type):
+            # A result-only resident key has no Python annotation/boundary
+            # spelling by design. It may flow between claims inside the native
+            # body, but returning it would make it the function's exported
+            # result. Keep an explicitly declared *materialized* plugin return
+            # mismatch on the generic RXT010 path (the programmer named a
+            # different concrete boundary type); every otherwise direct
+            # result-only escape gets the invariant-specific RXT092.
+            if return_type is not None and _is_materialized_plugin_type(function, return_type):
+                _validate_type_match(value_type, return_type, function, node)
+            else:
+                _add_result_only_resident_boundary_escape(
+                    function,
+                    node,
+                    value_type,
+                    position="return value",
+                )
+        elif value_type is not None and return_type is not None:
             _validate_type_match(value_type, return_type, function, node)
         return
     if isinstance(node, ast.If):
@@ -1390,6 +1419,54 @@ def _validate_type_match(
     )
 
 
+def _is_result_only_resident_type(
+    function: FunctionAnalysis,
+    type_name: str | None,
+) -> bool:
+    engine = function.claim_engine
+    return engine is not None and engine.is_result_only_resident_type(type_name)
+
+
+def _is_materialized_plugin_type(
+    function: FunctionAnalysis,
+    type_name: str,
+) -> bool:
+    engine = function.claim_engine
+    return (
+        engine is not None
+        and engine.is_plugin_type(type_name)
+        and not engine.is_resident_type(type_name)
+    )
+
+
+def _add_result_only_resident_boundary_escape(
+    function: FunctionAnalysis,
+    node: ast.AST,
+    type_name: str,
+    *,
+    position: str,
+) -> None:
+    function.add_diagnostic(
+        Diagnostic(
+            code="RXT092",
+            severity="error",
+            message=(
+                f"{position} would expose result-only resident plugin type "
+                f"{type_name!r} through a function signature; this opaque "
+                "native-only value has no Python boundary conversion"
+            ),
+            file_path=function.file_path,
+            line=getattr(node, "lineno", function.line),
+            column=getattr(node, "col_offset", function.column),
+            function_name=function.qualname,
+            suggestion=(
+                "Consume the value in a later claimed plugin expression inside "
+                "the same native function, or return a materialized/core value."
+            ),
+        )
+    )
+
+
 def _return_type_name(node: ast.FunctionDef, function: FunctionAnalysis) -> str | None:
     if node.returns is not None and is_supported_type(node.returns):
         return annotation_name(node.returns)
@@ -1819,12 +1896,12 @@ class _SignatureInferencer:
             if not self.changed:
                 break
         for arg in self.args:
-            if (
-                arg.annotation is None
-                and arg.arg in self.known
-                and _is_supported_signature_type(self.known[arg.arg])
-            ):
-                self.function.inferred_arg_types[arg.arg] = self.known[arg.arg]
+            if arg.annotation is None and arg.arg in self.known:
+                inferred = self.known[arg.arg]
+                if _is_supported_signature_type(inferred) or _is_result_only_resident_type(
+                    self.function, inferred
+                ):
+                    self.function.inferred_arg_types[arg.arg] = inferred
         # Persist the complete positional parameter-type map (annotated + inferred)
         # so the boundary pass can validate caller argument types against it.
         self.function.signature_arg_types = {
@@ -1841,7 +1918,9 @@ class _SignatureInferencer:
             unique = set(self.return_types)
             if len(unique) == 1:
                 return_type = self.return_types[0]
-                if _is_supported_signature_type(return_type):
+                if _is_supported_signature_type(return_type) or _is_result_only_resident_type(
+                    self.function, return_type
+                ):
                     self.function.inferred_return_type = return_type
         # Persist the resolved return type (annotated, else inferred) so the boundary
         # pass can resolve this function's return type as a nested call argument even

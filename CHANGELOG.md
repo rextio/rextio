@@ -53,6 +53,11 @@
   result/operand chaining and codegen, but is absent from annotation maps and
   cannot be written in source; materialized and pre-1.5 resident types retain
   the non-empty annotation requirement.
+- Diagnose a result-only resident value returned directly or inferred into a
+  parameter/return signature as RXT092, preserving the native-only boundary
+  invariant and the blocker in auto-mode promotion evidence. An explicitly
+  declared incompatible materialized return remains the ordinary RXT010 type
+  mismatch.
 - Recheck the API-1.5 requirement for comparison claims at codegen time so
   stale/malformed IR or a provider-version drift fails closed.
 
