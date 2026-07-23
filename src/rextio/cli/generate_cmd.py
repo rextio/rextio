@@ -19,6 +19,11 @@ from rextio.cli.reporter import Reporter
 from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
+from rextio.devices import (
+    DeviceProviderError,
+    DeviceProviderOptions,
+    DeviceProviderSelection,
+)
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
@@ -117,6 +122,23 @@ def run(args: Namespace) -> int:
         return 1
 
     try:
+        device_selection = (
+            DeviceProviderSelection(
+                provider_id=config.target.device_provider,
+                capability_id=config.target.device_capability,
+            )
+            if config.target.device_provider is not None
+            and config.target.device_capability is not None
+            else None
+        )
+        device_options = DeviceProviderOptions(
+            tuple(sorted(config.target.device_options.items()))
+        )
+    except ValueError as error:
+        reporter.error(f"RXT060 Invalid device provider configuration: {error}")
+        return 1
+
+    try:
         result = generate_source_artifact(
             project_root,
             analysis,
@@ -126,6 +148,8 @@ def run(args: Namespace) -> int:
             rust_importable=config.rust.importable,
             rust_crate_name=config.rust.crate_name,
             embedding_enabled=config.embedding.enabled,
+            device_selection=device_selection,
+            device_options=device_options,
         )
     except PluginError as exc:
         reports_dir = project_root / ".rextio" / "reports"
@@ -173,6 +197,9 @@ def run(args: Namespace) -> int:
         )
         reporter.error(str(error))
         reporter.error("Suggestion: run on a supported Rust host target or keep this project on fallback.")
+        return 1
+    except DeviceProviderError as error:
+        reporter.error(f"RXT060 Device provider error: {error}")
         return 1
     lines = ["Rextio generate", f"  target language: {target_plan.spec.language}"]
     if target_plan.spec.version:

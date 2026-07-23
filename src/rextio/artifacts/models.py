@@ -203,8 +203,12 @@ class TargetCapability:
     id: str
     target_triples: tuple[str, ...] = ()
     artifact_kinds: tuple[ArtifactKind, ...] = ()
+    cpu_feature_level: str | None = None
     cpu_features: tuple[str, ...] = ()
     accelerator_backends: tuple[str, ...] = ()
+    minimum_runtime_version: str | None = None
+    minimum_driver_version: str | None = None
+    architectures: tuple[str, ...] = ()
     device_requirements: tuple[DeviceRequirement, ...] = ()
     certification_tier: CertificationTier = CertificationTier.UNSUPPORTED
     evidence_references: tuple[str, ...] = ()
@@ -224,6 +228,16 @@ class TargetCapability:
             "certification_tier",
             CertificationTier(self.certification_tier),
         )
+        for field_name in (
+            "cpu_feature_level",
+            "minimum_runtime_version",
+            "minimum_driver_version",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if not value.strip():
+                    raise ValueError(f"target capability {field_name} must not be empty")
+                object.__setattr__(self, field_name, value.strip())
         object.__setattr__(self, "target_triples", _sorted_strings(self.target_triples))
         object.__setattr__(
             self,
@@ -232,6 +246,7 @@ class TargetCapability:
         )
         object.__setattr__(self, "cpu_features", _sorted_strings(self.cpu_features))
         object.__setattr__(self, "accelerator_backends", _sorted_strings(self.accelerator_backends))
+        object.__setattr__(self, "architectures", _sorted_strings(self.architectures))
         object.__setattr__(
             self,
             "device_requirements",
@@ -264,8 +279,12 @@ class TargetCapability:
             "id": self.id,
             "target_triples": list(self.target_triples),
             "artifact_kinds": [kind.value for kind in self.artifact_kinds],
+            "cpu_feature_level": self.cpu_feature_level,
             "cpu_features": list(self.cpu_features),
             "accelerator_backends": list(self.accelerator_backends),
+            "minimum_runtime_version": self.minimum_runtime_version,
+            "minimum_driver_version": self.minimum_driver_version,
+            "architectures": list(self.architectures),
             "device_requirements": [item.to_dict() for item in self.device_requirements],
             "certification_tier": self.certification_tier.value,
             "evidence_references": list(self.evidence_references),

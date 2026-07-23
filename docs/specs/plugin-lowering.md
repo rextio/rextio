@@ -1,6 +1,6 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
@@ -43,6 +43,31 @@ plugin claim. The frozen Full-C6 profile
 requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
+
+The unreleased next-version line implements plugin API **1.5** and tooling
+contract **2.26.0**. API 1.5 was introduced by contract 2.25.0 with one
+explicitly version-gated
+``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
+closed token set ``== != < <= > >=``. Core offers it only when at least one
+operand is owned by an API-1.5 plugin, preserves the claimed result type
+(including a non-scalar plugin type) through later claimed calls, and carries
+the exact direct operands through IR to ``lower()``. Providers below 1.5 are
+never offered these sites; chained comparisons, identity/membership operators,
+and unclaimed plugin comparisons remain fail-closed. A claimed comparison must
+state a non-empty result type registered either as a Core type or plugin type;
+`result_type=None` is an invalid claim. Peek inference never chooses between
+multiple claiming providers, even if they report the same result type; the
+authoritative recording pass reports that overlap.
+
+API 1.5 also permits a **result-only resident type** to declare
+`annotations=()`. It remains registered by stable key for claim results,
+subsequent claim operands, IR, and codegen, but contributes no annotation-map
+entry and therefore cannot be forged in a Python signature. Returning one
+directly or inferring it into a parameter/return signature is an RXT092
+native-boundary escape; auto-mode retains that blocker in its promotion
+assessment. This exception is valid only when `conversion is None` and the
+provider advertises API 1.5 or newer. Materialized types and API 1.1-1.4
+resident types still require at least one non-empty dotted annotation spelling.
 
 ## Purpose
 
@@ -126,9 +151,11 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
 # at lower() time the site carries the claim's own rule_id and result_type
 ```
 
-- `ClaimSite`: one candidate construct — a call or binary operation
+- `ClaimSite`: one candidate construct — a call, binary operation, or API-1.5
+  non-chained comparison
   (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
-  allow-set rejects it, so a plugin may claim `@`). One candidate construct
+  allow-set rejects it, so a plugin may claim `@`; comparison tokens are
+  `== != < <= > >=`). One candidate construct
   whose operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types and the dotted call target. The source-location
@@ -407,7 +434,13 @@ in §9 completes the same surface):
   the value's exact native representation (e.g. `petgraph::Graph<...>`), used
   verbatim in native signatures. The IR carries it as
   `RxtPluginType(resident=True)`; `RxtPluginType.resident=False` is the
-  materialized form.
+  materialized form. API 1.5 adds the narrower result-only form:
+  `annotations=()` is accepted only for a resident type from a provider
+  advertising API 1.5 or newer. It remains available by key to claim chaining
+  but is absent from source-annotation maps. A direct return or inferred
+  parameter/return signature is rejected as RXT092; it must be consumed by a
+  later claim inside the same native body. Every materialized type and every
+  pre-1.5 resident type must declare an annotation spelling.
 
 - **Production / storage / consumption.** A resident value is produced by a
   claimed plugin expression whose `Claimed.result_type` is the resident type
@@ -583,6 +616,12 @@ result equivalence with hypothesis — the same posture as core's own
   exact `rust-crate` / `host-executable` profiles. Core advertises
   `PLUGIN_API_VERSION = "1.4"`; older 1.x providers keep their projected legacy
   shapes. API 1.4 remains Experimental.
+- **Plugin API 1.5** (additive, same major; unreleased): adds non-chained
+  comparison claims and result-only resident vocabulary entries. A result-only
+  entry uses `conversion=None` and `annotations=()`: it is registered only by
+  stable key and can flow from one claim into another, but source annotations
+  cannot name it. Codegen rechecks that every `compare` claim still has an
+  API-1.5 provider, guarding against stale IR/provider-version drift.
 - Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package

@@ -140,7 +140,17 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
             raise PluginError(
                 f"plugin {plugin.id!r} type key {plugin_type.key!r} must be namespaced {key_prefix!r}"
             )
-        if not plugin_type.annotations:
+        # API 1.5 may expose a resident type that exists only as the result of
+        # one claimed expression and as an operand to another. With no source
+        # spellings it cannot be forged in a Python signature, but it still
+        # participates in the by-key analyzer/IR vocabulary. Materialized
+        # types and pre-1.5 resident types retain the historical requirement.
+        result_only_resident = (
+            plugin_type.is_resident
+            and provider_api >= (1, 5)
+            and not plugin_type.annotations
+        )
+        if not plugin_type.annotations and not result_only_resident:
             raise PluginError(
                 f"plugin {plugin.id!r} type {plugin_type.key!r} declares no annotation spellings"
             )

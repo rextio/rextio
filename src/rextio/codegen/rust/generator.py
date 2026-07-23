@@ -1159,6 +1159,11 @@ class _FunctionRenderer:
             op = "!" if expr.op == "not" else expr.op
             return f"({op}{self.render_expr(expr.value)})"
         if isinstance(expr, CompareIR):
+            if expr.claim is not None:
+                return self.render_plugin_claim(
+                    expr.claim,
+                    [expr.left, *expr.comparators],
+                )
             return self.render_compare(expr)
         if isinstance(expr, CallIR):
             return self.render_call(expr)
@@ -1684,6 +1689,17 @@ class _FunctionRenderer:
                 "expected 'direct' or 'leaves'"
             )
         provider_api = str(getattr(provider, "api_version", "1.0") or "1.0")
+        if claim.kind == "compare" and not _plugin_api_at_least(provider_api, 1, 5):
+            # Defense in depth against stale/malformed IR or a provider version
+            # drifting between analysis and codegen. Compare sites were not part
+            # of the lowering contract before API 1.5 and must never be projected
+            # onto an older provider merely because an IR claim exists.
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} (api_version {provider_api!r}) "
+                f"cannot lower compare site {claim.target!r} in "
+                f"{self.function.qualname}; compare lowering requires "
+                "api_version >= 1.5"
+            )
         is_api_12 = _plugin_api_at_least(provider_api, 1, 2)
         if not is_api_12:
             # Defense in depth: even if analysis projected 1.2 fields onto IR,
@@ -2613,6 +2629,8 @@ class _FunctionRenderer:
                 return RxtBool()
             return self.infer_expr_type(expr.value)
         if isinstance(expr, CompareIR):
+            if expr.claim is not None:
+                return self._claim_result_type(expr.claim)
             return RxtBool()
         if isinstance(expr, IndexIR):
             value_type = self.infer_expr_type(expr.value)

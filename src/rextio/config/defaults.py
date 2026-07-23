@@ -42,6 +42,9 @@ DEFAULT_CONFIG: dict[str, dict[str, object]] = {
     "target": {
         "version": None,
         "build_options": {},
+        "device_provider": None,
+        "device_capability": None,
+        "device_options": {},
     },
     "plugins": {
         "enabled": (),

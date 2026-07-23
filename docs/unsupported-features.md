@@ -884,7 +884,11 @@ Two options control the interpreter side:
 `native_backend` accepts only `rust` in 0.1.0; any other value is rejected
 at configuration load. `[target] version` and `[target] build_options` are
 accepted as forward-looking metadata but have no effect yet (a RuntimeWarning
-says so). Rextio plugins are ordinary Python
+says so). Advanced `[target] device_provider` / `device_capability` selection
+is separate: it can preflight one explicitly selected provider only when the
+planned artifact already carries a compatible typed device requirement. It
+does not infer CUDA from installed hardware, activate an unselected provider,
+or make a CPU-only domain plugin CUDA-capable. Rextio plugins are ordinary Python
 packages installed with tools such as `pip` or `uv`; they expose metadata
 through the `rextio.plugins` entry point group. Projects opt into specific
 plugin ids with `[plugins] enabled`, `--enable-plugin`, or

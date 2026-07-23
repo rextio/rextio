@@ -512,7 +512,7 @@ def _plugin_claim_ir(node: ast.AST, kind: str) -> PluginClaimIR | None:
     Claims are matched on (kind, start, end): the start position alone is
     ambiguous because a BinOp shares its (line, column) with its leftmost
     operand (`np.dot(a, b) * factor` puts the call and the enclosing binop at
-    one start offset).
+    one start offset). The same matching also carries API-1.5 comparison claims.
     """
     state = _PLUGIN_STATE
     if state is None or not state.claims:
@@ -764,12 +764,14 @@ def lower_expr(
             value=lower_expr(node.operand, module, resolver),
         )
     if isinstance(node, ast.Compare):
+        claim = _plugin_claim_ir(node, "compare")
         return CompareIR(
             left=lower_expr(node.left, module, resolver),
             ops=[lower_compare_op(op) for op in node.ops],
             comparators=[
                 lower_expr(comparator, module, resolver) for comparator in node.comparators
             ],
+            claim=claim,
         )
     if isinstance(node, ast.Call):
         claim = _plugin_claim_ir(node, "call")

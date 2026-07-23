@@ -580,6 +580,8 @@ Common settings:
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[target] device_provider` / `device_capability` | — | `REXTIO_DEVICE_PROVIDER` / `REXTIO_DEVICE_CAPABILITY` |
+| `[target.device_options]` | — | `REXTIO_DEVICE_OPTIONS` |
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
@@ -602,6 +604,17 @@ Common settings:
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
 Rust is the only implemented native target in 0.1.5.
+
+Device-provider selection is an advanced, experimental build integration. It
+loads only the explicitly named `rextio.device_providers` entry point and
+preflights it before generated-output mutation. An accelerator provider also
+requires a matching typed `DeviceRequirement` emitted by a domain lowering;
+configuration alone does not make current CPU-only Torch or TensorFlow routes
+CUDA-capable. `[target.device_options]` is not a secret store: raw values are
+passed to the selected provider, while Rextio reports only option keys and a
+binding digest. `rextio capabilities` reports a configured provider/capability
+identity without provider discovery, preflight, or option disclosure. See
+[Device Provider API 1](docs/specs/device-provider.md).
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry

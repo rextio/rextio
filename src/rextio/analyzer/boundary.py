@@ -520,8 +520,9 @@ def _boundary_errors(
                 suggestion=suggestion,
             )
         )
-    # Claim rejections recorded at sites that are not calls (binops have no
-    # CallSite) never match the loop above; attach them here so a plugin's
+    # Claim rejections recorded at sites that are not calls (binops and
+    # comparisons have no CallSite) never match the loop above; attach them
+    # here so a plugin's
     # Rejected verdict always rejects the function with its own guidance.
     # Matching is KIND-aware: a rejected binop can share its start position
     # with a claimed call (`np.dot(a, b) + c`), so position alone must not
