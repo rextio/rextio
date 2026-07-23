@@ -1,6 +1,6 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
@@ -44,8 +44,8 @@ requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
 
-The unreleased next-version line implements plugin API **1.5** and tooling
-contract **2.26.0**. API 1.5 was introduced by contract 2.25.0 with one
+The unreleased next-version line implements plugin API **1.6** and tooling
+contract **2.27.0**. API 1.5 was introduced by contract 2.25.0 with one
 explicitly version-gated
 ``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
 closed token set ``== != < <= > >=``. Core offers it only when at least one
@@ -68,6 +68,21 @@ native-boundary escape; auto-mode retains that blocker in its promotion
 assessment. This exception is valid only when `conversion is None` and the
 provider advertises API 1.5 or newer. Materialized types and API 1.1-1.4
 resident types still require at least one non-empty dotted annotation spelling.
+
+API 1.6 adds optional structured `PluginType.device_value_metadata`. Core reads
+it only for plugin type keys used by accepted native signatures and claims,
+derives deterministic artifact device/runtime requirements, and rejects mixed
+CPU/accelerator, conflicting accelerator domains, and non-zero accelerator
+ordinals before codegen. CPU-only and fallback-only types do not change an
+artifact profile. A selected provider must resolve and preflight the exact
+profile before codegen. Only then does Core pass a redacted immutable
+`LoweringContext.device_authorization` to API-1.6 providers; older providers
+always observe `None`. An accelerator claim without a matching authorization
+fails closed. Authorization matching covers the canonical device/backend,
+domain runtime/reuse, features, optional layout projection, and memory spaces.
+Static dtype/rank/layout/runtime/reuse facts belong to the plugin type; target
+architecture remains an explicit build/provider-selection fact and is not
+rechecked as type metadata.
 
 ## Purpose
 
@@ -99,6 +114,7 @@ class PluginType:
     uses: tuple[str, ...] = ()    # plugin API 1.3: `use` lines this type OWNS
     helpers: tuple[str, ...] = () # plugin API 1.3: module-level items this type
                                   # OWNS (fn/struct/const), deduplicated by text
+    device_value_metadata: DeviceValueMetadata | None = None  # plugin API 1.6
 ```
 
 - **Type-level module support (`uses`/`helpers`, plugin API 1.3).** A
@@ -622,6 +638,14 @@ result equivalence with hypothesis — the same posture as core's own
   stable key and can flow from one claim into another, but source annotations
   cannot name it. Codegen rechecks that every `compare` claim still has an
   API-1.5 provider, guarding against stale IR/provider-version drift.
+- **Plugin API 1.6** (additive, same major; unreleased): adds optional
+  structured static device-value metadata to `PluginType` and a defaulted
+  `LoweringContext.device_authorization`. Used accepted accelerator types
+  determine exact artifact device/runtime requirements. Provider resolution
+  and preflight must succeed before an API-1.6 lowerer receives the minimal
+  authorization; no selection, a wrong backend/capability, a conflicting
+  domain, or an unauthorized claim fails closed. API 1.1-1.5 providers never
+  receive a non-`None` authorization.
 - Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package

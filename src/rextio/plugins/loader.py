@@ -136,6 +136,13 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
                 f"{'.'.join(str(part) for part in provider_api)!r}; type-level "
                 "support requires api_version >= 1.3"
             )
+        if plugin_type.device_value_metadata is not None and provider_api < (1, 6):
+            raise PluginError(
+                f"plugin {plugin.id!r} type {plugin_type.key!r} declares static "
+                "device-value metadata but declares plugin-API "
+                f"{'.'.join(str(part) for part in provider_api)!r}; structured "
+                "device metadata requires api_version >= 1.6"
+            )
         if not plugin_type.key.startswith(key_prefix):
             raise PluginError(
                 f"plugin {plugin.id!r} type key {plugin_type.key!r} must be namespaced {key_prefix!r}"

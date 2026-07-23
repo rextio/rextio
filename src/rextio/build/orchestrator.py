@@ -8,7 +8,7 @@ import re
 import shutil
 import stat
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from rextio.analyzer.models import ProjectAnalysis
@@ -54,7 +54,13 @@ from rextio.artifacts.evidence import (
     load_wheel_snapshot,
     project_relative_logical_path,
 )
-from rextio.artifacts.models import ArtifactKind, ArtifactProfile, FallbackStrategy
+from rextio.artifacts.models import (
+    ArtifactKind,
+    ArtifactProfile,
+    DeviceRequirement,
+    FallbackStrategy,
+    RuntimeRequirement,
+)
 from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.artifacts.profiles import (
     ArtifactProfilePlanningError,
@@ -95,6 +101,8 @@ from rextio.devices import (
     DeviceProviderOptions,
     DeviceProviderSelection,
     ResolvedDevicePlan,
+    derive_device_requirements,
+    derive_device_runtime_requirements,
     load_selected_device_provider,
     resolve_device_plan,
 )
@@ -213,6 +221,7 @@ def _plugin_lowering_inputs(
                     resident=True,
                     uses=plugin_type.uses,
                     helpers=plugin_type.helpers,
+                    device_value_metadata=plugin_type.device_value_metadata,
                 )
             else:
                 rxt_type = RxtPluginType(
@@ -224,6 +233,7 @@ def _plugin_lowering_inputs(
                     return_expr=conversion.return_expr,
                     uses=plugin_type.uses,
                     helpers=plugin_type.helpers,
+                    device_value_metadata=plugin_type.device_value_metadata,
                 )
             by_key[plugin_type.key] = rxt_type
         for spelling in plugin_type.annotations:
@@ -1116,6 +1126,8 @@ def _generate_artifact_profiles(
     *,
     native_extension: bool,
     rust_importable: bool,
+    runtime_requirements: tuple[RuntimeRequirement, ...] = (),
+    device_requirements: tuple[DeviceRequirement, ...] = (),
 ) -> tuple[ArtifactProfile, ...]:
     if not native_extension and not rust_importable:
         return ()
@@ -1126,10 +1138,18 @@ def _generate_artifact_profiles(
             host_extension_profile(
                 target_triple,
                 python_fallback_backend=fallback,
+                runtime_requirements=runtime_requirements,
+                device_requirements=device_requirements,
             )
         )
     if rust_importable:
-        profiles.append(rust_crate_profile(target_triple))
+        profiles.append(
+            rust_crate_profile(
+                target_triple,
+                runtime_requirements=runtime_requirements,
+                device_requirements=device_requirements,
+            )
+        )
     return tuple(profiles)
 
 
@@ -1141,6 +1161,8 @@ def _build_artifact_profiles(
     executable_backend: str,
     native_extension: bool,
     rust_importable: bool,
+    runtime_requirements: tuple[RuntimeRequirement, ...] = (),
+    device_requirements: tuple[DeviceRequirement, ...] = (),
 ) -> tuple[ArtifactProfile, ...]:
     rust_executable = executable_entrypoint is not None and executable_backend == "rust"
     if not native_extension and not rust_importable and not rust_executable:
@@ -1152,13 +1174,70 @@ def _build_artifact_profiles(
             host_extension_profile(
                 target_triple,
                 python_fallback_backend=fallback,
+                runtime_requirements=runtime_requirements,
+                device_requirements=device_requirements,
             )
         )
     if rust_executable:
-        profiles.append(host_executable_profile(target_triple, fallback=executable_fallback))
+        profiles.append(
+            host_executable_profile(
+                target_triple,
+                fallback=executable_fallback,
+                runtime_requirements=runtime_requirements,
+                device_requirements=device_requirements,
+            )
+        )
     if rust_importable:
-        profiles.append(rust_crate_profile(target_triple))
+        profiles.append(
+            rust_crate_profile(
+                target_triple,
+                runtime_requirements=runtime_requirements,
+                device_requirements=device_requirements,
+            )
+        )
     return tuple(profiles)
+
+
+def _accepted_device_profile_requirements(
+    analysis: ProjectAnalysis,
+    target_plan: TargetPlan,
+    options: DeviceProviderOptions,
+) -> tuple[tuple[RuntimeRequirement, ...], tuple[DeviceRequirement, ...]]:
+    """Derive static device requirements from actually accepted plugin types."""
+    used_keys: set[str] = set()
+    for function in analysis.accepted_native_functions:
+        used_keys.update(analysis_function_plugin_type_keys(function))
+    if not used_keys:
+        return (), ()
+    metadata_by_key = {
+        binding.plugin_type.key: binding.plugin_type.device_value_metadata
+        for binding in target_plan.plugins.types
+    }
+    metadata = tuple(
+        value
+        for key in sorted(used_keys)
+        if (value := metadata_by_key.get(key)) is not None
+    )
+    try:
+        device_requirements = derive_device_requirements(metadata)
+        runtime_requirements = derive_device_runtime_requirements(metadata)
+    except ValueError as exc:
+        raise DeviceProviderError(
+            f"accepted plugin types have incompatible static device domains: {exc}"
+        ) from exc
+    # Architecture is a build/provider-selection fact, not a Python value-type
+    # fact. Compose the existing explicit option into the exact profile that
+    # the selected CUDA provider preflights.
+    selected_sm = options.get("sm")
+    if selected_sm is not None and device_requirements:
+        if len(device_requirements) != 1 or device_requirements[0].backend != "cuda":
+            raise DeviceProviderError(
+                "device option 'sm' is valid only for one CUDA artifact requirement"
+            )
+        device_requirements = (
+            replace(device_requirements[0], architectures=(selected_sm,)),
+        )
+    return runtime_requirements, device_requirements
 
 
 def required_artifact_evidence_scope_is_valid(
@@ -1359,6 +1438,12 @@ def build_hybrid_artifact(
             "RXT060 strict evidence distribution policy is frozen to Rust with no active plugins"
         )
     layout = ArtifactLayout(project_root)
+    resolved_device_options = device_options or DeviceProviderOptions()
+    runtime_requirements, device_requirements = _accepted_device_profile_requirements(
+        analysis,
+        target_plan,
+        resolved_device_options,
+    )
     artifact_profiles = _build_artifact_profiles(
         fallback,
         fallback_strategy,
@@ -1366,11 +1451,13 @@ def build_hybrid_artifact(
         executable_backend=executable_backend,
         native_extension=analysis.requires_native_build(),
         rust_importable=rust_importable and analysis.requires_native_build(),
+        runtime_requirements=runtime_requirements,
+        device_requirements=device_requirements,
     )
     resolved_device_plans = _resolve_build_device_plans(
         artifact_profiles,
         selection=device_selection,
-        options=device_options or DeviceProviderOptions(),
+        options=resolved_device_options,
         entry_points=device_entry_points,
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
@@ -1782,15 +1869,23 @@ def generate_source_artifact(
         validate_full_c6_external_context(full_c6_external_context, analysis)
     target_plan = target_plan or default_target_plan()
     layout = ArtifactLayout(project_root)
+    resolved_device_options = device_options or DeviceProviderOptions()
+    runtime_requirements, device_requirements = _accepted_device_profile_requirements(
+        analysis,
+        target_plan,
+        resolved_device_options,
+    )
     artifact_profiles = _generate_artifact_profiles(
         fallback,
         native_extension=analysis.requires_native_build(),
         rust_importable=rust_importable and analysis.requires_native_build(),
+        runtime_requirements=runtime_requirements,
+        device_requirements=device_requirements,
     )
     resolved_device_plans = _resolve_build_device_plans(
         artifact_profiles,
         selection=device_selection,
-        options=device_options or DeviceProviderOptions(),
+        options=resolved_device_options,
         entry_points=device_entry_points,
     )
     plan = create_build_plan(analysis, fallback, artifact_profiles=artifact_profiles)
@@ -2108,6 +2203,11 @@ def _generate_native_source(
             external_runtime_guard=(
                 full_c6_external_context.runtime_guard
                 if full_c6_external_context is not None
+                else None
+            ),
+            device_authorization=(
+                device_plan.lowering_authorization()
+                if device_plan is not None
                 else None
             ),
         )

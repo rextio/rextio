@@ -616,6 +616,15 @@ binding digest. `rextio capabilities` reports a configured provider/capability
 identity without provider discovery, preflight, or option disclosure. See
 [Device Provider API 1](docs/specs/device-provider.md).
 
+The unreleased 0.1.6 integration line adds plugin API **1.6** / tooling
+contract **2.27.0** static device-domain authorization. An accepted
+accelerator plugin type contributes structured artifact requirements, and its
+lowerer receives a minimal redacted authorization only after the explicitly
+selected provider has matched and preflighted that exact profile. CPU-only and
+fallback-only plugin types remain unchanged; mixed/conflicting domains,
+non-zero GPU ordinals, missing providers, and wrong capabilities fail closed.
+This Core contract does not itself add Torch or TensorFlow CUDA lowering.
+
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
 point group, including the Python package names it covers. A project enables
@@ -1010,7 +1019,11 @@ callable-body/native-symbol, and declared-schema claim metadata, with
 version-gated static `bool`/`str` named-keyword literals. **0.1.5** ships
 additive plugin API **1.4** for optional, fail-closed standalone artifact
 capability. API 1.1/1.2/1.3 providers keep their legacy shapes; API 1.4 remains
-Experimental. The
+Experimental. The unreleased 0.1.6 line additionally defines API **1.5**
+comparison/result-only-resident support and API **1.6** structured static
+device metadata plus Core-validated lowering authorization. API 1.1-1.5
+providers remain compatible and never receive a non-`None` device
+authorization. The
 first-party [rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is
 installed separately (core has no reverse dependency on it). PyPI **0.1.1** is
 the published API-1.2 consumer with literal-axis and fusion support and

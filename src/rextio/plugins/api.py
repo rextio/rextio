@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, Union
 
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.artifacts.models import ArtifactProfile
+from rextio.devices.api import DeviceLoweringAuthorization, DeviceValueMetadata
 
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
@@ -58,9 +59,13 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # Providers below 1.5 are never offered comparison sites, so an installed
 # legacy provider cannot change behavior merely because Core learned the new
 # expression vocabulary.
-# All additions are optional/defaulted, so 1.1–1.4 providers remain source-
+# 1.6 lets a plugin type carry structured static device-value metadata and
+# gives ``lower()`` a minimal Core-validated device authorization. The fields
+# are optional/defaulted, so CPU-only and 1.1-1.5 providers retain their
+# existing behavior.
+# All additions are optional/defaulted, so 1.1–1.5 providers remain source-
 # and behavior-compatible for host-extension builds (major must still match).
-PLUGIN_API_VERSION = "1.5"
+PLUGIN_API_VERSION = "1.6"
 
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
@@ -266,6 +271,10 @@ class PluginType:
     # :class:`LoweredExpr` support (docs/specs/plugin-lowering.md §3, §7).
     uses: tuple[str, ...] = ()
     helpers: tuple[str, ...] = ()
+    # Plugin API 1.6: passive structured facts for a statically known device
+    # value. Core derives artifact requirements from used types and provides
+    # authorization separately; this metadata never authorizes lowering.
+    device_value_metadata: DeviceValueMetadata | None = None
 
     def __post_init__(self) -> None:
         """Validate optional module support as tuples of non-empty strings."""
@@ -275,6 +284,12 @@ class PluginType:
             for item in support:
                 if not isinstance(item, str) or not item:
                     raise ValueError(f"PluginType.{label} must contain only non-empty strings")
+        if self.device_value_metadata is not None and not isinstance(
+            self.device_value_metadata, DeviceValueMetadata
+        ):
+            raise ValueError(
+                "PluginType.device_value_metadata must be DeviceValueMetadata or None"
+            )
 
     @property
     def is_resident(self) -> bool:
@@ -314,6 +329,8 @@ class PluginType:
             result["uses"] = list(self.uses)
         if self.helpers:
             result["helpers"] = list(self.helpers)
+        if self.device_value_metadata is not None:
+            result["device_value_metadata"] = self.device_value_metadata.to_dict()
         return result
 
 
@@ -1292,6 +1309,10 @@ class LoweringContext:
     # Old construction that omits both fields remains valid (pyo3 / None).
     backend: str = LOWERING_BACKEND_PYO3
     artifact_profile: ArtifactProfile | None = None
+    # Plugin API 1.6 addition. Populated only after Core resolves and validates
+    # a matching provider plan for the exact accelerator artifact profile.
+    # CPU-only and legacy paths retain None.
+    device_authorization: DeviceLoweringAuthorization | None = None
 
     def __post_init__(self) -> None:
         """Validate the closed backend set for API 1.4 fields."""
@@ -1304,6 +1325,13 @@ class LoweringContext:
             raise ValueError(
                 "LoweringContext.artifact_profile is required when backend is "
                 f"{LOWERING_BACKEND_STANDALONE_RUST!r}"
+            )
+        if self.device_authorization is not None and not isinstance(
+            self.device_authorization, DeviceLoweringAuthorization
+        ):
+            raise ValueError(
+                "LoweringContext.device_authorization must be "
+                "DeviceLoweringAuthorization or None"
             )
 
 
