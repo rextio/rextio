@@ -107,7 +107,12 @@ from __future__ import annotations
 # redacted lock/report records, and bounded generated native-link inputs.
 # Installed-but-unselected providers remain invisible to report shape and
 # behavior; accelerator providers still require a typed domain requirement.
+# Contract 2.27.0 adds plugin-API-1.6 structured static device-value metadata,
+# deterministic accepted-type projection into artifact device/runtime
+# requirements, and a minimal resolved authorization passed to lowerers.
+# Accelerator lowering fails closed without an exact selected provider plan;
+# CPU-only and plugin-API-1.1-1.5 behavior remains unchanged.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.26.0"
+TOOLING_CONTRACT_VERSION = "2.27.0"

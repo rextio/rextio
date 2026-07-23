@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Static device-domain lowering authorization (plugin API 1.6; tooling contract 2.27.0)
+
+- Let plugin types declare validated static device/backend, dtype/rank/layout,
+  runtime-reuse, feature/memory-space, and exact runtime-pin facts. Only types
+  used by accepted native signatures or claims contribute to the artifact
+  profile; CPU-only and fallback-only types preserve existing behavior.
+- Derive deterministic device/runtime requirements and fail closed before
+  codegen for mixed CPU/CUDA, conflicting accelerator domains, non-zero GPU
+  ordinals, missing providers, and incompatible backend/capability selections.
+  Target SM remains an explicit device build option, not a Python type fact.
+- Project a successfully resolved provider plan into a minimal redacted
+  immutable lowering authorization. API-1.6 providers receive it through
+  `LoweringContext`; API 1.1-1.5 providers always receive `None`, and an
+  accelerator claim cannot lower without exact device/backend, runtime/reuse,
+  feature, optional-layout, and memory-space authorization. Architecture stays
+  a build/provider fact rather than Python value metadata.
+- Bind the canonical successful preflight into selected provider locks as
+  `preflight_sha256`, so selected-SM, driver, and provider-policy observations
+  cannot drift independently of a recorded lock.
+- Keep package references, generated helper ids, and runtime-check ids
+  unmaterialized and rejected by the bounded host-extension integration.
+
 ### Device Provider API 1 foundation and bounded build wiring (tooling contract 2.26.0)
 
 - Replace the behavior-neutral device-provider draft with a bounded,

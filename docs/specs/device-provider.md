@@ -1,6 +1,7 @@
 # Device Provider API 1
 
-Status: **bounded experimental Alpha (Release Train E0)**.
+Status: **bounded experimental Alpha (Release Train E0 plus unreleased
+plugin-API-1.6 domain authorization prerequisite)**.
 
 Rextio separates Python-domain lowering from device/runtime integration:
 
@@ -54,7 +55,9 @@ provider exception text or raw option values.
   PyTorch and TensorFlow spellings such as `cuda:0` and `/device:GPU:0` are
   normalized without inferring a backend for generic `GPU:N`.
 - `DeviceValueMetadata` carries dtype, rank, layout, logical device, backend,
-  runtime version, and optional static-shape facts as separate fields.
+  runtime version, optional static-shape facts, domain runtime/reuse,
+  feature/memory-space facts, and exact typed runtime requirements as separate
+  fields. The API-1.6 additions follow the original positional fields.
 - `TargetCapability` carries target triples, artifact kinds, CPU feature
   level/features, accelerator backends, minimum runtime/driver versions,
   architecture identifiers, certification tier, and evidence references.
@@ -73,15 +76,32 @@ provider exception text or raw option values.
   closed rather than being misrepresented as active integration.
 - `ResolvedDevicePlan` combines the selected capability, successful preflight,
   and contribution, and projects deterministic `DeviceProviderLock` and
-  `DeviceProviderReport` records.
+  `DeviceProviderReport` records. For an accelerator profile it also projects a
+  minimal redacted `DeviceLoweringAuthorization` bound to the exact artifact
+  profile digest.
+
+Plugin API 1.6 derives requirements only from plugin type keys used by accepted
+native signatures and claims. CPU-only and fallback-only types preserve the
+legacy empty device profile. Mixed CPU/accelerator or conflicting accelerator
+domains and non-zero accelerator ordinals fail before codegen. Target
+architecture is not inferred from a Python tensor type; the bounded CUDA path
+composes the explicit `device_options.sm` build selection into the profile.
+After exact provider resolution and preflight, only API-1.6 lowerers receive
+the authorization in `LoweringContext`. Older providers always receive
+`None`, and an accelerator claim without an exact matching authorization is a
+codegen error. The authorization exactly binds device/backend, domain
+runtime/reuse, features, optional layout projection, and memory spaces.
+Architecture remains a build/provider compatibility fact rather than Python
+value metadata.
 
 Validated identifier, observation, and option inputs are canonicalized into
 stable lexical/id order, resource contracts use their complete serialized
 field tuple as the ordering key, and records are frozen. A lock includes
-canonical manifest, artifact-profile, contribution, source-identity, and
-redacted-options SHA-256 values, so the selected distribution/entry-point
-target, provider identity/version/capability, target, and admitted inputs
-cannot drift silently.
+canonical manifest, artifact-profile, successful preflight, contribution,
+source-identity, and redacted-options SHA-256 values, so the selected
+distribution/entry-point target, provider identity/version/capability, target,
+provider policy/driver observations, and admitted inputs cannot drift
+silently.
 
 ## Fail-closed order
 

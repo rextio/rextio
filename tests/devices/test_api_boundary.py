@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -245,7 +245,12 @@ def test_device_ids_and_value_metadata_are_canonical_and_structured() -> None:
         "dtype": "float32",
         "rank": 2,
         "layout": "contiguous",
+        "runtime": None,
         "runtime_version": "12.8",
+        "reuse_domain_runtime": False,
+        "features": [],
+        "memory_spaces": [],
+        "runtime_requirements": [],
         "static_shape": [None, 128],
     }
     with pytest.raises(ValueError, match="conflicts"):
@@ -425,6 +430,7 @@ def test_explicit_resolution_preflights_then_projects_lock_and_report() -> None:
     assert lock["capability_id"] == "windows-cuda-build-only"
     assert re.fullmatch(r"[0-9a-f]{64}", str(lock["manifest_sha256"]))
     assert re.fullmatch(r"[0-9a-f]{64}", str(lock["artifact_profile_sha256"]))
+    assert re.fullmatch(r"[0-9a-f]{64}", str(lock["preflight_sha256"]))
     assert re.fullmatch(r"[0-9a-f]{64}", str(lock["contribution_sha256"]))
     assert lock["option_keys"] == ["probe_manifest", "toolkit_root"]
     assert re.fullmatch(r"[0-9a-f]{64}", str(lock["options_sha256"]))
@@ -445,7 +451,17 @@ class _DifferentContributionProvider(_StructuralProvider):
         return DeviceBuildContribution(native_libraries=("cuda",))
 
 
-def test_provider_lock_binds_profile_contribution_and_private_options() -> None:
+class _DifferentPreflightProvider(_StructuralProvider):
+    def preflight(self, request: DevicePreflightRequest) -> DevicePreflightResult:
+        del request
+        return DevicePreflightResult(
+            provider_id="example-device",
+            status=DevicePreflightStatus.READY,
+            observations=(("driver", "different-policy-observation"),),
+        )
+
+
+def test_provider_lock_binds_profile_preflight_contribution_and_private_options() -> None:
     baseline = resolve_device_plan(
         artifact_profile=_cuda_profile(),
         selection=_selection(),
@@ -474,6 +490,12 @@ def test_provider_lock_binds_profile_contribution_and_private_options() -> None:
         providers={"example-device": _DifferentContributionProvider()},
         options=DeviceProviderOptions((("toolkit_root", "/opt/cuda-a"),)),
     )
+    changed_preflight = resolve_device_plan(
+        artifact_profile=_cuda_profile(),
+        selection=_selection(),
+        providers={"example-device": _DifferentPreflightProvider()},
+        options=DeviceProviderOptions((("toolkit_root", "/opt/cuda-a"),)),
+    )
     changed_options = resolve_device_plan(
         artifact_profile=_cuda_profile(),
         selection=_selection(),
@@ -484,6 +506,7 @@ def test_provider_lock_binds_profile_contribution_and_private_options() -> None:
     assert baseline is not None
     assert changed_profile is not None
     assert changed_contribution is not None
+    assert changed_preflight is not None
     assert changed_options is not None
     base_lock = baseline.lock_record()
     assert (
@@ -494,7 +517,13 @@ def test_provider_lock_binds_profile_contribution_and_private_options() -> None:
         base_lock.contribution_sha256
         != changed_contribution.lock_record().contribution_sha256
     )
+    assert (
+        base_lock.preflight_sha256
+        != changed_preflight.lock_record().preflight_sha256
+    )
     assert base_lock.options_sha256 != changed_options.lock_record().options_sha256
+    with pytest.raises(ValueError, match="preflight_sha256"):
+        replace(base_lock, preflight_sha256="not-a-digest")
 
 
 def test_provider_lock_binds_exact_entry_point_target_and_distribution() -> None:

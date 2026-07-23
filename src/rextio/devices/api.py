@@ -20,6 +20,7 @@ from typing import Mapping, Protocol, runtime_checkable
 from rextio.artifacts.models import (
     ArtifactProfile,
     CertificationTier,
+    DeviceRequirement,
     RuntimeRequirement,
     TargetCapability,
 )
@@ -243,7 +244,14 @@ def normalize_device_id(value: str, *, backend: str | None = None) -> CanonicalD
 
 @dataclass(frozen=True)
 class DeviceValueMetadata:
-    """Structured static facts for a domain-plugin value."""
+    """Structured static facts for a domain-plugin value.
+
+    ``runtime`` names the domain runtime that owns the value (for example,
+    ``"libtorch"``). ``reuse_domain_runtime`` records that generated code must
+    reuse that already-loaded runtime rather than create an independent device
+    context. Both fields are passive facts: they never authorize lowering by
+    themselves.
+    """
 
     logical_device: str
     backend: str | None = None
@@ -252,18 +260,59 @@ class DeviceValueMetadata:
     layout: str | None = None
     runtime_version: str | None = None
     static_shape: tuple[int | None, ...] = ()
+    # Plugin API 1.6 additions are appended after the original E0 positional
+    # fields so existing positional construction keeps its meaning.
+    runtime: str | None = None
+    reuse_domain_runtime: bool = False
+    features: tuple[str, ...] = ()
+    memory_spaces: tuple[str, ...] = ()
+    runtime_requirements: tuple[RuntimeRequirement, ...] = ()
 
     def __post_init__(self) -> None:
         """Canonicalize device identity and validate shape/rank facts."""
         device = normalize_device_id(self.logical_device, backend=self.backend)
         object.__setattr__(self, "logical_device", device.logical_device)
         object.__setattr__(self, "backend", device.backend)
-        for field_name in ("dtype", "layout", "runtime_version"):
+        for field_name in ("dtype", "layout", "runtime", "runtime_version"):
             object.__setattr__(
                 self,
                 field_name,
                 _validate_optional_string(getattr(self, field_name), label=field_name),
             )
+        if type(self.reuse_domain_runtime) is not bool:
+            raise ValueError("reuse_domain_runtime must be a bool")
+        if self.reuse_domain_runtime and self.runtime is None:
+            raise ValueError("reuse_domain_runtime requires a named runtime")
+        object.__setattr__(
+            self,
+            "features",
+            _canonical_strings(self.features, label="features"),
+        )
+        object.__setattr__(
+            self,
+            "memory_spaces",
+            _canonical_strings(self.memory_spaces, label="memory_spaces"),
+        )
+        if not isinstance(self.runtime_requirements, tuple) or not all(
+            isinstance(item, RuntimeRequirement)
+            for item in self.runtime_requirements
+        ):
+            raise ValueError(
+                "runtime_requirements must be a tuple of RuntimeRequirement records"
+            )
+        runtime_by_name: dict[str, RuntimeRequirement] = {}
+        for requirement in self.runtime_requirements:
+            previous = runtime_by_name.get(requirement.name)
+            if previous is not None and previous != requirement:
+                raise ValueError(
+                    f"conflicting device runtime requirements for {requirement.name!r}"
+                )
+            runtime_by_name[requirement.name] = requirement
+        object.__setattr__(
+            self,
+            "runtime_requirements",
+            tuple(runtime_by_name[key] for key in sorted(runtime_by_name)),
+        )
         if self.rank is not None and (type(self.rank) is not int or self.rank < 0):
             raise ValueError("rank must be a non-negative integer when present")
         if not isinstance(self.static_shape, tuple):
@@ -289,7 +338,123 @@ class DeviceValueMetadata:
             "layout": self.layout,
             "runtime_version": self.runtime_version,
             "static_shape": list(self.static_shape),
+            "runtime": self.runtime,
+            "reuse_domain_runtime": self.reuse_domain_runtime,
+            "features": list(self.features),
+            "memory_spaces": list(self.memory_spaces),
+            "runtime_requirements": [
+                requirement.to_dict() for requirement in self.runtime_requirements
+            ],
         }
+
+
+def derive_device_requirements(
+    values: tuple[DeviceValueMetadata, ...],
+) -> tuple[DeviceRequirement, ...]:
+    """Derive one bounded accelerator requirement from used plugin values.
+
+    CPU-only values preserve the legacy empty requirement tuple. Mixing CPU and
+    accelerator values, multiple accelerator domains, or non-zero accelerator
+    indices fails closed before code generation. The E2 contract deliberately
+    supports only one static ``gpu:0`` domain per artifact.
+    """
+    if not isinstance(values, tuple) or not all(
+        isinstance(value, DeviceValueMetadata) for value in values
+    ):
+        raise ValueError("device value metadata must be a tuple of DeviceValueMetadata")
+    if not values:
+        return ()
+
+    cpu_values: list[DeviceValueMetadata] = []
+    accelerator_values: list[DeviceValueMetadata] = []
+    for value in values:
+        device = normalize_device_id(value.logical_device, backend=value.backend)
+        if device.kind == "cpu":
+            cpu_values.append(value)
+        else:
+            accelerator_values.append(value)
+    if not accelerator_values:
+        return ()
+    if cpu_values:
+        raise ValueError(
+            "one native artifact may not mix CPU and accelerator plugin value domains"
+        )
+
+    domain_keys: set[
+        tuple[
+            str,
+            str | None,
+            str | None,
+            bool,
+            tuple[str, ...],
+            str | None,
+            tuple[str, ...],
+        ]
+    ] = set()
+    for value in accelerator_values:
+        device = normalize_device_id(value.logical_device, backend=value.backend)
+        if device.kind != "gpu" or device.index != 0:
+            raise ValueError(
+                "the bounded accelerator contract supports only static gpu:0 values"
+            )
+        if device.backend is None:
+            raise ValueError("accelerator plugin values require an explicit backend")
+        domain_keys.add(
+            (
+                device.logical_device,
+                device.backend,
+                value.runtime,
+                value.reuse_domain_runtime,
+                value.features,
+                value.layout,
+                value.memory_spaces,
+            )
+        )
+    if len(domain_keys) != 1:
+        raise ValueError(
+            "one native artifact may not mix conflicting accelerator device/runtime domains"
+        )
+    (
+        logical_device,
+        backend,
+        runtime,
+        reuse_domain_runtime,
+        features,
+        layout,
+        memory_spaces,
+    ) = next(iter(domain_keys))
+    return (
+        DeviceRequirement(
+            logical_device=logical_device,
+            backend=backend,
+            runtime=runtime,
+            features=features,
+            layouts=(layout,) if layout is not None else (),
+            memory_spaces=memory_spaces,
+            reuse_domain_runtime=reuse_domain_runtime,
+        ),
+    )
+
+
+def derive_device_runtime_requirements(
+    values: tuple[DeviceValueMetadata, ...],
+) -> tuple[RuntimeRequirement, ...]:
+    """Collect exact runtime pins from one accepted static device domain."""
+    # Reuse the domain compatibility checks even though CPU-only types preserve
+    # an empty DeviceRequirement tuple.
+    device_requirements = derive_device_requirements(values)
+    if not device_requirements:
+        return ()
+    by_name: dict[str, RuntimeRequirement] = {}
+    for value in values:
+        for requirement in value.runtime_requirements:
+            previous = by_name.get(requirement.name)
+            if previous is not None and previous != requirement:
+                raise ValueError(
+                    f"conflicting device runtime requirements for {requirement.name!r}"
+                )
+            by_name[requirement.name] = requirement
+    return tuple(by_name[key] for key in sorted(by_name))
 
 
 class DeviceResourceOwner(str, Enum):
@@ -753,6 +918,7 @@ class DeviceProviderLock:
     target_triple: str
     manifest_sha256: str
     artifact_profile_sha256: str
+    preflight_sha256: str
     contribution_sha256: str
     source_identity_sha256: str | None = None
     option_keys: tuple[str, ...] = ()
@@ -779,6 +945,7 @@ class DeviceProviderLock:
         for field_name in (
             "manifest_sha256",
             "artifact_profile_sha256",
+            "preflight_sha256",
             "contribution_sha256",
         ):
             digest = getattr(self, field_name)
@@ -808,10 +975,102 @@ class DeviceProviderLock:
             "target_triple": self.target_triple,
             "manifest_sha256": self.manifest_sha256,
             "artifact_profile_sha256": self.artifact_profile_sha256,
+            "preflight_sha256": self.preflight_sha256,
             "contribution_sha256": self.contribution_sha256,
             "source_identity_sha256": self.source_identity_sha256,
             "option_keys": list(self.option_keys),
             "options_sha256": self.options_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class DeviceLoweringAuthorization:
+    """Minimal immutable authorization exposed to a domain plugin lowerer.
+
+    This redacted record is produced only from a successfully resolved provider
+    plan for the exact artifact profile. It contains no provider options,
+    filesystem paths, package references, or generated helper identifiers.
+    """
+
+    provider_id: str
+    capability_id: str
+    logical_device: str
+    backend: str
+    runtime: str | None
+    reuse_domain_runtime: bool
+    features: tuple[str, ...]
+    layouts: tuple[str, ...]
+    memory_spaces: tuple[str, ...]
+    artifact_profile_sha256: str
+
+    def __post_init__(self) -> None:
+        """Validate the closed bounded accelerator authorization."""
+        object.__setattr__(self, "provider_id", _validate_provider_id(self.provider_id))
+        capability_id = _validate_optional_string(
+            self.capability_id, label="capability_id"
+        )
+        if capability_id is None:
+            raise ValueError("capability_id must be a non-empty string")
+        object.__setattr__(self, "capability_id", capability_id)
+        device = normalize_device_id(self.logical_device, backend=self.backend)
+        if device.kind != "gpu" or device.index != 0 or device.backend is None:
+            raise ValueError(
+                "device lowering authorization is bounded to an explicit gpu:0 backend"
+            )
+        object.__setattr__(self, "logical_device", device.logical_device)
+        object.__setattr__(self, "backend", device.backend)
+        object.__setattr__(
+            self,
+            "runtime",
+            _validate_optional_string(self.runtime, label="runtime"),
+        )
+        if type(self.reuse_domain_runtime) is not bool:
+            raise ValueError("reuse_domain_runtime must be a bool")
+        if self.reuse_domain_runtime and self.runtime is None:
+            raise ValueError("reuse_domain_runtime requires a named runtime")
+        for field_name in ("features", "layouts", "memory_spaces"):
+            object.__setattr__(
+                self,
+                field_name,
+                _canonical_strings(getattr(self, field_name), label=field_name),
+            )
+        if _SHA256_PATTERN.fullmatch(self.artifact_profile_sha256) is None:
+            raise ValueError(
+                "artifact_profile_sha256 must be a lowercase SHA-256 digest"
+            )
+
+    def authorizes(self, metadata: DeviceValueMetadata) -> bool:
+        """Return whether this record authorizes one exact accelerator domain."""
+        try:
+            device = normalize_device_id(
+                metadata.logical_device, backend=metadata.backend
+            )
+        except ValueError:
+            return False
+        return (
+            device.logical_device == self.logical_device
+            and device.backend == self.backend
+            and metadata.runtime == self.runtime
+            and metadata.reuse_domain_runtime == self.reuse_domain_runtime
+            and metadata.features == self.features
+            and ((metadata.layout,) if metadata.layout is not None else ())
+            == self.layouts
+            and metadata.memory_spaces == self.memory_spaces
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic, redacted public projection."""
+        return {
+            "provider_id": self.provider_id,
+            "capability_id": self.capability_id,
+            "logical_device": self.logical_device,
+            "backend": self.backend,
+            "runtime": self.runtime,
+            "reuse_domain_runtime": self.reuse_domain_runtime,
+            "features": list(self.features),
+            "layouts": list(self.layouts),
+            "memory_spaces": list(self.memory_spaces),
+            "artifact_profile_sha256": self.artifact_profile_sha256,
         }
 
 
@@ -890,6 +1149,7 @@ class ResolvedDevicePlan:
             artifact_profile_sha256=_canonical_json_sha256(
                 self.artifact_profile.to_dict()
             ),
+            preflight_sha256=_canonical_json_sha256(self.preflight.to_dict()),
             contribution_sha256=_canonical_json_sha256(
                 self.contribution.to_dict()
             ),
@@ -913,6 +1173,44 @@ class ResolvedDevicePlan:
             evidence_references=self.capability.evidence_references,
         )
 
+    def lowering_authorization(self) -> DeviceLoweringAuthorization | None:
+        """Return the minimal authorization for this exact accelerator profile."""
+        accelerator_requirements: list[DeviceRequirement] = []
+        for requirement in self.artifact_profile.device_requirements:
+            device = normalize_device_id(
+                requirement.logical_device, backend=requirement.backend
+            )
+            if device.kind != "cpu":
+                accelerator_requirements.append(requirement)
+        if not accelerator_requirements:
+            return None
+        if len(accelerator_requirements) != 1:
+            raise DeviceProviderError(
+                "resolved device plan contains multiple accelerator requirements"
+            )
+        requirement = accelerator_requirements[0]
+        device = normalize_device_id(
+            requirement.logical_device, backend=requirement.backend
+        )
+        if self.manifest.backend != device.backend:
+            raise DeviceProviderError(
+                "resolved provider backend does not authorize the artifact domain"
+            )
+        return DeviceLoweringAuthorization(
+            provider_id=self.manifest.provider_id,
+            capability_id=self.capability.id,
+            logical_device=device.logical_device,
+            backend=device.backend or "",
+            runtime=requirement.runtime,
+            reuse_domain_runtime=requirement.reuse_domain_runtime,
+            features=requirement.features,
+            layouts=requirement.layouts,
+            memory_spaces=requirement.memory_spaces,
+            artifact_profile_sha256=_canonical_json_sha256(
+                self.artifact_profile.to_dict()
+            ),
+        )
+
     def to_dict(self) -> dict[str, object]:
         """Return the deterministic JSON-serializable representation."""
         return {
@@ -926,6 +1224,11 @@ class ResolvedDevicePlan:
             "options": self.options.public_dict(),
             "lock": self.lock_record().to_dict(),
             "report": self.report_record().to_dict(),
+            "lowering_authorization": (
+                authorization.to_dict()
+                if (authorization := self.lowering_authorization()) is not None
+                else None
+            ),
         }
 
 

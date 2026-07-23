@@ -21,8 +21,8 @@ from rextio.plugins.api import (
 )
 
 
-def test_plugin_api_version_is_15() -> None:
-    assert PLUGIN_API_VERSION == "1.5"
+def test_plugin_api_version_is_16() -> None:
+    assert PLUGIN_API_VERSION == "1.6"
 
 
 def test_legacy_claim_site_to_dict_shape_unchanged() -> None:
@@ -120,6 +120,7 @@ def test_materialized_plugin_type_serialization_unchanged() -> None:
     )
     data = plugin_type.to_dict()
     assert "resident" not in data
+    assert "device_value_metadata" not in data
     assert data["conversion"]["param_rust"] == "numpy::PyReadonlyArray1<'py, f64>"
 
 
@@ -127,3 +128,4 @@ def test_lowering_context_receiver_defaults_none() -> None:
     ctx = LoweringContext(operands=("a", "b"), target_language="rust", fresh_name=lambda p: p)
     assert ctx.receiver is None
     assert ctx.leaf_operands == ()
+    assert ctx.device_authorization is None

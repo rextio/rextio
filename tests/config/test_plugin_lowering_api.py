@@ -6,6 +6,7 @@ import pytest
 
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.config.schema import PluginConfig, RextioConfig
+from rextio.devices import DeviceValueMetadata
 from rextio.plugins.api import (
     BoundaryConversion,
     Claimed,
@@ -180,6 +181,51 @@ def test_type_without_annotations_fails_load() -> None:
 
     with pytest.raises(PluginError, match="no annotation spellings"):
         load(("rextio-numpy", NoSpelling()))
+
+
+def test_static_device_metadata_requires_plugin_api_16() -> None:
+    class LegacyDeviceMetadata(LoweringPlugin):
+        api_version = "1.5"
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return (
+                PluginType(
+                    key="rextio-numpy/f64-1d",
+                    annotations=("rextio_numpy.types.F64Arr1",),
+                    rust_type="ndarray::Array1<f64>",
+                    conversion=F64_ARR1.conversion,
+                    device_value_metadata=DeviceValueMetadata(
+                        logical_device="cuda:0",
+                        runtime="cuda-driver",
+                    ),
+                ),
+            )
+
+    with pytest.raises(PluginError, match="requires api_version >= 1.6"):
+        load(("rextio-numpy", LegacyDeviceMetadata()))
+
+
+def test_plugin_api_16_accepts_structured_static_device_metadata() -> None:
+    class DeviceMetadata16(LoweringPlugin):
+        api_version = "1.6"
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return (
+                PluginType(
+                    key="rextio-numpy/f64-1d",
+                    annotations=("rextio_numpy.types.F64Arr1",),
+                    rust_type="ndarray::Array1<f64>",
+                    conversion=F64_ARR1.conversion,
+                    device_value_metadata=DeviceValueMetadata(
+                        logical_device="cuda:0",
+                        runtime="cuda-driver",
+                    ),
+                ),
+            )
+
+    registry = load(("rextio-numpy", DeviceMetadata16()))
+
+    assert registry.types[0].plugin_type.device_value_metadata is not None
 
 
 def test_annotation_collision_across_plugins_fails_load() -> None:
