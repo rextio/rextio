@@ -1,29 +1,43 @@
-"""Behavior-neutral draft contracts for future device providers.
+"""Vendor-neutral Device Provider API 1 contracts.
 
-Device providers are not ordinary Rextio lowering plugins.  A domain plugin
-owns Python semantics and claim/lower decisions; a future device provider will
-own hardware and runtime compatibility.  This module intentionally contains no
-discovery, resolution, entry-point, build, or link integration.
+Device providers are not ordinary Rextio lowering plugins. A domain plugin
+owns Python semantics and claim/lower decisions; a device provider owns
+hardware/runtime compatibility and declarative native-build contributions.
+Provider selection is always explicit and preflight must complete before any
+provider contribution can be admitted to a build plan.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Protocol, runtime_checkable
+from typing import Mapping, Protocol, runtime_checkable
 
-from rextio.artifacts.models import ArtifactProfile, RuntimeRequirement, TargetCapability
+from rextio.artifacts.models import (
+    ArtifactProfile,
+    CertificationTier,
+    RuntimeRequirement,
+    TargetCapability,
+)
 
 
-# This is a design draft, not a stable provider API 1.0 compatibility promise.
-DEVICE_PROVIDER_API_VERSION = "0.1-draft"
+# Device-provider compatibility evolves independently from the lowering-plugin
+# API. Domain plugins must never infer compatibility from this version alone.
+DEVICE_PROVIDER_API_VERSION = "1.0"
+DEVICE_PROVIDER_ENTRY_POINT = "rextio.device_providers"
 
 _PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _OBSERVATION_KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _MAX_OBSERVATION_KEY_LENGTH = 64
 _MAX_OBSERVATION_VALUE_LENGTH = 256
+_DEVICE_ID_PATTERN = re.compile(
+    r"^(?:(?:/)?device:)?(cpu|gpu|tpu|npu|cuda|rocm|mps)(?::([0-9]+))?$",
+    re.IGNORECASE,
+)
 
 
 def _canonical_strings(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -92,12 +106,285 @@ def _validate_provider_id(provider_id: str) -> str:
     return normalized
 
 
+def _validate_optional_string(value: str | None, *, label: str) -> str | None:
+    """Return one normalized optional string."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be a non-empty string when present")
+    return value.strip()
+
+
+def _validate_project_relative_references(
+    values: tuple[str, ...], *, label: str
+) -> tuple[str, ...]:
+    """Canonicalize project-relative, report-safe references."""
+    normalized = _canonical_strings(values, label=label)
+    for value in normalized:
+        if (
+            PurePosixPath(value).is_absolute()
+            or PureWindowsPath(value).is_absolute()
+            or ".." in PurePosixPath(value).parts
+            or ".." in PureWindowsPath(value).parts
+        ):
+            raise ValueError(f"{label} must contain only project-relative references")
+    return normalized
+
+
+@dataclass(frozen=True)
+class CanonicalDeviceId:
+    """One normalized logical device identity, separate from its backend."""
+
+    kind: str
+    index: int = 0
+    backend: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the closed logical-kind vocabulary."""
+        kind = self.kind.strip().lower()
+        if kind not in {"cpu", "gpu", "tpu", "npu"}:
+            raise ValueError(f"unsupported logical device kind: {self.kind!r}")
+        if type(self.index) is not int or self.index < 0:
+            raise ValueError("device index must be a non-negative integer")
+        backend = _validate_optional_string(self.backend, label="device backend")
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "backend", backend.lower() if backend is not None else None)
+
+    @property
+    def logical_device(self) -> str:
+        """Return the canonical backend-neutral device id."""
+        return f"{self.kind}:{self.index}"
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "logical_device": self.logical_device,
+            "kind": self.kind,
+            "index": self.index,
+            "backend": self.backend,
+        }
+
+
+def normalize_device_id(value: str, *, backend: str | None = None) -> CanonicalDeviceId:
+    """Normalize common framework spellings without guessing a backend.
+
+    ``cuda:N``, ``rocm:N``, and ``mps:N`` identify a GPU backend explicitly.
+    Generic ``GPU:N`` and TensorFlow ``/device:GPU:N`` spellings remain
+    backend-neutral unless the caller supplies ``backend=``.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("logical device must be a non-empty string")
+    match = _DEVICE_ID_PATTERN.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(f"unsupported logical device id: {value!r}")
+    raw_kind = match.group(1).lower()
+    index = int(match.group(2) or "0")
+    explicit_backend: str | None = None
+    kind = raw_kind
+    if raw_kind in {"cuda", "rocm", "mps"}:
+        explicit_backend = raw_kind
+        kind = "gpu"
+    normalized_backend = _validate_optional_string(backend, label="device backend")
+    if normalized_backend is not None:
+        normalized_backend = normalized_backend.lower()
+    if (
+        explicit_backend is not None
+        and normalized_backend is not None
+        and explicit_backend != normalized_backend
+    ):
+        raise ValueError(
+            f"logical device {value!r} conflicts with backend {normalized_backend!r}"
+        )
+    return CanonicalDeviceId(
+        kind=kind,
+        index=index,
+        backend=explicit_backend or normalized_backend,
+    )
+
+
+@dataclass(frozen=True)
+class DeviceValueMetadata:
+    """Structured static facts for a domain-plugin value."""
+
+    logical_device: str
+    backend: str | None = None
+    dtype: str | None = None
+    rank: int | None = None
+    layout: str | None = None
+    runtime_version: str | None = None
+    static_shape: tuple[int | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Canonicalize device identity and validate shape/rank facts."""
+        device = normalize_device_id(self.logical_device, backend=self.backend)
+        object.__setattr__(self, "logical_device", device.logical_device)
+        object.__setattr__(self, "backend", device.backend)
+        for field_name in ("dtype", "layout", "runtime_version"):
+            object.__setattr__(
+                self,
+                field_name,
+                _validate_optional_string(getattr(self, field_name), label=field_name),
+            )
+        if self.rank is not None and (type(self.rank) is not int or self.rank < 0):
+            raise ValueError("rank must be a non-negative integer when present")
+        if not isinstance(self.static_shape, tuple):
+            raise ValueError("static_shape must be a tuple")
+        if any(
+            dimension is not None
+            and (type(dimension) is not int or dimension < 0)
+            for dimension in self.static_shape
+        ):
+            raise ValueError("static_shape dimensions must be non-negative integers or None")
+        if self.static_shape and self.rank is None:
+            raise ValueError("static_shape requires a statically known rank")
+        if self.rank is not None and self.static_shape and len(self.static_shape) != self.rank:
+            raise ValueError("static_shape length must equal rank")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "logical_device": self.logical_device,
+            "backend": self.backend,
+            "dtype": self.dtype,
+            "rank": self.rank,
+            "layout": self.layout,
+            "runtime_version": self.runtime_version,
+            "static_shape": list(self.static_shape),
+        }
+
+
+class DeviceResourceOwner(str, Enum):
+    """Ownership domains recognized by Device Provider API 1."""
+
+    PROVIDER = "provider"
+    FRAMEWORK = "framework"
+
+
+class DeviceResourceAccess(str, Enum):
+    """Closed resource access modes."""
+
+    OWNED = "owned"
+    BORROW_VALIDATE = "borrow-validate"
+
+
+@dataclass(frozen=True)
+class DeviceResourceContract:
+    """One provider-owned resource or fail-closed framework borrow."""
+
+    resource_kind: str
+    owner: DeviceResourceOwner
+    access: DeviceResourceAccess
+    may_allocate: bool = False
+    may_replace: bool = False
+    may_synchronize: bool = False
+
+    def __post_init__(self) -> None:
+        """Enforce the framework/provider ownership boundary."""
+        resource_kind = _validate_optional_string(
+            self.resource_kind, label="resource_kind"
+        )
+        assert resource_kind is not None
+        object.__setattr__(self, "resource_kind", resource_kind)
+        object.__setattr__(self, "owner", DeviceResourceOwner(self.owner))
+        object.__setattr__(self, "access", DeviceResourceAccess(self.access))
+        for field_name in ("may_allocate", "may_replace", "may_synchronize"):
+            if type(getattr(self, field_name)) is not bool:
+                raise ValueError(f"{field_name} must be a bool")
+        if self.owner is DeviceResourceOwner.FRAMEWORK:
+            if self.access is not DeviceResourceAccess.BORROW_VALIDATE:
+                raise ValueError("framework resources may only be borrowed and validated")
+            if self.may_allocate or self.may_replace or self.may_synchronize:
+                raise ValueError(
+                    "a provider may not allocate, replace, or synchronize a "
+                    "framework-owned resource"
+                )
+        elif self.access is not DeviceResourceAccess.OWNED:
+            raise ValueError("provider-owned resources require access='owned'")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "resource_kind": self.resource_kind,
+            "owner": self.owner.value,
+            "access": self.access.value,
+            "may_allocate": self.may_allocate,
+            "may_replace": self.may_replace,
+            "may_synchronize": self.may_synchronize,
+        }
+
+
+@dataclass(frozen=True)
+class DeviceBuildContribution:
+    """Declarative E0 build inputs selected after a successful preflight."""
+
+    cargo_features: tuple[str, ...] = ()
+    native_libraries: tuple[str, ...] = ()
+    package_references: tuple[str, ...] = ()
+    generated_helper_ids: tuple[str, ...] = ()
+    runtime_check_ids: tuple[str, ...] = ()
+    resource_contracts: tuple[DeviceResourceContract, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Canonicalize reportable inputs and reject private paths."""
+        for field_name in (
+            "cargo_features",
+            "native_libraries",
+            "generated_helper_ids",
+            "runtime_check_ids",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _canonical_strings(getattr(self, field_name), label=field_name),
+            )
+        object.__setattr__(
+            self,
+            "package_references",
+            _validate_project_relative_references(
+                self.package_references, label="package_references"
+            ),
+        )
+        if not isinstance(self.resource_contracts, tuple) or not all(
+            isinstance(item, DeviceResourceContract) for item in self.resource_contracts
+        ):
+            raise ValueError(
+                "resource_contracts must be a tuple of DeviceResourceContract records"
+            )
+        object.__setattr__(
+            self,
+            "resource_contracts",
+            tuple(
+                sorted(
+                    set(self.resource_contracts),
+                    key=lambda item: (
+                        item.resource_kind,
+                        item.owner.value,
+                        item.access.value,
+                    ),
+                )
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "cargo_features": list(self.cargo_features),
+            "native_libraries": list(self.native_libraries),
+            "package_references": list(self.package_references),
+            "generated_helper_ids": list(self.generated_helper_ids),
+            "runtime_check_ids": list(self.runtime_check_ids),
+            "resource_contracts": [item.to_dict() for item in self.resource_contracts],
+        }
+
+
 @dataclass(frozen=True)
 class DeviceProviderManifest:
-    """Passive identity and declared capability data for one draft provider."""
+    """Passive identity and declared capability data for one API-1 provider."""
 
     provider_id: str
     display_name: str
+    provider_version: str = "0"
+    backend: str | None = None
     api_version: str = DEVICE_PROVIDER_API_VERSION
     capabilities: tuple[TargetCapability, ...] = ()
     runtime_requirements: tuple[RuntimeRequirement, ...] = ()
@@ -108,9 +395,16 @@ class DeviceProviderManifest:
         if not isinstance(self.display_name, str) or not self.display_name.strip():
             raise ValueError("display_name must be a non-empty string")
         object.__setattr__(self, "display_name", self.display_name.strip())
+        provider_version = _validate_optional_string(
+            self.provider_version, label="provider_version"
+        )
+        assert provider_version is not None
+        object.__setattr__(self, "provider_version", provider_version)
+        backend = _validate_optional_string(self.backend, label="provider backend")
+        object.__setattr__(self, "backend", backend.lower() if backend is not None else None)
         if self.api_version != DEVICE_PROVIDER_API_VERSION:
             raise ValueError(
-                "device provider manifests must use the current draft API version "
+                "device provider manifests must use the current API version "
                 f"{DEVICE_PROVIDER_API_VERSION!r}"
             )
         if not isinstance(self.capabilities, tuple) or not all(
@@ -153,10 +447,36 @@ class DeviceProviderManifest:
         return {
             "provider_id": self.provider_id,
             "display_name": self.display_name,
+            "provider_version": self.provider_version,
+            "backend": self.backend,
             "api_version": self.api_version,
-            "stability": "draft-experimental",
+            "stability": "alpha",
             "capabilities": [item.to_dict() for item in self.capabilities],
             "runtime_requirements": [item.to_dict() for item in self.runtime_requirements],
+        }
+
+
+@dataclass(frozen=True)
+class DeviceProviderSelection:
+    """Explicit provider/capability selection for one artifact profile."""
+
+    provider_id: str
+    capability_id: str
+
+    def __post_init__(self) -> None:
+        """Validate stable selection identifiers."""
+        object.__setattr__(self, "provider_id", _validate_provider_id(self.provider_id))
+        capability_id = _validate_optional_string(
+            self.capability_id, label="capability_id"
+        )
+        assert capability_id is not None
+        object.__setattr__(self, "capability_id", capability_id)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "provider_id": self.provider_id,
+            "capability_id": self.capability_id,
         }
 
 
@@ -165,19 +485,25 @@ class DevicePreflightRequest:
     """One side-effect-free compatibility request for an artifact profile."""
 
     artifact_profile: ArtifactProfile
+    selection: DeviceProviderSelection
 
     def __post_init__(self) -> None:
         """Reject malformed requests before a provider can inspect them."""
         if not isinstance(self.artifact_profile, ArtifactProfile):
             raise ValueError("artifact_profile must be an ArtifactProfile")
+        if not isinstance(self.selection, DeviceProviderSelection):
+            raise ValueError("selection must be a DeviceProviderSelection")
 
     def to_dict(self) -> dict[str, object]:
         """Return the deterministic JSON-serializable representation."""
-        return {"artifact_profile": self.artifact_profile.to_dict()}
+        return {
+            "artifact_profile": self.artifact_profile.to_dict(),
+            "selection": self.selection.to_dict(),
+        }
 
 
 class DevicePreflightStatus(str, Enum):
-    """Closed outcomes for the behavior-neutral draft preflight."""
+    """Closed outcomes for the fail-closed API-1 preflight."""
 
     READY = "ready"
     UNAVAILABLE = "unavailable"
@@ -187,7 +513,7 @@ class DevicePreflightStatus(str, Enum):
 
 @dataclass(frozen=True)
 class DevicePreflightResult:
-    """Bounded provider observations; never certification or a support claim."""
+    """Bounded provider observations; never certification by themselves."""
 
     provider_id: str
     status: DevicePreflightStatus
@@ -206,7 +532,7 @@ class DevicePreflightResult:
         )
         object.__setattr__(self, "observations", _canonical_observations(self.observations))
         if type(self.support_claim) is not bool or self.support_claim:
-            raise ValueError("draft device preflight results must have support_claim=False")
+            raise ValueError("device preflight results must have support_claim=False")
         if self.status is not DevicePreflightStatus.READY and not self.reason_codes:
             raise ValueError("a non-ready preflight result requires at least one reason code")
 
@@ -223,12 +549,321 @@ class DevicePreflightResult:
 
 @runtime_checkable
 class DeviceProvider(Protocol):
-    """Structural draft provider surface with no build integration hooks."""
+    """Structural Device Provider API 1 surface."""
 
     def manifest(self) -> DeviceProviderManifest:
         """Return passive provider identity and declared capability data."""
         ...
 
     def preflight(self, request: DevicePreflightRequest) -> DevicePreflightResult:
-        """Inspect compatibility without claiming Python syntax or mutating a build."""
+        """Inspect compatibility before native side effects or build mutation."""
         ...
+
+    def build_contribution(
+        self, request: DevicePreflightRequest
+    ) -> DeviceBuildContribution:
+        """Return declarative build inputs after a successful preflight."""
+        ...
+
+
+@dataclass(frozen=True)
+class DeviceProviderLock:
+    """Exact provider decision suitable for a source/build lock."""
+
+    provider_id: str
+    provider_version: str
+    api_version: str
+    backend: str | None
+    capability_id: str
+    target_triple: str
+    manifest_sha256: str
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "provider_id": self.provider_id,
+            "provider_version": self.provider_version,
+            "api_version": self.api_version,
+            "backend": self.backend,
+            "capability_id": self.capability_id,
+            "target_triple": self.target_triple,
+            "manifest_sha256": self.manifest_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class DeviceProviderReport:
+    """Public report projection for one resolved provider plan."""
+
+    lock: DeviceProviderLock
+    certification_tier: CertificationTier
+    status: DevicePreflightStatus
+    reason_codes: tuple[str, ...]
+    observations: tuple[tuple[str, str], ...]
+    evidence_references: tuple[str, ...]
+    support_claim: bool = False
+
+    def __post_init__(self) -> None:
+        """Keep preflight/report evidence distinct from a support claim."""
+        object.__setattr__(
+            self, "certification_tier", CertificationTier(self.certification_tier)
+        )
+        object.__setattr__(self, "status", DevicePreflightStatus(self.status))
+        object.__setattr__(
+            self,
+            "reason_codes",
+            _canonical_strings(self.reason_codes, label="reason_codes"),
+        )
+        object.__setattr__(self, "observations", _canonical_observations(self.observations))
+        object.__setattr__(
+            self,
+            "evidence_references",
+            _validate_project_relative_references(
+                self.evidence_references, label="evidence_references"
+            ),
+        )
+        if type(self.support_claim) is not bool or self.support_claim:
+            raise ValueError("an E0 device provider report must have support_claim=False")
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "lock": self.lock.to_dict(),
+            "certification_tier": self.certification_tier.value,
+            "status": self.status.value,
+            "reason_codes": list(self.reason_codes),
+            "observations": [
+                {"key": key, "value": value} for key, value in self.observations
+            ],
+            "evidence_references": list(self.evidence_references),
+            "support_claim": False,
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedDevicePlan:
+    """One deterministic provider decision for an artifact profile."""
+
+    selection: DeviceProviderSelection
+    artifact_profile: ArtifactProfile
+    manifest: DeviceProviderManifest
+    capability: TargetCapability
+    preflight: DevicePreflightResult
+    contribution: DeviceBuildContribution
+
+    def lock_record(self) -> DeviceProviderLock:
+        """Project the exact provider/capability decision into a lock."""
+        manifest_json = json.dumps(
+            self.manifest.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return DeviceProviderLock(
+            provider_id=self.manifest.provider_id,
+            provider_version=self.manifest.provider_version,
+            api_version=self.manifest.api_version,
+            backend=self.manifest.backend,
+            capability_id=self.capability.id,
+            target_triple=self.artifact_profile.target_triple,
+            manifest_sha256=hashlib.sha256(manifest_json).hexdigest(),
+        )
+
+    def report_record(self) -> DeviceProviderReport:
+        """Project bounded preflight/certification evidence into a report."""
+        return DeviceProviderReport(
+            lock=self.lock_record(),
+            certification_tier=self.capability.certification_tier,
+            status=self.preflight.status,
+            reason_codes=self.preflight.reason_codes,
+            observations=self.preflight.observations,
+            evidence_references=self.capability.evidence_references,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable representation."""
+        return {
+            "selection": self.selection.to_dict(),
+            "artifact_profile": self.artifact_profile.to_dict(),
+            "manifest": self.manifest.to_dict(),
+            "capability": self.capability.to_dict(),
+            "preflight": self.preflight.to_dict(),
+            "contribution": self.contribution.to_dict(),
+            "lock": self.lock_record().to_dict(),
+            "report": self.report_record().to_dict(),
+        }
+
+
+class DeviceProviderError(RuntimeError):
+    """Raised when an explicit device-provider resolution fails closed."""
+
+
+def _profile_requires_provider(profile: ArtifactProfile) -> bool:
+    """Whether an artifact profile requests a non-CPU device/backend."""
+    for requirement in profile.device_requirements:
+        if requirement.backend is not None and requirement.backend.lower() != "cpu":
+            return True
+        try:
+            if (
+                normalize_device_id(
+                    requirement.logical_device,
+                    backend=requirement.backend,
+                ).kind
+                != "cpu"
+            ):
+                return True
+        except ValueError:
+            # Unknown device spellings cannot be treated as implicit CPU.
+            return True
+    return False
+
+
+def _capability_matches_profile(
+    capability: TargetCapability, profile: ArtifactProfile
+) -> bool:
+    """Check the bounded E0 target/backend/architecture compatibility surface."""
+    if (
+        capability.target_triples
+        and profile.target_triple not in capability.target_triples
+    ):
+        return False
+    if capability.artifact_kinds and profile.kind not in capability.artifact_kinds:
+        return False
+    for requirement in profile.device_requirements:
+        try:
+            device = normalize_device_id(
+                requirement.logical_device,
+                backend=requirement.backend,
+            )
+        except ValueError:
+            return False
+        backend = device.backend
+        if device.kind != "cpu" and (
+            backend is None or backend not in capability.accelerator_backends
+        ):
+            return False
+        if (
+            requirement.architectures
+            and not set(requirement.architectures).issubset(capability.architectures)
+        ):
+            return False
+    return True
+
+
+def resolve_device_plan(
+    *,
+    artifact_profile: ArtifactProfile,
+    selection: DeviceProviderSelection | None,
+    providers: Mapping[str, DeviceProvider],
+) -> ResolvedDevicePlan | None:
+    """Resolve exactly one explicitly selected provider and preflight it.
+
+    Installed-but-unselected providers are never inspected. No selection keeps
+    legacy CPU-only profiles unchanged, while an accelerator requirement with
+    no selection fails closed.
+    """
+    if not isinstance(artifact_profile, ArtifactProfile):
+        raise DeviceProviderError("artifact_profile must be an ArtifactProfile")
+    if selection is None:
+        if _profile_requires_provider(artifact_profile):
+            raise DeviceProviderError(
+                "artifact profile requires an explicit device provider selection"
+            )
+        return None
+    provider = providers.get(selection.provider_id)
+    if provider is None:
+        raise DeviceProviderError(
+            f"selected device provider {selection.provider_id!r} is not available"
+        )
+    if not isinstance(provider, DeviceProvider):
+        raise DeviceProviderError(
+            f"selected object {selection.provider_id!r} does not implement "
+            "Device Provider API 1"
+        )
+    try:
+        manifest = provider.manifest()
+    except Exception as exc:
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} manifest() failed: {exc}"
+        ) from exc
+    if not isinstance(manifest, DeviceProviderManifest):
+        raise DeviceProviderError("device provider manifest() returned an invalid record")
+    if manifest.provider_id != selection.provider_id:
+        raise DeviceProviderError(
+            "selected device provider id does not match its manifest identity"
+        )
+    matches = tuple(
+        capability
+        for capability in manifest.capabilities
+        if capability.id == selection.capability_id
+    )
+    if len(matches) != 1:
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} does not declare capability "
+            f"{selection.capability_id!r}"
+        )
+    capability = matches[0]
+    requested_backends: set[str] = set()
+    try:
+        for requirement in artifact_profile.device_requirements:
+            device = normalize_device_id(
+                requirement.logical_device,
+                backend=requirement.backend,
+            )
+            if device.kind != "cpu" and device.backend is not None:
+                requested_backends.add(device.backend)
+    except ValueError as exc:
+        raise DeviceProviderError(f"invalid artifact device requirement: {exc}") from exc
+    if (
+        manifest.backend is not None
+        and requested_backends
+        and requested_backends != {manifest.backend}
+    ):
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} backend "
+            f"{manifest.backend!r} does not match artifact requirements"
+        )
+    if not _capability_matches_profile(capability, artifact_profile):
+        raise DeviceProviderError(
+            f"device capability {selection.capability_id!r} is incompatible with "
+            f"{artifact_profile.kind.value} for {artifact_profile.target_triple}"
+        )
+    request = DevicePreflightRequest(
+        artifact_profile=artifact_profile,
+        selection=selection,
+    )
+    try:
+        preflight = provider.preflight(request)
+    except Exception as exc:
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} preflight() failed: {exc}"
+        ) from exc
+    if not isinstance(preflight, DevicePreflightResult):
+        raise DeviceProviderError("device provider preflight() returned an invalid record")
+    if preflight.provider_id != selection.provider_id:
+        raise DeviceProviderError(
+            "device provider preflight result does not match the selected provider"
+        )
+    if preflight.status is not DevicePreflightStatus.READY:
+        reasons = ", ".join(preflight.reason_codes) or preflight.status.value
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} failed preflight: {reasons}"
+        )
+    try:
+        contribution = provider.build_contribution(request)
+    except Exception as exc:
+        raise DeviceProviderError(
+            f"device provider {selection.provider_id!r} build_contribution() "
+            f"failed: {exc}"
+        ) from exc
+    if not isinstance(contribution, DeviceBuildContribution):
+        raise DeviceProviderError(
+            "device provider build_contribution() returned an invalid record"
+        )
+    return ResolvedDevicePlan(
+        selection=selection,
+        artifact_profile=artifact_profile,
+        manifest=manifest,
+        capability=capability,
+        preflight=preflight,
+        contribution=contribution,
+    )

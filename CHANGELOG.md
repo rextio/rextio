@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Device Provider API 1 foundation (Release Train E0)
+
+- Replace the behavior-neutral device-provider draft with a bounded,
+  vendor-neutral API 1.0 contract: structured device value metadata, canonical
+  device ids, expanded target capability facts, explicit provider/capability
+  selection, fail-closed preflight, declarative build/resource inputs, and
+  deterministic lock/report projections.
+- Preserve existing CPU-only behavior when no provider is selected. An
+  accelerator-bearing artifact profile now requires explicit resolution;
+  installed-but-unselected providers are never inspected.
+- Keep support claims separate from discovery and preflight. E0 does not ship a
+  CUDA provider and does not add Torch or TensorFlow CUDA lowering.
+
 ### Plugin comparison expressions (plugin API 1.5; tooling contract 2.25.0)
 
 - Add an explicitly version-gated `compare` claim kind for one non-chained
@@ -11,6 +24,10 @@
   plugin calls and carry the comparison's direct operands through analyzer,
   IR, and Rust lowering. Unclaimed/chained plugin comparisons remain on the
   fail-closed fallback path.
+- Require every claimed comparison to return one registered, non-empty result
+  type. Peek inference treats any multi-provider overlap as ambiguous even when
+  providers report the same type; the authoritative claim path then reports
+  the overlap.
 
 ## 0.1.5 — 2026-07-23
 
