@@ -39,9 +39,11 @@ selecting an accelerator provider without a matching typed non-CPU
 
 `[target.device_options]` is a string map passed only to the explicitly
 selected provider. It is not a secret store: provider code receives the raw
-values. Rextio's public lock/report surfaces emit only sorted option keys and
-a SHA-256 binding digest, and stable public errors do not echo provider
-exception text or raw option values.
+values. At most 64 entries are accepted; each public option key is a bounded
+lowercase identifier of at most 64 characters, and each printable value is at
+most 4096 characters. Rextio's public lock/report surfaces emit only sorted
+option keys and a SHA-256 binding digest, and stable public errors do not echo
+provider exception text or raw option values.
 
 ## Structured records
 
@@ -73,11 +75,13 @@ exception text or raw option values.
   and contribution, and projects deterministic `DeviceProviderLock` and
   `DeviceProviderReport` records.
 
-Tuple inputs are canonicalized into stable lexical/id order and records are
-frozen. A lock includes canonical manifest, artifact-profile, contribution,
-source-identity, and redacted-options SHA-256 values, so the selected
-distribution/entry-point target, provider identity/version/capability, target,
-and admitted inputs cannot drift silently.
+Validated identifier, observation, and option inputs are canonicalized into
+stable lexical/id order, resource contracts use their complete serialized
+field tuple as the ordering key, and records are frozen. A lock includes
+canonical manifest, artifact-profile, contribution, source-identity, and
+redacted-options SHA-256 values, so the selected distribution/entry-point
+target, provider identity/version/capability, target, and admitted inputs
+cannot drift silently.
 
 ## Fail-closed order
 
@@ -114,6 +118,14 @@ No-selection commands retain the prior report/file shape. The current
 materializer has no concrete consumer for generic Cargo feature names, package
 references, generated helpers, or runtime checks, so those inputs fail before
 any generated-output write.
+
+`rextio capabilities` remains passive configuration introspection. With no
+selection it retains the legacy draft/unselected object. When
+`device_provider` and `device_capability` are configured together, it reports
+that public configured selection (`status: "configured"` and
+`provider_selected: true`) without enumerating/importing the provider, running
+preflight, or emitting provider option keys or values. Actual provider identity
+validation and support facts remain generate/build-only.
 
 ## Ownership boundary
 

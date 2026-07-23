@@ -28,6 +28,7 @@ from rextio.plugins.models import (
 from rextio.targets.models import TargetSpec
 
 SERIES_KEY = "rextio-pandas/series-f64"
+RESULT_ONLY_KEY = "rextio-pandas/result-mask"
 SERIES_USE = "use pandas_rs::series::SeriesF64;"
 SERIES_STRUCT = "pub struct RxtSeriesF64 { data: Vec<f64> }"
 SERIES_EXTRACT = "fn __rxtpd_extract_series_f64(v: RxtSeriesF64) -> RxtSeriesF64 { v }"
@@ -186,6 +187,38 @@ def _support_provider(api_version: str) -> object:
     return SupportProvider()
 
 
+def _single_type_provider(api_version: str, plugin_type: PluginType) -> object:
+    class SingleTypeProvider:
+        plugin_id = "rextio-pandas"
+
+        def __init__(self) -> None:
+            self.api_version = api_version
+
+        def covers(self) -> CoverageDecl:
+            return CoverageDecl(packages=("pandas",))
+
+        def describe(self, config: RextioConfig) -> tuple[object, ...]:
+            del config
+            return ()
+
+        def type_vocabulary(self) -> tuple[PluginType, ...]:
+            return (plugin_type,)
+
+        def claim(self, site: object, config: RextioConfig) -> object:
+            raise AssertionError
+
+        def lower(self, site: object, ctx: object) -> object:
+            raise AssertionError
+
+        def crate_dependencies(self) -> tuple[object, ...]:
+            return ()
+
+        def to_rextio_plugin(self) -> RextioPlugin:
+            return RextioPlugin(id="rextio-pandas", name="pandas")
+
+    return SingleTypeProvider()
+
+
 def _entry_point(provider: object) -> object:
     class _EntryPoint:
         name = "rextio-pandas"
@@ -215,6 +248,69 @@ def test_loader_accepts_type_support_at_api_13() -> None:
     [binding] = registry.types
     assert binding.plugin_type.uses == (SERIES_USE,)
     assert binding.plugin_type.helpers == (SERIES_STRUCT, SERIES_EXTRACT)
+
+
+def test_api_15_loads_result_only_resident_type_without_source_spelling() -> None:
+    result_only = PluginType(
+        key=RESULT_ONLY_KEY,
+        annotations=(),
+        rust_type="RxtResultMask",
+        conversion=None,
+    )
+    registry = load_plugin_registry(
+        PluginConfig(enabled=("rextio-pandas",)),
+        TargetSpec(language="rust"),
+        entry_points=(
+            _entry_point(_single_type_provider("1.5", result_only)),
+        ),
+    )
+
+    [binding] = registry.types
+    assert binding.plugin_type is result_only
+    assert result_only.to_dict() == {
+        "key": RESULT_ONLY_KEY,
+        "annotations": [],
+        "rust_type": "RxtResultMask",
+        "resident": True,
+        "conversion": None,
+    }
+
+    maps, _providers, by_key = _plugin_lowering_inputs(
+        SimpleNamespace(plugins=registry)
+    )
+    assert maps is not None and by_key is not None
+    assert by_key[RESULT_ONLY_KEY].resident is True
+    assert maps.by_key[RESULT_ONLY_KEY] is by_key[RESULT_ONLY_KEY]
+    assert maps.by_spelling == {}
+    assert "" not in maps.by_spelling
+
+
+@pytest.mark.parametrize(
+    ("api_version", "conversion"),
+    [
+        ("1.4", None),
+        ("1.5", MATERIALIZED_CONVERSION),
+    ],
+)
+def test_empty_annotations_remain_invalid_before_15_or_when_materialized(
+    api_version: str,
+    conversion: BoundaryConversion | None,
+) -> None:
+    plugin_type = PluginType(
+        key=RESULT_ONLY_KEY,
+        annotations=(),
+        rust_type="RxtResultMask",
+        conversion=conversion,
+    )
+
+    with pytest.raises(PluginError, match="declares no annotation spellings"):
+        load_plugin_registry(
+            PluginConfig(enabled=("rextio-pandas",)),
+            TargetSpec(language="rust"),
+            entry_points=(
+                _entry_point(_single_type_provider(api_version, plugin_type)),
+            ),
+        )
 
 
 def test_rxt_plugin_type_empty_support_byte_shape_unchanged() -> None:

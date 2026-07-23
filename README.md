@@ -612,7 +612,9 @@ requires a matching typed `DeviceRequirement` emitted by a domain lowering;
 configuration alone does not make current CPU-only Torch or TensorFlow routes
 CUDA-capable. `[target.device_options]` is not a secret store: raw values are
 passed to the selected provider, while Rextio reports only option keys and a
-binding digest. See [Device Provider API 1](docs/specs/device-provider.md).
+binding digest. `rextio capabilities` reports a configured provider/capability
+identity without provider discovery, preflight, or option disclosure. See
+[Device Provider API 1](docs/specs/device-provider.md).
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry

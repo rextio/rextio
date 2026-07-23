@@ -1689,6 +1689,17 @@ class _FunctionRenderer:
                 "expected 'direct' or 'leaves'"
             )
         provider_api = str(getattr(provider, "api_version", "1.0") or "1.0")
+        if claim.kind == "compare" and not _plugin_api_at_least(provider_api, 1, 5):
+            # Defense in depth against stale/malformed IR or a provider version
+            # drifting between analysis and codegen. Compare sites were not part
+            # of the lowering contract before API 1.5 and must never be projected
+            # onto an older provider merely because an IR claim exists.
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} (api_version {provider_api!r}) "
+                f"cannot lower compare site {claim.target!r} in "
+                f"{self.function.qualname}; compare lowering requires "
+                "api_version >= 1.5"
+            )
         is_api_12 = _plugin_api_at_least(provider_api, 1, 2)
         if not is_api_12:
             # Defense in depth: even if analysis projected 1.2 fields onto IR,

@@ -13,8 +13,10 @@ from rextio.analyzer.project_scanner import analyze_project
 from rextio.artifacts.models import (
     ArtifactKind,
     CertificationTier,
+    DeviceRequirement,
     TargetCapability,
 )
+from rextio.artifacts.profiles import host_extension_profile
 from rextio.build.artifact_layout import ArtifactLayout
 from rextio.build.supply_chain import (
     EvidenceInputSnapshot,
@@ -262,3 +264,29 @@ def test_no_selection_preserves_legacy_report_and_generated_file_shape(
     assert "device_provider_plans" not in result.to_dict()
     assert not (layout.rust_dir / "build.rs").exists()
     assert not (layout.rust_dir / "device-provider.lock.json").exists()
+
+
+def test_no_selection_checks_every_profile_for_accelerator_requirements() -> None:
+    target_triple = orchestrator._required_host_target_triple()
+    profiles = (
+        host_extension_profile(target_triple),
+        host_extension_profile(
+            target_triple,
+            packaging_backend="secondary-wheel",
+            device_requirements=(
+                DeviceRequirement(logical_device="cuda:0", backend="cuda"),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        DeviceProviderError,
+        match="requires an explicit device provider selection",
+    ):
+        orchestrator._resolve_build_device_plans(
+            profiles,
+            selection=None,
+            options=DeviceProviderOptions(),
+            # No-selection validation must not discover/import this object.
+            entry_points=(object(),),
+        )

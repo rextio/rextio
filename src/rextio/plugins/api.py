@@ -229,7 +229,9 @@ class PluginType:
 
     ``annotations`` are the dotted spellings that resolve to this type (the
     plugin's explicit annotation vocabulary); ``rust_type`` is the native
-    representation inside generated code.
+    representation inside generated code. API 1.5 permits ``annotations=()``
+    only for a resident type: that is a result-only vocabulary entry produced
+    by one claim and consumed by later claims, never a source annotation.
 
     ``conversion`` describes how the value crosses the Python<->Rust boundary
     of a generated PyO3 function. Two kinds of plugin type exist:
@@ -243,7 +245,9 @@ class PluginType:
       created by a claimed plugin expression, stored in locals, passed to
       another claimed plugin expression, and passed across accepted native
       helper calls without any Python round-trip. A plugin declaring a resident
-      type must advertise ``api_version >= 1.3`` (enforced at load).
+      type must advertise ``api_version >= 1.3`` (enforced at load). Omitting
+      every annotation spelling additionally requires ``api_version >= 1.5``;
+      materialized and older resident types must keep at least one spelling.
     """
 
     key: str
@@ -284,9 +288,10 @@ class PluginType:
         legacy byte-shape: no ``resident`` key, no ``uses``/``helpers`` keys,
         and ``conversion`` is the boundary conversion dict. Only a resident
         type (plugin API 1.3) adds ``resident: true`` and a ``conversion:
-        null``; non-empty support is serialized deterministically (order-
-        preserving lists) so provider/report/cache identity moves when the
-        support changes.
+        null``; an API-1.5 result-only resident type honestly serializes
+        ``annotations: []``. Non-empty support is serialized deterministically
+        (order-preserving lists) so provider/report/cache identity moves when
+        the support changes.
         """
         result: dict[str, object] = {
             "key": self.key,

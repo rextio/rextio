@@ -34,6 +34,7 @@ _PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _OBSERVATION_KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _MAX_OBSERVATION_KEY_LENGTH = 64
 _MAX_OBSERVATION_VALUE_LENGTH = 256
+_MAX_DEVICE_PROVIDER_OPTIONS = 64
 _MAX_PROVIDER_OPTION_VALUE_LENGTH = 4096
 _MAX_SOURCE_IDENTITY_VALUE_LENGTH = 256
 _DEVICE_ID_PATTERN = re.compile(
@@ -399,6 +400,9 @@ class DeviceBuildContribution:
                         item.resource_kind,
                         item.owner.value,
                         item.access.value,
+                        item.may_allocate,
+                        item.may_replace,
+                        item.may_synchronize,
                     ),
                 )
             ),
@@ -531,6 +535,11 @@ class DeviceProviderOptions:
         """Canonicalize keys while retaining raw values only in memory."""
         if not isinstance(self.values, tuple):
             raise ValueError("device provider options must be a tuple of string pairs")
+        if len(self.values) > _MAX_DEVICE_PROVIDER_OPTIONS:
+            raise ValueError(
+                f"device provider options must contain at most "
+                f"{_MAX_DEVICE_PROVIDER_OPTIONS} entries"
+            )
         by_key: dict[str, str] = {}
         for pair in self.values:
             if not isinstance(pair, tuple) or len(pair) != 2:
@@ -538,9 +547,12 @@ class DeviceProviderOptions:
             key, value = pair
             if (
                 not isinstance(key, str)
+                or len(key.strip()) > _MAX_OBSERVATION_KEY_LENGTH
                 or _OBSERVATION_KEY_PATTERN.fullmatch(key.strip()) is None
             ):
-                raise ValueError("device provider option keys must be lowercase identifiers")
+                raise ValueError(
+                    "device provider option keys must be bounded lowercase identifiers"
+                )
             if (
                 not isinstance(value, str)
                 or not value

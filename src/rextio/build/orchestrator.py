@@ -1190,6 +1190,22 @@ def _resolve_build_device_plans(
             raise DeviceProviderError(
                 "device provider options require an explicit provider selection"
             )
+        # Apply the same no-selection contract to every exact profile. This is
+        # normally a no-op for today's CPU profiles, but it must fail closed as
+        # soon as any domain integration contributes a typed accelerator
+        # requirement, regardless of that profile's position in a multi-output
+        # plan. No provider entry point is discovered or imported here.
+        for artifact_profile in artifact_profiles:
+            resolved = resolve_device_plan(
+                artifact_profile=artifact_profile,
+                selection=None,
+                providers={},
+                options=options,
+            )
+            if resolved is not None:  # defensive: no selection never resolves
+                raise DeviceProviderError(
+                    "unselected device provider unexpectedly produced a resolved plan"
+                )
         return ()
     if (
         len(artifact_profiles) != 1

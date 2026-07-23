@@ -17,6 +17,15 @@
   point, binds its module/attribute target and distribution name/version,
   redacts raw options to keys plus a SHA-256 binding, and completes preflight
   before generated-output mutation.
+- Make passive `rextio capabilities` report an explicitly configured
+  provider/capability identity without discovery, import, preflight, or option
+  disclosure; the unselected manifest keeps its prior exact object shape.
+- Bound device-provider options to 64 entries, keys to 64 characters, and
+  values to 4096 printable characters. Canonicalize resource contracts by
+  every serialized field so lock/report digests do not vary with
+  `PYTHONHASHSEED`.
+- Apply no-selection validation to every artifact profile so any typed
+  accelerator requirement fails before provider discovery or output writes.
 - Materialize only validated native-library names as a generated `build.rs`
   in this bounded step. Bind the selected plan into a generated lock, build
   and generate reports, plus artifact-evidence/SBOM/provenance inputs.
@@ -39,6 +48,13 @@
   type. Peek inference treats any multi-provider overlap as ambiguous even when
   providers report the same type; the authoritative claim path then reports
   the overlap.
+- Allow an API-1.5 provider to register a result-only resident type with
+  `conversion=None` and `annotations=()`. It remains available by key to claim
+  result/operand chaining and codegen, but is absent from annotation maps and
+  cannot be written in source; materialized and pre-1.5 resident types retain
+  the non-empty annotation requirement.
+- Recheck the API-1.5 requirement for comparison claims at codegen time so
+  stale/malformed IR or a provider-version drift fails closed.
 
 ## 0.1.5 — 2026-07-23
 

@@ -63,7 +63,7 @@ to generic guidance when the major is outside what they support.
 | `2.23.0` | **Unreleased exact Full-C6 owner-policy handoff and closure hardening** (Train C intermediate). Bootstrap schema/domain v2 embeds the canonical C6.14+C5.2 technical template, transformation set, and exact project/Cargo plus external-wheel license observations. A separate explicit owner completion is combined by `rextio policy finalize` into manifest/policy v2 with bootstrap lineage; every later production run recollects and rederives those facts. Every lifecycle still performs two actual isolated builds, while `FullC6ProductionAuthority` remains an uncopyable, unserializable process seal rather than distribution authority. Strict analysis binds the complete bounded Python namespace and forbids `.rextioignore`; preanalysis failure is stderr-only. Runtime admission never imports/introspects the external dependency module/callable and descriptor-relatively verifies exact installed source bytes. Exact external PEP 639 payloads are final-wheel license members under `external/<distribution>/<version>/`. Cargo lock/vendor pins prove owner-selected integrity, not registry/publisher origin. All prior frozen-scope exclusions remain. |
 | `2.24.0` | **Published Full-C6 host support closure and production sandbox receipts** (core 0.1.5; Experimental/Alpha). Adds the public, non-authorizing `policy bootstrap-support-lock` result and config pair; rejects exact/ancestor/descendant aliasing between that output and every configured lifecycle artifact or source archive; binds the fixed platform support plan plus canonical raw/Merkle lock identities; records path-free, engine-specific semantic sandbox profile digests for Linux bwrap/seccomp/isolated-CPython/Landlock or macOS sandbox-exec/Xcode/SDK/SSV execution in both invocation receipts; denies inherited macOS mutable-volume executable mappings; and carries those identities into strict SBOM/SLSA materials. Each strict build verifies the complete support tree once during host collection and twice inside the executor. This remains the frozen narrow Alpha, not a general hermetic-build claim. |
 | `2.25.0` | **Unreleased additive plugin expression shape.** Plugin API 1.5 adds the explicitly version-gated `compare` rule/claim kind for one non-chained `== != < <= > >=` expression. A claimed comparison may report a plugin-owned non-scalar result type, which Core preserves as an operand type for a later claimed expression and through IR/codegen. Pre-1.5 providers are never offered the new site; existing call/binop, routing, diagnostics, and position semantics are unchanged. |
-| `2.26.0` | **Unreleased additive selected Device Provider shape.** Advanced `[target]` config may explicitly name one provider/capability and a string option map. `generate.json` / `build.json` conditionally add `device_provider_plans` only after selected-only entry-point loading and successful preflight. Each plan binds the entry-point group/name/module target, installed distribution name/version, manifest, exact artifact profile, validated contribution, redacted option keys/digest, deterministic lock, and non-authorizing report. Bounded host-extension generation may add `build.rs` plus `device-provider.lock.json`; both become captured artifact-evidence/SBOM/provenance inputs. Non-empty Cargo-feature, package-reference, helper, or runtime-check contributions remain unmaterialized and fail closed. No selection preserves the prior report shape and never imports installed providers. Accelerator selection additionally requires a matching typed non-CPU `DeviceRequirement`; this contract alone is not CUDA framework support. |
+| `2.26.0` | **Unreleased additive selected Device Provider shape.** Advanced `[target]` config may explicitly name one provider/capability and a bounded string option map. `capabilities` reports only the public configured selection, without provider discovery/import, preflight, or option disclosure; its unselected object retains the prior exact shape. `generate.json` / `build.json` conditionally add `device_provider_plans` only after selected-only entry-point loading and successful preflight. Each plan binds the entry-point group/name/module target, installed distribution name/version, manifest, exact artifact profile, validated contribution, redacted option keys/digest, deterministic lock, and non-authorizing report. Bounded host-extension generation may add `build.rs` plus `device-provider.lock.json`; both become captured artifact-evidence/SBOM/provenance inputs. Non-empty Cargo-feature, package-reference, helper, or runtime-check contributions remain unmaterialized and fail closed. No selection preserves the prior generate/build report shape and never imports installed providers. Accelerator selection additionally requires a matching typed non-CPU `DeviceRequirement`; every unselected artifact profile is checked for one. This contract alone is not CUDA framework support. |
 
 Contracts 2.3.0-2.23.0 above are labeled unreleased because they were
 unpublished internal Train C intermediates, not because the final 2.24.0
@@ -2808,12 +2808,37 @@ Contract 2.3 adds two declarative objects to `rextio capabilities`:
 ```
 
 Capabilities is declaration/configuration introspection. It does not resolve an
-`ArtifactProfile`, inspect local hardware, select a device provider, or claim
-device support. The draft provider records and the CUDA Driver API inventory
+`ArtifactProfile`, inspect local hardware, resolve/load a device provider, or
+claim device support. The draft provider records and the CUDA Driver API inventory
 tool (Windows + Linux hosts) are documented in the
 [device-provider draft](device-provider.md) and
 [CUDA driver validation guide](../testing/cuda-driver-validation.md). Every
 draft preflight/probe result has `support_claim: false`.
+
+Tooling contract 2.26 preserves that exact object when no device provider is
+configured. When `[target].device_provider` and `device_capability` are both
+present, passive configuration introspection instead emits:
+
+```json
+{
+  "device_provider_contract": {
+    "status": "configured",
+    "discovery": false,
+    "provider_selected": true,
+    "selection": {
+      "provider_id": "rextio-device-cuda",
+      "capability_id": "cuda-linux-x86_64"
+    },
+    "local_probe_performed": false
+  }
+}
+```
+
+Here `provider_selected: true` means **configured selection only**. The command
+does not enumerate or import a provider, validate its manifest/distribution,
+run preflight, or claim support. Provider options are absent in both key and
+value form; their raw values remain build-only inputs. Generate/build performs
+the authoritative selected-provider resolution.
 
 ## `rextio capabilities --json`
 

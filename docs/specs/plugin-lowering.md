@@ -59,6 +59,14 @@ state a non-empty result type registered either as a Core type or plugin type;
 multiple claiming providers, even if they report the same result type; the
 authoritative recording pass reports that overlap.
 
+API 1.5 also permits a **result-only resident type** to declare
+`annotations=()`. It remains registered by stable key for claim results,
+subsequent claim operands, IR, and codegen, but contributes no annotation-map
+entry and therefore cannot be forged in a Python signature. This exception is
+valid only when `conversion is None` and the provider advertises API 1.5 or
+newer. Materialized types and API 1.1-1.4 resident types still require at least
+one non-empty dotted annotation spelling.
+
 ## Purpose
 
 Protocol v2 lets a plugin *describe* rules; this spec lets a plugin *lower*
@@ -424,7 +432,11 @@ in §9 completes the same surface):
   the value's exact native representation (e.g. `petgraph::Graph<...>`), used
   verbatim in native signatures. The IR carries it as
   `RxtPluginType(resident=True)`; `RxtPluginType.resident=False` is the
-  materialized form.
+  materialized form. API 1.5 adds the narrower result-only form:
+  `annotations=()` is accepted only for a resident type from a provider
+  advertising API 1.5 or newer. It remains available by key to claim chaining
+  but is absent from source-annotation maps. Every materialized type and every
+  pre-1.5 resident type must declare an annotation spelling.
 
 - **Production / storage / consumption.** A resident value is produced by a
   claimed plugin expression whose `Claimed.result_type` is the resident type
@@ -600,6 +612,12 @@ result equivalence with hypothesis — the same posture as core's own
   exact `rust-crate` / `host-executable` profiles. Core advertises
   `PLUGIN_API_VERSION = "1.4"`; older 1.x providers keep their projected legacy
   shapes. API 1.4 remains Experimental.
+- **Plugin API 1.5** (additive, same major; unreleased): adds non-chained
+  comparison claims and result-only resident vocabulary entries. A result-only
+  entry uses `conversion=None` and `annotations=()`: it is registered only by
+  stable key and can flow from one claim into another, but source annotations
+  cannot name it. Codegen rechecks that every `compare` claim still has an
+  API-1.5 provider, guarding against stale IR/provider-version drift.
 - Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package

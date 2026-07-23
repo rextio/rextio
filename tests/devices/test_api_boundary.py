@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -275,6 +278,98 @@ def test_framework_resources_are_borrow_validate_only() -> None:
             owner="framework",
             access="borrow-validate",
             may_synchronize=True,
+        )
+
+
+def test_resource_contract_order_is_stable_across_python_hash_seeds() -> None:
+    script = """
+import json
+from rextio.devices import (
+    DeviceBuildContribution,
+    DeviceResourceAccess,
+    DeviceResourceContract,
+    DeviceResourceOwner,
+)
+
+contracts = (
+    DeviceResourceContract(
+        "driver-event",
+        DeviceResourceOwner.PROVIDER,
+        DeviceResourceAccess.OWNED,
+        may_allocate=True,
+    ),
+    DeviceResourceContract(
+        "driver-event",
+        DeviceResourceOwner.PROVIDER,
+        DeviceResourceAccess.OWNED,
+        may_replace=True,
+    ),
+    DeviceResourceContract(
+        "driver-event",
+        DeviceResourceOwner.PROVIDER,
+        DeviceResourceAccess.OWNED,
+        may_synchronize=True,
+    ),
+)
+print(json.dumps(
+    DeviceBuildContribution(resource_contracts=contracts).to_dict(),
+    sort_keys=True,
+    separators=(",", ":"),
+))
+"""
+    repo_root = Path(__file__).parents[2]
+    outputs: set[str] = set()
+    for seed in ("1", "2", "3", "17", "101"):
+        env = {
+            **os.environ,
+            "PYTHONHASHSEED": seed,
+            "PYTHONPATH": os.pathsep.join(
+                filter(
+                    None,
+                    (str(repo_root / "src"), os.environ.get("PYTHONPATH")),
+                )
+            ),
+        }
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=repo_root,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        outputs.add(completed.stdout.strip())
+
+    assert len(outputs) == 1
+    [payload] = outputs
+    flags = [
+        (
+            item["may_allocate"],
+            item["may_replace"],
+            item["may_synchronize"],
+        )
+        for item in json.loads(payload)["resource_contracts"]
+    ]
+    assert flags == [
+        (False, False, True),
+        (False, True, False),
+        (True, False, False),
+    ]
+
+
+def test_device_provider_options_bound_public_keys_and_entry_count() -> None:
+    key_at_limit = "k" * 64
+    assert DeviceProviderOptions(((key_at_limit, "value"),)).keys == (
+        key_at_limit,
+    )
+    with pytest.raises(ValueError, match="bounded lowercase identifiers"):
+        DeviceProviderOptions((("k" * 65, "value"),))
+
+    at_limit = tuple((f"k{index}", "value") for index in range(64))
+    assert len(DeviceProviderOptions(at_limit).keys) == 64
+    with pytest.raises(ValueError, match="at most 64 entries"):
+        DeviceProviderOptions(
+            (*at_limit, ("overflow", "value")),
         )
 
 
