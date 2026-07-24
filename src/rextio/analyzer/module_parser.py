@@ -1410,6 +1410,17 @@ def _classify_native_function(
             function.add_diagnostic(diagnostic)
         function.accepted = True
         return
+    if any(diagnostic.code == "RXT092" for diagnostic in probe.error_diagnostics):
+        # A plugin call is normally a runtime-fidelity signal because its
+        # module-qualified attribute access can ride the explicit RXT080 shim.
+        # RXT092 is different: it records an impossible native boundary (for
+        # example, a result-only resident call returned to Python). Promoting
+        # that rejected probe would erase the same fail-closed invariant that a
+        # directly returned resident comparison already enforces.
+        for diagnostic in probe.diagnostics:
+            function.add_diagnostic(diagnostic)
+        function.accepted = False
+        return
     if _has_source_mutated_receiver_call(node, function):
         # A receiver whose module-visible object/method state was changed cannot
         # enter either direct codegen or the generic runtime-semantics promotion.

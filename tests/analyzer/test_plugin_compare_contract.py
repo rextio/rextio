@@ -88,6 +88,12 @@ class _CompareWhereProvider:
         if site.kind == "compare" and site.target == ">":
             if site.operand_types == (F64_KEY, "int"):
                 return Claimed(rule_id=f"{PLUGIN_ID}/greater", result_type=BOOL_KEY)
+        if site.kind == "call" and site.target == "numpy.logical_not":
+            if site.operand_types == (BOOL_KEY,):
+                return Claimed(rule_id=f"{PLUGIN_ID}/logical-not", result_type=BOOL_KEY)
+        if site.kind == "call" and site.target == "numpy.logical_or":
+            if site.operand_types == (BOOL_KEY, BOOL_KEY):
+                return Claimed(rule_id=f"{PLUGIN_ID}/logical-or", result_type=BOOL_KEY)
         if site.kind == "call" and site.target == "numpy.where":
             if site.operand_types == (BOOL_KEY, F64_KEY, F64_KEY):
                 return Claimed(rule_id=f"{PLUGIN_ID}/where", result_type=F64_KEY)
@@ -98,6 +104,17 @@ class _CompareWhereProvider:
             assert site.operand_types == (F64_KEY, "int")
             return LoweredExpr(
                 rust=(f"{ctx.operands[0]}.mapv(|value| value > ({ctx.operands[1]} as f64))")
+            )
+        if site.kind == "call" and site.target == "numpy.logical_not":
+            assert site.operand_types == (BOOL_KEY,)
+            return LoweredExpr(rust=f"{ctx.operands[0]}.mapv(|value| !value)")
+        if site.kind == "call" and site.target == "numpy.logical_or":
+            assert site.operand_types == (BOOL_KEY, BOOL_KEY)
+            return LoweredExpr(
+                rust=(
+                    f"ndarray::Zip::from(&{ctx.operands[0]}).and(&{ctx.operands[1]})"
+                    ".map_collect(|left, right| *left || *right)"
+                )
             )
         if site.kind == "call" and site.target == "numpy.where":
             assert site.operand_types == (BOOL_KEY, F64_KEY, F64_KEY)
@@ -290,6 +307,184 @@ def positive_mask(values: F64Arr1) -> F64Arr1:
     assert function.accepted is False
     assert "RXT010" in function.rejection_codes
     assert "RXT092" not in function.rejection_codes
+
+
+@pytest.mark.parametrize(
+    ("expression", "return_annotation"),
+    [
+        ("np.logical_not(values > 0)", ""),
+        ("np.logical_not(values > 0)", " -> bool"),
+        ("np.logical_or(values > 0, values > 1)", ""),
+    ],
+)
+def test_explicit_direct_result_only_call_return_is_rxt092(
+    tmp_path: Path,
+    expression: str,
+    return_annotation: str,
+) -> None:
+    _write_source(
+        tmp_path,
+        f"""
+import numpy as np
+import rextio
+from rextio_array.types import F64Arr1
+
+@rextio.native
+def logical_mask(values: F64Arr1){return_annotation}:
+    return {expression}
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "logical_mask")
+
+    assert function.accepted is False
+    assert function.native_runtime_semantics is False
+    assert function.native_status == "rejected"
+    assert "RXT092" in function.rejection_codes
+    assert "RXT001" not in function.rejection_codes
+    assert "RXT010" not in function.rejection_codes
+
+
+def test_auto_direct_result_only_call_return_preserves_rxt092_promotion_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_source(
+        tmp_path,
+        """
+import numpy as np
+from rextio_array.types import F64Arr1
+
+def logical_mask(values: F64Arr1) -> bool:
+    return np.logical_not(values > 0)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "logical_mask")
+
+    assert function.accepted is False
+    assert function.diagnostics == []
+    assessment = function.to_dict()["promotion_assessment"]
+    assert assessment["status"] == "ineligible"
+    assert assessment["diagnostic_codes"] == ["RXT092"]
+    assert assessment["diagnostics"][0]["kind"] == "blocker"
+
+
+@pytest.mark.parametrize("return_annotation", ["", " -> bool"])
+def test_assigned_result_only_call_return_is_rxt092(
+    tmp_path: Path,
+    return_annotation: str,
+) -> None:
+    _write_source(
+        tmp_path,
+        f"""
+import numpy as np
+import rextio
+from rextio_array.types import F64Arr1
+
+@rextio.native
+def logical_mask(values: F64Arr1){return_annotation}:
+    mask = np.logical_not(values > 0)
+    return mask
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "logical_mask")
+
+    assert function.accepted is False
+    assert function.native_runtime_semantics is False
+    assert function.native_status == "rejected"
+    assert "RXT092" in function.rejection_codes
+    assert "RXT001" not in function.rejection_codes
+    assert "RXT010" not in function.rejection_codes
+
+
+@pytest.mark.parametrize(
+    ("annotation_import", "return_annotation"),
+    [
+        ("import rextio_array.types", "rextio_array.types.BoolArr1"),
+        ("from rextio_array.types import BoolArr1", "BoolArr1"),
+    ],
+)
+def test_result_only_call_return_annotation_spelling_cannot_forge_a_boundary(
+    tmp_path: Path,
+    annotation_import: str,
+    return_annotation: str,
+) -> None:
+    _write_source(
+        tmp_path,
+        f"""
+import numpy as np
+import rextio
+from rextio_array.types import F64Arr1
+{annotation_import}
+
+@rextio.native
+def logical_mask(values: F64Arr1) -> {return_annotation}:
+    return np.logical_not(values > 0)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "logical_mask")
+
+    assert function.accepted is False
+    assert function.native_runtime_semantics is False
+    assert function.native_status == "rejected"
+    assert "RXT003" in function.rejection_codes
+    assert "RXT092" in function.rejection_codes
+
+
+def test_result_only_call_can_stay_internal_and_feed_a_materializing_claim(
+    tmp_path: Path,
+) -> None:
+    _write_source(
+        tmp_path,
+        """
+import numpy as np
+from rextio_array.types import F64Arr1
+
+def choose_nonpositive(values: F64Arr1, fallback: F64Arr1) -> F64Arr1:
+    mask = np.logical_not(values > 0)
+    return np.where(mask, values, fallback)
+""",
+    )
+    analysis = analyze_project(
+        tmp_path,
+        plugin_registry=_registry(_CompareWhereProvider()),
+        plugin_config=RextioConfig(),
+    )
+    function = _function(analysis, "choose_nonpositive")
+
+    assert function.accepted is True
+    assert function.rejection_codes == []
+    assert [(claim.kind, claim.target, claim.result_type) for claim in function.plugin_claims] == [
+        ("compare", ">", BOOL_KEY),
+        ("call", "numpy.logical_not", BOOL_KEY),
+        ("call", "numpy.where", F64_KEY),
+    ]
+    module_ir = lower_project(analysis, plugin_types=TYPE_MAPS)
+    source = generate_rust_module(
+        module_ir,
+        plugin_providers={PLUGIN_ID: _CompareWhereProvider()},
+        plugin_types_by_key={F64_KEY: F64_IR, BOOL_KEY: BOOL_IR},
+    )
+    assert ".mapv(|value| !value)" in source
+    assert "ndarray::Zip::from(&" in source
 
 
 def test_compare_claim_reaches_ir_and_plugin_lowering_with_direct_operands(

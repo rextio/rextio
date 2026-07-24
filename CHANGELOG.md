@@ -80,6 +80,10 @@
   invariant and the blocker in auto-mode promotion evidence. An explicitly
   declared incompatible materialized return remains the ordinary RXT010 type
   mismatch.
+- Apply the same RXT092 boundary rule when the resident result comes from a
+  claimed plugin call, including a returned local, and never let an explicit
+  RXT080 runtime-semantics shim erase that failure. Such values remain valid
+  when consumed by another claim inside the same native function.
 - Recheck the API-1.5 requirement for comparison claims at codegen time so
   stale/malformed IR or a provider-version drift fails closed.
 

@@ -1884,6 +1884,16 @@ class _SignatureInferencer:
         for arg in self.args:
             if arg.annotation is not None and is_supported_type(arg.annotation):
                 self.known[arg.arg] = annotation_name(arg.annotation)
+            elif (
+                arg.annotation is not None
+                and (plugin_key := _plugin_annotation_key(function, arg.annotation)) is not None
+            ):
+                # Signature inference must see the same plugin parameter key as
+                # body validation. Otherwise a nested result-only claim such as
+                # logical_not(values > 0) first mis-types the comparison as a
+                # core bool, so the outer call cannot reveal its resident result
+                # and a spurious missing-return annotation masks RXT092.
+                self.known[arg.arg] = plugin_key
             elif arg.arg in function.inferred_arg_types:
                 self.known[arg.arg] = function.inferred_arg_types[arg.arg]
         if function.inferred_return_type is not None:
