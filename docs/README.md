@@ -10,7 +10,7 @@ An index of the project's documentation. See the top-level
 - [Versioning policy](versioning.md) — SemVer with the pre-1.0 caveats and the
   definition of the public contract.
 - [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.x
-  supported subset (published package: **0.1.5** / plugin API 1.4).
+  supported subset (published package: **0.1.6** / plugin API 1.6).
 - [Host source-AOT and native executables](source-aot-and-executables.md) —
   **0.1.5 Experimental Release Train C** source graph, `ModuleInitIR`, artifact
   profile,
@@ -27,7 +27,8 @@ An index of the project's documentation. See the top-level
 ## Specs
 
 - [Machine-readable tooling contract](specs/tooling-contract.md) — draft
-  (current published producer `contract_version` `2.24.0` on core 0.1.5; core 0.1.4
+  (current published producer `contract_version` `2.27.0` on core 0.1.6; core 0.1.5
+  emitted `2.24.0`; core 0.1.4
   emitted `2.2.0`; core 0.1.3
   emitted `2.1.0`; core 0.1.2 emitted `2.0.0`; `1.0.0` was PyPI 0.1.1): route
   taxonomy, `check --json`
@@ -67,6 +68,13 @@ An index of the project's documentation. See the top-level
   published 0.1.5 is the 2.24.0 producer with plugin API 1.4 and readiness
   policy 11.
 
+  Core 0.1.6 publishes contract `2.27.0`: the unpublished/internal `2.25.0`
+  comparison/result-only-resident shape, the `2.26.0` selected Device Provider
+  API 1 planning/preflight/build shape, and the final `2.27.0` static
+  device-domain lowering authorization. It publishes plugin API 1.6 and retains
+  readiness policy 11. These contracts do not themselves claim CUDA framework
+  support or certified accelerator execution.
+
 Train C shipped in core 0.1.5 as Experimental/Alpha. Its evidence and local
 artifact-publication authority remain bounded and do not imply broad Full C6,
 general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
@@ -82,15 +90,18 @@ guarantees.
 
 - [Plugin lowering](specs/plugin-lowering.md) — draft (0.1.1+; plugin API 1.1
   on PyPI 0.1.1, **1.2** additive on published 0.1.2, and **1.3** on published
-  0.1.3 and retained in 0.1.4, with **1.4** published in core 0.1.5): the
+  0.1.3 and retained in 0.1.4, **1.4** published in core 0.1.5, and **1.6**
+  published in core 0.1.6): the
   claim/lower hook that lets plugins translate
   covered constructs to Rust — plugin annotation vocabulary, expression-level
   codegen contract, boundary ABI, pinned crate injection with consent and report
   exposure, structured `ClaimExpr` / leaves-mode fusion surface, and the plugin
   certification kit.
-- [Device-provider API draft](specs/device-provider.md) — non-operational Train
-  C separation between domain lowering and future hardware/runtime providers;
-  there is no discovery, build/link hook, or support claim.
+- [Device Provider API 1](specs/device-provider.md) — bounded Experimental
+  provider selection, entry-point discovery, preflight, lock/report, and
+  native-library build wiring, separated from plugin-owned domain lowering.
+  Unmaterialized contribution classes fail closed and every preflight remains
+  non-certifying with `support_claim: false`.
 
 ## Testing guides
 

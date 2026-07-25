@@ -3,9 +3,9 @@
 Thanks for your interest in Rextio. This guide covers the development setup, the
 quality gates your change must pass, and the conventions we follow.
 
-Rextio **0.1.5** is the published package version (plugin API **1.4**; tooling
-contract **2.24.0**; readiness policy **11**; released on PyPI 2026-07-23,
-superseding **0.1.4**). The supported subset is intentionally small and the
+Rextio **0.1.6** is the published package version (plugin API **1.6**; tooling
+contract **2.27.0**; readiness policy **11**; released on PyPI 2026-07-26,
+superseding **0.1.5**). The supported subset is intentionally small and the
 public surface
 is still moving; see [docs/stability.md](docs/stability.md) for what is stable
 versus experimental, and [docs/versioning.md](docs/versioning.md) for the
@@ -17,6 +17,9 @@ Release Train B likewise completed consumer first: rextio-lsp 0.1.2 → core
 0.1.4.
 Release Train C shipped in core 0.1.5; its host source-AOT, executable, and
 bounded Full-C6/C5.2 surfaces remain Experimental/Alpha.
+Core 0.1.6 adds Experimental plugin comparison expressions, Device Provider
+API 1 selection/preflight/build wiring, and static device-domain lowering
+authorization without making a CUDA framework support or certification claim.
 
 ## Development setup
 

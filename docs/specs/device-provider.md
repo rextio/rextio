@@ -1,7 +1,7 @@
 # Device Provider API 1
 
-Status: **bounded experimental Alpha (Release Train E0 plus unreleased
-plugin-API-1.6 domain authorization prerequisite)**.
+Status: **published bounded experimental Alpha in core 0.1.6 (Device Provider
+API 1 plus plugin-API-1.6 domain authorization)**.
 
 Rextio separates Python-domain lowering from device/runtime integration:
 

@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.6 — 2026-07-26
+
+**Published release.** Package version `0.1.6` is tagged and published to PyPI
+with plugin API **1.6**, tooling contract **2.27.0**, and readiness policy
+**11**, superseding `0.1.5`. This release adds bounded plugin comparison
+expressions, Device Provider API 1 selection/preflight/build wiring, and
+fail-closed static device-domain lowering authorization. These contracts do
+not by themselves claim CUDA framework support, certified accelerator
+execution, or broader native coverage.
 
 ### Static device-domain lowering authorization (plugin API 1.6; tooling contract 2.27.0)
 
