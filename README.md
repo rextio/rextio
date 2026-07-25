@@ -1034,9 +1034,11 @@ device metadata plus Core-validated lowering authorization. API 1.1-1.5
 providers remain compatible and never receive a non-`None` device
 authorization. The
 first-party [rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is
-installed separately (core has no reverse dependency on it). PyPI **0.1.1** is
-the published API-1.2 consumer with literal-axis and fusion support and
-requires core **>= 0.1.2,<0.2**.
+installed separately (core has no reverse dependency on it). PyPI **0.1.2** is
+the current published consumer. It uses plugin API **1.5** for bounded
+comparison/result-only-resident masks and exact three-argument `numpy.where`,
+while preserving the earlier literal-axis and fusion surfaces; it requires
+core **>= 0.1.2,<0.2**.
 **Strict related-package publish order for the 0.1.2 line (completed
 2026-07-14):** rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 (see
 [the tooling contract](docs/specs/tooling-contract.md)). Core **0.1.3** is
@@ -1051,6 +1053,9 @@ legacy route/status/rejection meanings.
 Core **0.1.5** was published on 2026-07-23 with plugin API **1.4**, tooling
 contract **2.24.0**, and readiness policy **11**. Its Train C surfaces remain
 Experimental/Alpha under the bounded scope described above.
+Core **0.1.6** was published on 2026-07-26 with plugin API **1.6**, tooling
+contract **2.27.0**, and Device Provider API **1**. It retains the same
+readiness policy and fail-closed Alpha boundaries.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
 
