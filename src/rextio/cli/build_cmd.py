@@ -100,6 +100,11 @@ from rextio.contract import TOOLING_CONTRACT_VERSION
 from rextio.plugins.loader import PluginError
 from rextio.config.loader import ConfigError, load_config, override_config
 from rextio.config.schema import RextioConfig
+from rextio.devices import (
+    DeviceProviderError,
+    DeviceProviderOptions,
+    DeviceProviderSelection,
+)
 from rextio.fallback.nuitka import nuitka_unavailable_message
 from rextio.source.external import (
     ExternalSourceBuildBlockedError,
@@ -1464,6 +1469,23 @@ def run(args: Namespace) -> int:
             return 1
 
     try:
+        device_selection = (
+            DeviceProviderSelection(
+                provider_id=config.target.device_provider,
+                capability_id=config.target.device_capability,
+            )
+            if config.target.device_provider is not None
+            and config.target.device_capability is not None
+            else None
+        )
+        device_options = DeviceProviderOptions(
+            tuple(sorted(config.target.device_options.items()))
+        )
+    except ValueError as error:
+        reporter.error(f"RXT060 Invalid device provider configuration: {error}")
+        return 1
+
+    try:
         result = build_hybrid_artifact(
             project_root,
             analysis,
@@ -1485,6 +1507,8 @@ def run(args: Namespace) -> int:
             toolchain=config.toolchain,
             artifact_evidence_policy=config.build.artifact_evidence_policy,
             artifact_distribution_policy=config.build.artifact_distribution_policy,
+            device_selection=device_selection,
+            device_options=device_options,
             executable_standalone=executable_standalone,
             standalone_contexts=(
                 {ArtifactKind.HOST_EXECUTABLE: executable_standalone}
@@ -1500,6 +1524,9 @@ def run(args: Namespace) -> int:
         return _report_plugin_capability_failure(
             project_root, analysis, fallback, exc, reporter, command="build"
         )
+    except DeviceProviderError as error:
+        reporter.error(f"RXT060 Device provider error: {error}")
+        return 1
     except ArtifactProfilePlanningError as error:
         return _report_artifact_profile_failure(
             project_root,
@@ -1519,6 +1546,11 @@ def run(args: Namespace) -> int:
     )
     lines.append(f"  rust build tool: {config.rust.build_tool}")
     lines.append(f"  artifact evidence policy: {config.build.artifact_evidence_policy}")
+    if device_selection is not None:
+        lines.append(
+            "  device provider: "
+            f"{device_selection.provider_id}/{device_selection.capability_id}"
+        )
     lines.append(f"  accepted native functions: {result.accepted_native_count}")
     lines.append(f"  rejected native functions: {result.rejected_native_count}")
     lines.append(f"  embedding candidates: {len(result.plan.native.embedded_functions)}")

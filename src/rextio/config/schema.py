@@ -69,6 +69,12 @@ class TargetConfig:
 
     version: str | None = None
     build_options: dict[str, str] = field(default_factory=dict)
+    device_provider: str | None = None
+    device_capability: str | None = None
+    # Explicit inputs passed only to the selected provider. Values may contain
+    # machine locators, but this is not a secret store: public reports expose
+    # keys + a binding digest and provider code can observe the raw values.
+    device_options: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

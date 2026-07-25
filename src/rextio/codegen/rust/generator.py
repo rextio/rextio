@@ -11,6 +11,10 @@ from rextio.codegen.native_names import (
     native_function_name_collisions,
 )
 from rextio.exceptions import BUILTIN_EXCEPTION_TO_PYO3
+from rextio.devices.api import (
+    DeviceLoweringAuthorization,
+    normalize_device_id,
+)
 from rextio.codegen.rust.checked_arith import (
     checked_arith_helpers as _checked_arith_helpers,
 )
@@ -123,6 +127,7 @@ def generate_rust_module(
     plugin_providers: dict[str, object] | None = None,
     plugin_types_by_key: Mapping[str, RxtType] | None = None,
     external_runtime_guard: ExternalRuntimeGuard | None = None,
+    device_authorization: DeviceLoweringAuthorization | None = None,
 ) -> str:
     """Generate the PyO3 extension-module Rust source for a lowered module.
 
@@ -176,6 +181,7 @@ def generate_rust_module(
                     plugin_types_by_key=plugin_types_by_key,
                     plugin_uses=plugin_uses,
                     plugin_helpers=plugin_helpers,
+                    device_authorization=device_authorization,
                 )
             ),
         )
@@ -700,6 +706,7 @@ class _FunctionRenderer:
         plugin_uses: set[str] | None = None,
         plugin_helpers: dict[str, None] | None = None,
         standalone: StandalonePluginContext | None = None,
+        device_authorization: DeviceLoweringAuthorization | None = None,
     ) -> None:
         self.function = function
         # Whether the pyo3-mode function is registered with the module. Embedded
@@ -742,6 +749,7 @@ class _FunctionRenderer:
         self.plugin_helpers = plugin_helpers if plugin_helpers is not None else {}
         # Plugin API 1.4 standalone artifact capability for crate/executable.
         self.standalone = standalone
+        self.device_authorization = device_authorization
 
     def _standalone_capable(self) -> bool:
         """Whether this function may render plugin-lowered sites without PyO3."""
@@ -1159,6 +1167,11 @@ class _FunctionRenderer:
             op = "!" if expr.op == "not" else expr.op
             return f"({op}{self.render_expr(expr.value)})"
         if isinstance(expr, CompareIR):
+            if expr.claim is not None:
+                return self.render_plugin_claim(
+                    expr.claim,
+                    [expr.left, *expr.comparators],
+                )
             return self.render_compare(expr)
         if isinstance(expr, CallIR):
             return self.render_call(expr)
@@ -1684,6 +1697,53 @@ class _FunctionRenderer:
                 "expected 'direct' or 'leaves'"
             )
         provider_api = str(getattr(provider, "api_version", "1.0") or "1.0")
+        claim_device_metadata = tuple(
+            plugin_type.device_value_metadata
+            for key in sorted(claim_plugin_type_keys(claim))
+            if isinstance(
+                (plugin_type := self.plugin_types_by_key.get(key)),
+                RxtPluginType,
+            )
+            and plugin_type.device_value_metadata is not None
+            and normalize_device_id(
+                plugin_type.device_value_metadata.logical_device,
+                backend=plugin_type.device_value_metadata.backend,
+            ).kind
+            != "cpu"
+        )
+        if claim_device_metadata:
+            if not _plugin_api_at_least(provider_api, 1, 6):
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} (api_version {provider_api!r}) "
+                    "cannot lower a structured accelerator value; device-domain "
+                    "lowering requires api_version >= 1.6"
+                )
+            if self.device_authorization is None:
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} cannot lower accelerator site "
+                    f"{claim.target!r} in {self.function.qualname} without a "
+                    "Core-resolved device authorization"
+                )
+            if any(
+                not self.device_authorization.authorizes(metadata)
+                for metadata in claim_device_metadata
+            ):
+                raise RustCodegenError(
+                    f"plugin {claim.plugin_id!r} accelerator site {claim.target!r} "
+                    f"in {self.function.qualname} does not match the resolved "
+                    "device authorization"
+                )
+        if claim.kind == "compare" and not _plugin_api_at_least(provider_api, 1, 5):
+            # Defense in depth against stale/malformed IR or a provider version
+            # drifting between analysis and codegen. Compare sites were not part
+            # of the lowering contract before API 1.5 and must never be projected
+            # onto an older provider merely because an IR claim exists.
+            raise RustCodegenError(
+                f"plugin {claim.plugin_id!r} (api_version {provider_api!r}) "
+                f"cannot lower compare site {claim.target!r} in "
+                f"{self.function.qualname}; compare lowering requires "
+                "api_version >= 1.5"
+            )
         is_api_12 = _plugin_api_at_least(provider_api, 1, 2)
         if not is_api_12:
             # Defense in depth: even if analysis projected 1.2 fields onto IR,
@@ -1748,6 +1808,11 @@ class _FunctionRenderer:
         # Plugin API 1.3 receiver/callable metadata: only a >= 1.3 provider ever
         # observes them; a legacy provider always sees the pre-1.3 site shape.
         is_api_13 = _plugin_api_at_least(provider_api, 1, 3)
+        ctx_device_authorization = (
+            self.device_authorization
+            if _plugin_api_at_least(provider_api, 1, 6)
+            else None
+        )
         receiver_binding: str | None = None
         ctx_receiver: str | None = None
         if is_api_13:
@@ -1762,6 +1827,7 @@ class _FunctionRenderer:
                 fresh_name=self.next_temp,
                 leaf_operands=leaf_operands,
                 receiver=ctx_receiver,
+                device_authorization=ctx_device_authorization,
             )
         else:
             if self.standalone is None:
@@ -1786,6 +1852,7 @@ class _FunctionRenderer:
                 receiver=ctx_receiver,
                 backend=LOWERING_BACKEND_STANDALONE_RUST,
                 artifact_profile=self.standalone.profile,
+                device_authorization=ctx_device_authorization,
             )
         try:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]
@@ -2613,6 +2680,8 @@ class _FunctionRenderer:
                 return RxtBool()
             return self.infer_expr_type(expr.value)
         if isinstance(expr, CompareIR):
+            if expr.claim is not None:
+                return self._claim_result_type(expr.claim)
             return RxtBool()
         if isinstance(expr, IndexIR):
             value_type = self.infer_expr_type(expr.value)
@@ -2947,6 +3016,7 @@ def _render_function(
     plugin_uses: set[str] | None = None,
     plugin_helpers: dict[str, None] | None = None,
     standalone: StandalonePluginContext | None = None,
+    device_authorization: DeviceLoweringAuthorization | None = None,
 ) -> str:
     return _FunctionRenderer(
         function,
@@ -2963,6 +3033,7 @@ def _render_function(
         plugin_uses=plugin_uses,
         plugin_helpers=plugin_helpers,
         standalone=standalone,
+        device_authorization=device_authorization,
     ).render()
 
 

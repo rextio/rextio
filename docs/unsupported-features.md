@@ -1,14 +1,21 @@
 # Unsupported Features in 0.1.x
 
 Rextio is a focused, alpha-stage hybrid build tool. The current package version
-is **0.1.5** (published to PyPI on 2026-07-23; plugin API **1.4**; tooling
-contract **2.24.0**; readiness policy **11**), superseding 0.1.4. The
+is **0.1.6** (published to PyPI on 2026-07-26; plugin API **1.6**; tooling
+contract **2.27.0**; readiness policy **11**), superseding 0.1.5. The
 direct-Rust subset and boundary rules below still rest
 on the original **0.1.0** design; historical “0.1.0” wording in later sections
 is preserved as design scope, not as a claim that 0.1.0 is the only shipped
 version. Rextio compiles eligible Python functions with statically resolved
 types to Rust native modules and keeps the rest of the project as Python
 fallback.
+
+Core 0.1.6 adds bounded plugin comparison expressions, Device Provider API 1
+selection/preflight/build wiring, and static device-domain lowering
+authorization. Those additions fail closed: they do not make provider
+selection automatic, materialize every declared provider contribution, add
+framework lowering by themselves, certify accelerator execution, or create a
+CUDA support claim.
 
 Release Train C shipped in 0.1.5 with experimental host source/executable
 planning, plugin standalone capability, the C5.1 external-source inventory gate, and the
@@ -750,8 +757,10 @@ The Train C planning records shipped in 0.1.5 do not change these additional lim
   authority outside macOS arm64/Linux x86_64, broader C5.2 linkage/codegen/
   packaging, output license sets above 128 files or 64 MiB, general standards
   SBOM coverage, and general redistribution remain future work.
-- Draft device-provider records have no discovery, selection, build/link hook,
-  generated helper injection, or runtime dispatch.
+- Device Provider API 1 has explicit selected-only discovery, preflight, and
+  bounded native-library build wiring. It still has no automatic selection,
+  general Cargo/package/helper/runtime-check materialization, provider-owned
+  runtime dispatch, or certification; unsupported contributions fail closed.
 - The CUDA Driver API inventory probe (Windows x64 and Linux x86_64/aarch64) is
   not CUDA support. It does not create a context, allocate/transfer memory,
   create a stream, load a module, launch a kernel, or test generated artifacts.
@@ -884,7 +893,11 @@ Two options control the interpreter side:
 `native_backend` accepts only `rust` in 0.1.0; any other value is rejected
 at configuration load. `[target] version` and `[target] build_options` are
 accepted as forward-looking metadata but have no effect yet (a RuntimeWarning
-says so). Rextio plugins are ordinary Python
+says so). Advanced `[target] device_provider` / `device_capability` selection
+is separate: it can preflight one explicitly selected provider only when the
+planned artifact already carries a compatible typed device requirement. It
+does not infer CUDA from installed hardware, activate an unselected provider,
+or make a CPU-only domain plugin CUDA-capable. Rextio plugins are ordinary Python
 packages installed with tools such as `pip` or `uv`; they expose metadata
 through the `rextio.plugins` entry point group. Projects opt into specific
 plugin ids with `[plugins] enabled`, `--enable-plugin`, or

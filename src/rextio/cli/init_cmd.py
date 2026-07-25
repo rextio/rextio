@@ -34,9 +34,20 @@ nuitka = "experimental"
 
 [target]
 # version = "stable"
+# Advanced/experimental. Selection is useful only when a domain lowering emits
+# a matching typed non-CPU DeviceRequirement; current CPU-only framework routes
+# do not become CUDA-capable merely by uncommenting these values.
+# Providers are selected explicitly and independently from lowering plugins.
+# device_provider = "rextio-device-cuda"
+# device_capability = "cuda-linux-x86_64"
 
 [target.build_options]
 # profile = "release"
+
+[target.device_options]
+# Not a secret store. Raw values go only to the explicitly selected provider;
+# public Rextio output contains option keys plus a binding digest.
+# toolkit_root = "/explicit/path"
 
 [plugins]
 enabled = []

@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Keep the `0.1.6` release integration branch covered through aggregate
+    # release validation. A post-release cleanup may remove this trigger after
+    # the branch is deleted.
+    branches: [main, 0.1.6]
   pull_request:
-    branches: [main]
+    branches: [main, 0.1.6]
     # `labeled` lets the experimental Nuitka job opt in on a PR via the
     # `test-nuitka` label (see the `nuitka-e2e` job's `if:`).
     types: [opened, synchronize, reopened, labeled]

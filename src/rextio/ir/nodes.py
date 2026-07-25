@@ -39,7 +39,7 @@ class TargetIR(IRNode):
 
 @dataclass(frozen=True)
 class PluginClaimIR(IRNode):
-    """A plugin's claim on a call/binop site, carried from analysis to codegen.
+    """A plugin's claim on a call/binop/compare site, carried to codegen.
 
     Mirrors the analyzer's ``PluginClaim`` minus the source location: codegen
     re-offers the site to the claiming plugin's ``lower()`` with these fields
@@ -394,15 +394,21 @@ class CompareIR(ExprIR):
     left: ExprIR
     ops: list[str]
     comparators: list[ExprIR]
+    # Set only for one API-1.5 plugin-claimed comparison. Chained comparisons
+    # remain under Core's existing scalar-bool semantics.
+    claim: PluginClaimIR | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this node."""
-        return {
+        data: dict[str, object] = {
             "kind": "compare",
             "left": self.left.to_dict(),
             "ops": list(self.ops),
             "comparators": [comparator.to_dict() for comparator in self.comparators],
         }
+        if self.claim is not None:
+            data["claim"] = self.claim.to_dict()
+        return data
 
 
 @dataclass(frozen=True)

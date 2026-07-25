@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.1.6 — 2026-07-26
+
+**Published release.** Package version `0.1.6` is tagged and published to PyPI
+with plugin API **1.6**, tooling contract **2.27.0**, and readiness policy
+**11**, superseding `0.1.5`. This release adds bounded plugin comparison
+expressions, Device Provider API 1 selection/preflight/build wiring, and
+fail-closed static device-domain lowering authorization. These contracts do
+not by themselves claim CUDA framework support, certified accelerator
+execution, or broader native coverage.
+
+### Static device-domain lowering authorization (plugin API 1.6; tooling contract 2.27.0)
+
+- Let plugin types declare validated static device/backend, dtype/rank/layout,
+  runtime-reuse, feature/memory-space, and exact runtime-pin facts. Only types
+  used by accepted native signatures or claims contribute to the artifact
+  profile; CPU-only and fallback-only types preserve existing behavior.
+- Derive deterministic device/runtime requirements and fail closed before
+  codegen for mixed CPU/CUDA, conflicting accelerator domains, non-zero GPU
+  ordinals, missing providers, and incompatible backend/capability selections.
+  Target SM remains an explicit device build option, not a Python type fact.
+- Project a successfully resolved provider plan into a minimal redacted
+  immutable lowering authorization. API-1.6 providers receive it through
+  `LoweringContext`; API 1.1-1.5 providers always receive `None`, and an
+  accelerator claim cannot lower without exact device/backend, runtime/reuse,
+  feature, optional-layout, and memory-space authorization. Architecture stays
+  a build/provider fact rather than Python value metadata.
+- Bind the canonical successful preflight into selected provider locks as
+  `preflight_sha256`, so selected-SM, driver, and provider-policy observations
+  cannot drift independently of a recorded lock.
+- Keep package references, generated helper ids, and runtime-check ids
+  unmaterialized and rejected by the bounded host-extension integration.
+
+### Device Provider API 1 foundation and bounded build wiring (tooling contract 2.26.0)
+
+- Replace the behavior-neutral device-provider draft with a bounded,
+  vendor-neutral API 1.0 contract: structured device value metadata, canonical
+  device ids, expanded target capability facts, explicit provider/capability
+  selection, fail-closed preflight, declarative build/resource inputs, and
+  deterministic lock/report projections.
+- Preserve existing CPU-only behavior when no provider is selected. An
+  accelerator-bearing artifact profile now requires explicit resolution;
+  installed-but-unselected providers are never inspected.
+- Add advanced explicit `[target]` selection/options for `generate` and
+  `build`. Core loads exactly one selected `rextio.device_providers` entry
+  point, binds its module/attribute target and distribution name/version,
+  redacts raw options to keys plus a SHA-256 binding, and completes preflight
+  before generated-output mutation.
+- Make passive `rextio capabilities` report an explicitly configured
+  provider/capability identity without discovery, import, preflight, or option
+  disclosure; the unselected manifest keeps its prior exact object shape.
+- Bound device-provider options to 64 entries, keys to 64 characters, and
+  values to 4096 printable characters. Canonicalize resource contracts by
+  every serialized field so lock/report digests do not vary with
+  `PYTHONHASHSEED`.
+- Apply no-selection validation to every artifact profile so any typed
+  accelerator requirement fails before provider discovery or output writes.
+- Materialize only validated native-library names as a generated `build.rs`
+  in this bounded step. Bind the selected plan into a generated lock, build
+  and generate reports, plus artifact-evidence/SBOM/provenance inputs.
+  Cargo features, package references, helpers, and runtime-check ids remain
+  declared future inputs and fail closed if a provider contributes them.
+- Keep support claims separate from discovery and preflight. E0 does not ship a
+  Torch or TensorFlow CUDA lowering; selecting an accelerator provider without
+  a matching typed domain `DeviceRequirement` fails closed.
+
+### Plugin comparison expressions (plugin API 1.5; tooling contract 2.25.0)
+
+- Add an explicitly version-gated `compare` claim kind for one non-chained
+  `==`, `!=`, `<`, `<=`, `>`, or `>=` expression involving a plugin-owned
+  operand. Providers below API 1.5 are never offered the new site.
+- Preserve a claimed non-scalar comparison result type through subsequent
+  plugin calls and carry the comparison's direct operands through analyzer,
+  IR, and Rust lowering. Unclaimed/chained plugin comparisons remain on the
+  fail-closed fallback path.
+- Require every claimed comparison to return one registered, non-empty result
+  type. Peek inference treats any multi-provider overlap as ambiguous even when
+  providers report the same type; the authoritative claim path then reports
+  the overlap.
+- Allow an API-1.5 provider to register a result-only resident type with
+  `conversion=None` and `annotations=()`. It remains available by key to claim
+  result/operand chaining and codegen, but is absent from annotation maps and
+  cannot be written in source; materialized and pre-1.5 resident types retain
+  the non-empty annotation requirement.
+- Diagnose a result-only resident value returned directly or inferred into a
+  parameter/return signature as RXT092, preserving the native-only boundary
+  invariant and the blocker in auto-mode promotion evidence. An explicitly
+  declared incompatible materialized return remains the ordinary RXT010 type
+  mismatch.
+- Apply the same RXT092 boundary rule when the resident result comes from a
+  claimed plugin call, including a returned local, and never let an explicit
+  RXT080 runtime-semantics shim erase that failure. Such values remain valid
+  when consumed by another claim inside the same native function.
+- Recheck the API-1.5 requirement for comparison claims at codegen time so
+  stale/malformed IR or a provider-version drift fails closed.
+
 ## 0.1.5 — 2026-07-23
 
 **Published release.** Package version `0.1.5` is tagged and published to PyPI

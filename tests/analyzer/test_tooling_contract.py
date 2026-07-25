@@ -136,8 +136,8 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.24.0 adds Full-C6 support-lock and sandbox receipt surfaces.
-    assert data["contract_version"] == "2.24.0"
+    # Contract 2.27.0 adds static device-domain planning and lowering authorization.
+    assert data["contract_version"] == "2.27.0"
     assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.

@@ -24,15 +24,17 @@ from typing import TYPE_CHECKING, ClassVar, Protocol, Union
 
 from rextio.analyzer.diagnostics import Diagnostic
 from rextio.artifacts.models import ArtifactProfile
+from rextio.devices.api import DeviceLoweringAuthorization, DeviceValueMetadata
 
 if TYPE_CHECKING:
     from rextio.config.schema import RextioConfig
 
-# "binop" describes operator lowering surfaces (ClaimSite kind "binop"), so a
-# plugin claiming `+`/`-`/`*`/`/` can label the rule accurately (council
-# round 4: the closed set had no vocabulary for operator rules and the
-# first-party numpy elementwise rule was mislabeled "call").
-RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "binop", "import", "decorator"})
+# "binop" and "compare" describe operator lowering surfaces (ClaimSite kinds
+# with the same names), so a plugin can label element-wise arithmetic and
+# comparison rules accurately instead of presenting them as calls.
+RULE_SCOPE_KINDS = frozenset(
+    {"type", "syntax", "call", "binop", "compare", "import", "decorator"}
+)
 RULE_OUTCOMES = frozenset({"native", "fallback", "reject", "shim", "boundary"})
 RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 
@@ -53,9 +55,17 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # fail-closed declaration of standalone (boundary-free) Rust artifact support
 # for rust-crate and host-executable profiles. The hook is NOT part of the
 # all-or-none lowering member set; absence means standalone unsupported.
-# All additions are optional/defaulted, so 1.1–1.3 providers remain source-
+# 1.5 adds an explicitly version-gated ``compare`` expression claim kind.
+# Providers below 1.5 are never offered comparison sites, so an installed
+# legacy provider cannot change behavior merely because Core learned the new
+# expression vocabulary.
+# 1.6 lets a plugin type carry structured static device-value metadata and
+# gives ``lower()`` a minimal Core-validated device authorization. The fields
+# are optional/defaulted, so CPU-only and 1.1-1.5 providers retain their
+# existing behavior.
+# All additions are optional/defaulted, so 1.1–1.5 providers remain source-
 # and behavior-compatible for host-extension builds (major must still match).
-PLUGIN_API_VERSION = "1.4"
+PLUGIN_API_VERSION = "1.6"
 
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
@@ -224,7 +234,9 @@ class PluginType:
 
     ``annotations`` are the dotted spellings that resolve to this type (the
     plugin's explicit annotation vocabulary); ``rust_type`` is the native
-    representation inside generated code.
+    representation inside generated code. API 1.5 permits ``annotations=()``
+    only for a resident type: that is a result-only vocabulary entry produced
+    by one claim and consumed by later claims, never a source annotation.
 
     ``conversion`` describes how the value crosses the Python<->Rust boundary
     of a generated PyO3 function. Two kinds of plugin type exist:
@@ -238,7 +250,9 @@ class PluginType:
       created by a claimed plugin expression, stored in locals, passed to
       another claimed plugin expression, and passed across accepted native
       helper calls without any Python round-trip. A plugin declaring a resident
-      type must advertise ``api_version >= 1.3`` (enforced at load).
+      type must advertise ``api_version >= 1.3`` (enforced at load). Omitting
+      every annotation spelling additionally requires ``api_version >= 1.5``;
+      materialized and older resident types must keep at least one spelling.
     """
 
     key: str
@@ -257,6 +271,10 @@ class PluginType:
     # :class:`LoweredExpr` support (docs/specs/plugin-lowering.md §3, §7).
     uses: tuple[str, ...] = ()
     helpers: tuple[str, ...] = ()
+    # Plugin API 1.6: passive structured facts for a statically known device
+    # value. Core derives artifact requirements from used types and provides
+    # authorization separately; this metadata never authorizes lowering.
+    device_value_metadata: DeviceValueMetadata | None = None
 
     def __post_init__(self) -> None:
         """Validate optional module support as tuples of non-empty strings."""
@@ -266,6 +284,12 @@ class PluginType:
             for item in support:
                 if not isinstance(item, str) or not item:
                     raise ValueError(f"PluginType.{label} must contain only non-empty strings")
+        if self.device_value_metadata is not None and not isinstance(
+            self.device_value_metadata, DeviceValueMetadata
+        ):
+            raise ValueError(
+                "PluginType.device_value_metadata must be DeviceValueMetadata or None"
+            )
 
     @property
     def is_resident(self) -> bool:
@@ -279,9 +303,10 @@ class PluginType:
         legacy byte-shape: no ``resident`` key, no ``uses``/``helpers`` keys,
         and ``conversion`` is the boundary conversion dict. Only a resident
         type (plugin API 1.3) adds ``resident: true`` and a ``conversion:
-        null``; non-empty support is serialized deterministically (order-
-        preserving lists) so provider/report/cache identity moves when the
-        support changes.
+        null``; an API-1.5 result-only resident type honestly serializes
+        ``annotations: []``. Non-empty support is serialized deterministically
+        (order-preserving lists) so provider/report/cache identity moves when
+        the support changes.
         """
         result: dict[str, object] = {
             "key": self.key,
@@ -304,6 +329,8 @@ class PluginType:
             result["uses"] = list(self.uses)
         if self.helpers:
             result["helpers"] = list(self.helpers)
+        if self.device_value_metadata is not None:
+            result["device_value_metadata"] = self.device_value_metadata.to_dict()
         return result
 
 
@@ -1083,10 +1110,11 @@ class CallableMeta:
 class ClaimSite:
     """One candidate construct offered to a plugin's ``claim`` or ``lower``.
 
-    ``kind`` is ``call`` (dotted call target in ``target``) or ``binop``
-    (operator token in ``target``); ``operand_types`` are the resolved operand
-    or argument types in positional order (plugin type keys or core type
-    names, ``None`` when unresolved).
+    ``kind`` is ``call`` (dotted call target in ``target``), ``binop``
+    (operator token in ``target``), or API-1.5 ``compare`` (one non-chained
+    comparison operator token in ``target``). ``operand_types`` are the
+    resolved operand or argument types in positional order (plugin type keys
+    or core type names, ``None`` when unresolved).
 
     At ``claim()`` time ``rule_id``/``result_type`` are ``None`` (the claim
     has not happened yet). At ``lower()`` time core fills them with the
@@ -1281,6 +1309,10 @@ class LoweringContext:
     # Old construction that omits both fields remains valid (pyo3 / None).
     backend: str = LOWERING_BACKEND_PYO3
     artifact_profile: ArtifactProfile | None = None
+    # Plugin API 1.6 addition. Populated only after Core resolves and validates
+    # a matching provider plan for the exact accelerator artifact profile.
+    # CPU-only and legacy paths retain None.
+    device_authorization: DeviceLoweringAuthorization | None = None
 
     def __post_init__(self) -> None:
         """Validate the closed backend set for API 1.4 fields."""
@@ -1293,6 +1325,13 @@ class LoweringContext:
             raise ValueError(
                 "LoweringContext.artifact_profile is required when backend is "
                 f"{LOWERING_BACKEND_STANDALONE_RUST!r}"
+            )
+        if self.device_authorization is not None and not isinstance(
+            self.device_authorization, DeviceLoweringAuthorization
+        ):
+            raise ValueError(
+                "LoweringContext.device_authorization must be "
+                "DeviceLoweringAuthorization or None"
             )
 
 

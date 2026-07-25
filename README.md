@@ -5,12 +5,21 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio **0.1.5** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-23 with plugin API **1.4**, tooling contract
-**2.24.0**, and readiness policy **11**, superseding 0.1.4. It finds
+Rextio **0.1.6** is an alpha-stage local build tool for Python projects,
+published to PyPI on 2026-07-26 with plugin API **1.6**, tooling contract
+**2.27.0**, and readiness policy **11**, superseding 0.1.5. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
+
+**0.1.6 Release Train E foundation:** this published release adds bounded
+plugin comparison expressions, Device Provider API 1 selection/preflight/build
+wiring, and fail-closed static device-domain lowering authorization. An
+accelerator-bearing plugin type contributes exact device/runtime requirements,
+and an API-1.6 lowerer receives only a redacted authorization after one
+explicitly selected provider has matched and preflighted that profile. Core
+itself does not add Torch or TensorFlow CUDA lowering, certify accelerator
+execution, or make a CUDA support claim.
 
 **0.1.5 Release Train C:** this published release adds experimental host source/
 artifact planning, a narrow initializer-before-main Rust executable slice, and
@@ -580,6 +589,8 @@ Common settings:
 | `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
 | `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
 | `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
+| `[target] device_provider` / `device_capability` | — | `REXTIO_DEVICE_PROVIDER` / `REXTIO_DEVICE_CAPABILITY` |
+| `[target.device_options]` | — | `REXTIO_DEVICE_OPTIONS` |
 | `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
 | `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
 | `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
@@ -601,7 +612,27 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.5.
+Rust is the only implemented native target in 0.1.6.
+
+Device-provider selection is an advanced, experimental build integration. It
+loads only the explicitly named `rextio.device_providers` entry point and
+preflights it before generated-output mutation. An accelerator provider also
+requires a matching typed `DeviceRequirement` emitted by a domain lowering;
+configuration alone does not make current CPU-only Torch or TensorFlow routes
+CUDA-capable. `[target.device_options]` is not a secret store: raw values are
+passed to the selected provider, while Rextio reports only option keys and a
+binding digest. `rextio capabilities` reports a configured provider/capability
+identity without provider discovery, preflight, or option disclosure. See
+[Device Provider API 1](docs/specs/device-provider.md).
+
+Core 0.1.6 adds plugin API **1.6** / tooling contract **2.27.0** static
+device-domain authorization. An accepted
+accelerator plugin type contributes structured artifact requirements, and its
+lowerer receives a minimal redacted authorization only after the explicitly
+selected provider has matched and preflighted that exact profile. CPU-only and
+fallback-only plugin types remain unchanged; mixed/conflicting domains,
+non-zero GPU ordinals, missing providers, and wrong capabilities fail closed.
+This Core contract does not itself add Torch or TensorFlow CUDA lowering.
 
 Rextio plugins are ordinary Python packages installed with tools such as `pip`
 or `uv`. A plugin package exposes metadata through the `rextio.plugins` entry
@@ -997,7 +1028,11 @@ callable-body/native-symbol, and declared-schema claim metadata, with
 version-gated static `bool`/`str` named-keyword literals. **0.1.5** ships
 additive plugin API **1.4** for optional, fail-closed standalone artifact
 capability. API 1.1/1.2/1.3 providers keep their legacy shapes; API 1.4 remains
-Experimental. The
+Experimental. Core 0.1.6 additionally defines API **1.5**
+comparison/result-only-resident support and API **1.6** structured static
+device metadata plus Core-validated lowering authorization. API 1.1-1.5
+providers remain compatible and never receive a non-`None` device
+authorization. The
 first-party [rextio-numpy](https://github.com/rextio/rextio-numpy) plugin is
 installed separately (core has no reverse dependency on it). PyPI **0.1.1** is
 the published API-1.2 consumer with literal-axis and fusion support and
@@ -1100,7 +1135,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.5 supports a deliberately small subset. This is the code
+Rextio 0.1.6 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:

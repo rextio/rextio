@@ -5,9 +5,9 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio **0.1.5** は、plugin API **1.4**、tooling contract **2.24.0**、
-readiness policy **11** として 2026-07-23 に PyPI 公開された alpha 段階の
-ローカルビルドツールです。0.1.4 を置き換えます。型付きの
+Rextio **0.1.6** は、plugin API **1.6**、tooling contract **2.27.0**、
+readiness policy **11** として 2026-07-26 に PyPI 公開された alpha 段階の
+ローカルビルドツールです。0.1.5 を置き換えます。型付きの
 Python 関数のうち安全に Rust へ下ろせるものを見つけて PyO3 で事前
 （ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
@@ -274,7 +274,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.5 で実装済みの native ターゲットは Rust だけです。
+0.1.6 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -321,6 +321,11 @@ route/status/rejection の意味を変えず、分離された promotion assessm
 Core **0.1.5** は plugin API **1.4**、tooling contract **2.24.0**、readiness
 policy **11** として 2026-07-23 に公開されました。Train C の host source-AOT、
 実行ファイル、限定 Full-C6/C5.2 サーフェスは引き続き Experimental/Alpha です。
+Core **0.1.6** は plugin API **1.6**、tooling contract **2.27.0** として
+2026-07-26 に公開されました。限定的なプラグイン比較式、Device Provider
+API 1 の選択・preflight・ビルド接続、静的 device-domain lowering 認可を
+追加しますが、Core 自体は CUDA framework サポートやアクセラレータ実行の
+認証を主張しません。
 一般的な依存 lowering はバンドルされません。`try-native` は明示的な計画
 ポリシーで、安全な direct lowering がなければやはり
 fallback します。
@@ -405,7 +410,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.5 は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.6 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:

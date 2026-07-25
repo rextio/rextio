@@ -80,6 +80,47 @@ def test_capabilities_fingerprint_tracks_cli_overrides(tmp_path: Path, capsys) -
     assert default["config_fingerprint"] != overridden["config_fingerprint"]
 
 
+def test_capabilities_reports_configured_device_identity_without_probe_or_options(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "/private/cuda-toolkit"
+    (tmp_path / "rextio.toml").write_text(
+        f"""
+[target]
+device_provider = "rextio-device-cuda"
+device_capability = "cuda-linux-x86_64"
+
+[target.device_options]
+toolkit_root = "{secret}"
+""",
+        encoding="utf-8",
+    )
+
+    from rextio.devices import loader as device_loader
+
+    def unexpected_device_discovery(_entry_points):
+        raise AssertionError("capabilities must not discover or import device providers")
+
+    monkeypatch.setattr(device_loader, "_entry_points", unexpected_device_discovery)
+    manifest = run_capabilities_json(tmp_path, capsys)
+
+    assert manifest["device_provider_contract"] == {
+        "status": "configured",
+        "discovery": False,
+        "provider_selected": True,
+        "selection": {
+            "provider_id": "rextio-device-cuda",
+            "capability_id": "cuda-linux-x86_64",
+        },
+        "local_probe_performed": False,
+    }
+    serialized = json.dumps(manifest, sort_keys=True)
+    assert secret not in serialized
+    assert "toolkit_root" not in serialized
+
+
 def test_capabilities_text_output_summarizes_manifest(tmp_path: Path, capsys) -> None:
     assert main(["capabilities", str(tmp_path)]) == 0
     out = capsys.readouterr().out

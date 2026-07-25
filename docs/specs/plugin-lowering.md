@@ -1,14 +1,15 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** published core **0.1.5** ships plugin API **1.4**, tooling
-contract **2.24.0**, and readiness policy **11**. The standalone artifact
+**Release framing:** published core **0.1.6** ships plugin API **1.6**, tooling
+contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
+1.4 and tooling contract 2.24.0. The standalone artifact
 capability shape below first appeared in unpublished/internal intermediate
-tooling contract **2.4.0**. The published producer is **2.24.0** because
-C5.1/C6.1-C6.15 and the strict Full-C6/C5.2 Alpha add unrelated external-source
+tooling contract **2.4.0**. Core 0.1.5's published producer was **2.24.0**
+because C5.1/C6.1-C6.15 and the strict Full-C6/C5.2 Alpha add unrelated external-source
 inventory, authorization-contract evidence, host-extension wheel artifact
 evidence, its opt-in required gate, and a direct native runtime linkage
 inventory plus an always-blocked distribution-readiness assessment and bounded
@@ -18,8 +19,8 @@ graph observation, plus scoped plugin-free source-transformation replay
 verification, scoped Cargo component-license policy verification, and scoped
 project-source license-policy verification, C6.13 scoped analysis-input
 verification, C6.14 compact artifact-policy coverage inventory, and C6.15
-scoped artifact-class policy verification. Plugin API
-remains **1.4**; C6.4-C6.15 do
+scoped artifact-class policy verification. The 0.1.5 plugin API
+remained **1.4**; C6.4-C6.15 do
 not add runtime-bearing plugin support. These 0.1.5 surfaces remain
 Experimental/Alpha and do not claim broad Full C6 or general package AOT.
 
@@ -43,6 +44,46 @@ plugin claim. The frozen Full-C6 profile
 requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
+
+Core 0.1.6 implements plugin API **1.6** and tooling contract **2.27.0**.
+API 1.5 was introduced by contract 2.25.0 with one
+explicitly version-gated
+``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
+closed token set ``== != < <= > >=``. Core offers it only when at least one
+operand is owned by an API-1.5 plugin, preserves the claimed result type
+(including a non-scalar plugin type) through later claimed calls, and carries
+the exact direct operands through IR to ``lower()``. Providers below 1.5 are
+never offered these sites; chained comparisons, identity/membership operators,
+and unclaimed plugin comparisons remain fail-closed. A claimed comparison must
+state a non-empty result type registered either as a Core type or plugin type;
+`result_type=None` is an invalid claim. Peek inference never chooses between
+multiple claiming providers, even if they report the same result type; the
+authoritative recording pass reports that overlap.
+
+API 1.5 also permits a **result-only resident type** to declare
+`annotations=()`. It remains registered by stable key for claim results,
+subsequent claim operands, IR, and codegen, but contributes no annotation-map
+entry and therefore cannot be forged in a Python signature. Returning one
+directly or inferring it into a parameter/return signature is an RXT092
+native-boundary escape; auto-mode retains that blocker in its promotion
+assessment. This exception is valid only when `conversion is None` and the
+provider advertises API 1.5 or newer. Materialized types and API 1.1-1.4
+resident types still require at least one non-empty dotted annotation spelling.
+
+API 1.6 adds optional structured `PluginType.device_value_metadata`. Core reads
+it only for plugin type keys used by accepted native signatures and claims,
+derives deterministic artifact device/runtime requirements, and rejects mixed
+CPU/accelerator, conflicting accelerator domains, and non-zero accelerator
+ordinals before codegen. CPU-only and fallback-only types do not change an
+artifact profile. A selected provider must resolve and preflight the exact
+profile before codegen. Only then does Core pass a redacted immutable
+`LoweringContext.device_authorization` to API-1.6 providers; older providers
+always observe `None`. An accelerator claim without a matching authorization
+fails closed. Authorization matching covers the canonical device/backend,
+domain runtime/reuse, features, optional layout projection, and memory spaces.
+Static dtype/rank/layout/runtime/reuse facts belong to the plugin type; target
+architecture remains an explicit build/provider-selection fact and is not
+rechecked as type metadata.
 
 ## Purpose
 
@@ -74,6 +115,7 @@ class PluginType:
     uses: tuple[str, ...] = ()    # plugin API 1.3: `use` lines this type OWNS
     helpers: tuple[str, ...] = () # plugin API 1.3: module-level items this type
                                   # OWNS (fn/struct/const), deduplicated by text
+    device_value_metadata: DeviceValueMetadata | None = None  # plugin API 1.6
 ```
 
 - **Type-level module support (`uses`/`helpers`, plugin API 1.3).** A
@@ -126,9 +168,11 @@ def lower(self, claimed: ClaimSite, ctx: LoweringContext) -> LoweredExpr: ...
 # at lower() time the site carries the claim's own rule_id and result_type
 ```
 
-- `ClaimSite`: one candidate construct — a call or binary operation
+- `ClaimSite`: one candidate construct — a call, binary operation, or API-1.5
+  non-chained comparison
   (`+ - * / % @` — matmul is offered to plugins BEFORE core's arithmetic
-  allow-set rejects it, so a plugin may claim `@`). One candidate construct
+  allow-set rejects it, so a plugin may claim `@`; comparison tokens are
+  `== != < <= > >=`). One candidate construct
   whose operand/argument types include a plugin type or a covered symbol
   (`covers()` decides which sites are offered to which plugin). Carries the
   resolved operand types and the dotted call target. The source-location
@@ -407,7 +451,13 @@ in §9 completes the same surface):
   the value's exact native representation (e.g. `petgraph::Graph<...>`), used
   verbatim in native signatures. The IR carries it as
   `RxtPluginType(resident=True)`; `RxtPluginType.resident=False` is the
-  materialized form.
+  materialized form. API 1.5 adds the narrower result-only form:
+  `annotations=()` is accepted only for a resident type from a provider
+  advertising API 1.5 or newer. It remains available by key to claim chaining
+  but is absent from source-annotation maps. A direct return or inferred
+  parameter/return signature is rejected as RXT092; it must be consumed by a
+  later claim inside the same native body. Every materialized type and every
+  pre-1.5 resident type must declare an annotation spelling.
 
 - **Production / storage / consumption.** A resident value is produced by a
   claimed plugin expression whose `Claimed.result_type` is the resident type
@@ -583,12 +633,30 @@ result equivalence with hypothesis — the same posture as core's own
   exact `rust-crate` / `host-executable` profiles. Core advertises
   `PLUGIN_API_VERSION = "1.4"`; older 1.x providers keep their projected legacy
   shapes. API 1.4 remains Experimental.
+- **Plugin API 1.5** (additive, same major; published as part of core **0.1.6**
+  on 2026-07-26): adds non-chained
+  comparison claims and result-only resident vocabulary entries. A result-only
+  entry uses `conversion=None` and `annotations=()`: it is registered only by
+  stable key and can flow from one claim into another, but source annotations
+  cannot name it. Codegen rechecks that every `compare` claim still has an
+  API-1.5 provider, guarding against stale IR/provider-version drift.
+- **Plugin API 1.6** (additive, same major; published with core **0.1.6** on
+  2026-07-26): adds optional
+  structured static device-value metadata to `PluginType` and a defaulted
+  `LoweringContext.device_authorization`. Used accepted accelerator types
+  determine exact artifact device/runtime requirements. Provider resolution
+  and preflight must succeed before an API-1.6 lowerer receives the minimal
+  authorization; no selection, a wrong backend/capability, a conflicting
+  domain, or an unauthorized claim fails closed. API 1.1-1.5 providers never
+  receive a non-`None` authorization.
 - Everything in the 1.1 surface ships in the **0.1.1 line** as Experimental.
   The 1.2 claim metadata / fusion tree surface ships on the **0.1.2** core
   line without a package major bump (Wave 2 core gate; Wave 3 package
   release is separate). The 1.3 resident/chaining/metadata surface ships on
   the **0.1.3** core line without a package major bump. The 1.4 standalone
-  artifact-capability surface ships on the **0.1.5** core line.
+  artifact-capability surface ships on the **0.1.5** core line. The 1.5
+  comparison/result-only-resident surface and 1.6 device-domain authorization
+  surface ship together on the **0.1.6** core line.
 - **Related-package publish order** for the 1.2 consumer surface (strict, not
   simultaneous): **rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1**. The
   published rextio-numpy 0.1.1 (literal-axis / fusion / leaves-mode) requires

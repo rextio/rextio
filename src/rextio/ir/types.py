@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
+from rextio.devices.api import DeviceValueMetadata
+
 
 class RxtType:
     """Base class for every supported Rextio type.
@@ -213,6 +215,7 @@ class RxtPluginType(RxtType):
     # claims) still emits the symbols its conversion/native type references.
     uses: tuple[str, ...] = ()
     helpers: tuple[str, ...] = ()
+    device_value_metadata: DeviceValueMetadata | None = None
 
     def display_name(self) -> str:
         """Return the human-readable name of this type (the plugin type key)."""
@@ -238,6 +241,8 @@ class RxtPluginType(RxtType):
             result["uses"] = list(self.uses)
         if self.helpers:
             result["helpers"] = list(self.helpers)
+        if self.device_value_metadata is not None:
+            result["device_value_metadata"] = self.device_value_metadata.to_dict()
         return result
 
 

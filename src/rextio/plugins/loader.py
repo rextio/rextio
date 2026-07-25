@@ -136,11 +136,28 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
                 f"{'.'.join(str(part) for part in provider_api)!r}; type-level "
                 "support requires api_version >= 1.3"
             )
+        if plugin_type.device_value_metadata is not None and provider_api < (1, 6):
+            raise PluginError(
+                f"plugin {plugin.id!r} type {plugin_type.key!r} declares static "
+                "device-value metadata but declares plugin-API "
+                f"{'.'.join(str(part) for part in provider_api)!r}; structured "
+                "device metadata requires api_version >= 1.6"
+            )
         if not plugin_type.key.startswith(key_prefix):
             raise PluginError(
                 f"plugin {plugin.id!r} type key {plugin_type.key!r} must be namespaced {key_prefix!r}"
             )
-        if not plugin_type.annotations:
+        # API 1.5 may expose a resident type that exists only as the result of
+        # one claimed expression and as an operand to another. With no source
+        # spellings it cannot be forged in a Python signature, but it still
+        # participates in the by-key analyzer/IR vocabulary. Materialized
+        # types and pre-1.5 resident types retain the historical requirement.
+        result_only_resident = (
+            plugin_type.is_resident
+            and provider_api >= (1, 5)
+            and not plugin_type.annotations
+        )
+        if not plugin_type.annotations and not result_only_resident:
             raise PluginError(
                 f"plugin {plugin.id!r} type {plugin_type.key!r} declares no annotation spellings"
             )

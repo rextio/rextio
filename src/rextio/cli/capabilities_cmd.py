@@ -89,6 +89,26 @@ def build_manifest(
         target_plan.plugins.rule_records, key=lambda record: (record.provider, record.id)
     )
     rules = (*core_rule_records(), *plugin_rules)
+    device_provider_contract: dict[str, object] = {
+        "status": "draft",
+        "discovery": False,
+        "provider_selected": False,
+        "local_probe_performed": False,
+    }
+    if config.target.device_provider is not None:
+        # The config loader requires provider/capability to appear together.
+        # Capabilities reports only their public configured identity: it never
+        # imports the provider, runs preflight, or exposes option keys/values.
+        device_provider_contract = {
+            "status": "configured",
+            "discovery": False,
+            "provider_selected": True,
+            "selection": {
+                "provider_id": config.target.device_provider,
+                "capability_id": config.target.device_capability,
+            },
+            "local_probe_performed": False,
+        }
     return {
         "contract_version": TOOLING_CONTRACT_VERSION,
         "rextio_version": __version__,
@@ -105,12 +125,7 @@ def build_manifest(
             "kinds": [kind.value for kind in ArtifactKind],
             "host_executable_fallbacks": [strategy.value for strategy in FallbackStrategy],
         },
-        "device_provider_contract": {
-            "status": "draft",
-            "discovery": False,
-            "provider_selected": False,
-            "local_probe_performed": False,
-        },
+        "device_provider_contract": device_provider_contract,
         "type_capabilities": {
             "scalar_types": sorted(SCALAR_TYPES),
             "numeric_types": sorted(NUMERIC_TYPES),
