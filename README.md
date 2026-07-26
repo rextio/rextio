@@ -16,20 +16,22 @@ fallback code - same imports, same behavior.
 ## Verified CPU benchmark snapshot
 
 Same Python source and deterministic inputs; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-Versions: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.2, rextio-pandas 0.1.2, rextio-tensorflow 0.1.2, rextio-torch 0.1.2.
+Versions: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@7316c47393a8, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@346ca58148ed, rextio-torch 0.1.2.
 
 | Domain | Python source | Rextio native | Speedup (source ÷ native) |
 | --- | ---: | ---: | ---: |
-| Core hybrid | 7.915661 ms | 0.138143 ms | 57.712× |
-| NumPy mixed fusion | 0.041840 ms | 0.086150 ms | 0.485× |
-| NetworkX Dijkstra | 50.581281 ms | 13.472185 ms | 3.751× |
-| pandas Series.map | 179.454594 ms | 2.719183 ms | 66.002× |
-| PyTorch CPU deep MLP | 0.388957 ms | 0.383640 ms | 1.014× |
-| TensorFlow CPU eager chain | 0.727017 ms | 0.738452 ms | 0.984× |
+| Core hybrid | 7.989583 ms | 0.140795 ms | 57.392× |
+| NumPy mixed fusion | 0.052636 ms | 0.174234 ms | 0.302× |
+| NetworkX Dijkstra | 53.579948 ms | 13.893143 ms | 3.868× |
+| pandas Series.map | 179.848385 ms | 2.790601 ms | 65.172× |
+| PyTorch CPU deep MLP | 0.390064 ms | 0.384463 ms | 1.014× |
+| TensorFlow CPU eager chain | 0.650397 ms | 0.653509 ms | 0.997× |
 
 These are workload-specific results, not library-wide performance claims. Build, import, first-call, and worker-process startup are excluded from these steady-state rows. The Core executable is separate because process startup is included. NumPy `dot` remains a BLAS-owned negative control; a manually vectorized pandas/NumPy rewrite may be faster. Ratios below 1× mean Rextio was slower; values near 1× indicate parity, not a material speedup.
 
-[Canonical report](https://github.com/rextio/rextio-benchmark/blob/e62a3f8fb1637f52288873fb077ba4efba0ead59/results/canonical/cohort-15fa2645c757b4a23541587f7d0757107952f7c6ade3386bcaacdbdd9cce12d8/report.md) · [measurement commit](https://github.com/rextio/rextio-benchmark/commit/ff7f4fea34199d850bed0446a8a223ef730ddf17) · [evidence commit](https://github.com/rextio/rextio-benchmark/commit/e62a3f8fb1637f52288873fb077ba4efba0ead59)
+Plugin versions marked candidate are unreleased Git commit pins, not PyPI rextio-numpy 0.1.3 or rextio-tensorflow 0.1.3 releases.
+
+[Canonical report](https://github.com/rextio/rextio-benchmark/blob/fced0b803b823e7855ec6c52277a58aebb0aa8b9/results/canonical/cohort-becd31f91c54dcf398f7b3c48abdbb353c16665cacf5d102af7a03072d2b170a/report.md) · [measurement commit](https://github.com/rextio/rextio-benchmark/commit/afd73d76107f9b7f352c8f5bb8a0ed382051f8bc) · [evidence commit](https://github.com/rextio/rextio-benchmark/commit/fced0b803b823e7855ec6c52277a58aebb0aa8b9)
 <!-- rextio-benchmark:end -->
 
 **0.1.6 Release Train E foundation:** this published release adds bounded

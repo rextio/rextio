@@ -17,20 +17,22 @@ import 경로도, 동작도 그대로입니다.
 ## 검증된 CPU 벤치마크 스냅샷
 
 동일한 Python 소스와 결정론적 입력; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-버전: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.2, rextio-pandas 0.1.2, rextio-tensorflow 0.1.2, rextio-torch 0.1.2.
+버전: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@7316c47393a8, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@346ca58148ed, rextio-torch 0.1.2.
 
 | 영역 | Python 소스 | Rextio native | 속도비 (소스 ÷ native) |
 | --- | ---: | ---: | ---: |
-| Core hybrid | 7.915661 ms | 0.138143 ms | 57.712× |
-| NumPy mixed fusion | 0.041840 ms | 0.086150 ms | 0.485× |
-| NetworkX Dijkstra | 50.581281 ms | 13.472185 ms | 3.751× |
-| pandas Series.map | 179.454594 ms | 2.719183 ms | 66.002× |
-| PyTorch CPU deep MLP | 0.388957 ms | 0.383640 ms | 1.014× |
-| TensorFlow CPU eager chain | 0.727017 ms | 0.738452 ms | 0.984× |
+| Core hybrid | 7.989583 ms | 0.140795 ms | 57.392× |
+| NumPy mixed fusion | 0.052636 ms | 0.174234 ms | 0.302× |
+| NetworkX Dijkstra | 53.579948 ms | 13.893143 ms | 3.868× |
+| pandas Series.map | 179.848385 ms | 2.790601 ms | 65.172× |
+| PyTorch CPU deep MLP | 0.390064 ms | 0.384463 ms | 1.014× |
+| TensorFlow CPU eager chain | 0.650397 ms | 0.653509 ms | 0.997× |
 
 각 수치는 해당 workload의 결과이며 라이브러리 전체 성능을 뜻하지 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
 
-[정식 보고서](https://github.com/rextio/rextio-benchmark/blob/e62a3f8fb1637f52288873fb077ba4efba0ead59/results/canonical/cohort-15fa2645c757b4a23541587f7d0757107952f7c6ade3386bcaacdbdd9cce12d8/report.md) · [측정 커밋](https://github.com/rextio/rextio-benchmark/commit/ff7f4fea34199d850bed0446a8a223ef730ddf17) · [증거 커밋](https://github.com/rextio/rextio-benchmark/commit/e62a3f8fb1637f52288873fb077ba4efba0ead59)
+candidate로 표시된 플러그인 버전은 PyPI rextio-numpy 0.1.3 또는 rextio-tensorflow 0.1.3 릴리스가 아니라 미배포 Git 커밋 핀입니다.
+
+[정식 보고서](https://github.com/rextio/rextio-benchmark/blob/fced0b803b823e7855ec6c52277a58aebb0aa8b9/results/canonical/cohort-becd31f91c54dcf398f7b3c48abdbb353c16665cacf5d102af7a03072d2b170a/report.md) · [측정 커밋](https://github.com/rextio/rextio-benchmark/commit/afd73d76107f9b7f352c8f5bb8a0ed382051f8bc) · [증거 커밋](https://github.com/rextio/rextio-benchmark/commit/fced0b803b823e7855ec6c52277a58aebb0aa8b9)
 <!-- rextio-benchmark:end -->
 
 ```text

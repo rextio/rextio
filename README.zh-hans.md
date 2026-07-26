@@ -15,20 +15,22 @@ Rextio **0.1.6** 是 alpha 阶段本地构建工具，已于 2026-07-26 发布�
 ## 已验证的 CPU 基准快照
 
 相同的 Python 源码和确定性输入; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-版本: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.2, rextio-pandas 0.1.2, rextio-tensorflow 0.1.2, rextio-torch 0.1.2.
+版本: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@7316c47393a8, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@346ca58148ed, rextio-torch 0.1.2.
 
 | 领域 | Python 源码 | Rextio native | 加速比 (source ÷ native) |
 | --- | ---: | ---: | ---: |
-| Core hybrid | 7.915661 ms | 0.138143 ms | 57.712× |
-| NumPy mixed fusion | 0.041840 ms | 0.086150 ms | 0.485× |
-| NetworkX Dijkstra | 50.581281 ms | 13.472185 ms | 3.751× |
-| pandas Series.map | 179.454594 ms | 2.719183 ms | 66.002× |
-| PyTorch CPU deep MLP | 0.388957 ms | 0.383640 ms | 1.014× |
-| TensorFlow CPU eager chain | 0.727017 ms | 0.738452 ms | 0.984× |
+| Core hybrid | 7.989583 ms | 0.140795 ms | 57.392× |
+| NumPy mixed fusion | 0.052636 ms | 0.174234 ms | 0.302× |
+| NetworkX Dijkstra | 53.579948 ms | 13.893143 ms | 3.868× |
+| pandas Series.map | 179.848385 ms | 2.790601 ms | 65.172× |
+| PyTorch CPU deep MLP | 0.390064 ms | 0.384463 ms | 1.014× |
+| TensorFlow CPU eager chain | 0.650397 ms | 0.653509 ms | 0.997× |
 
 这些数值仅代表对应 workload，并非对整个库的性能声明。这些 steady-state 行不含构建、import、首次调用和 worker 进程启动。Core 可执行文件因包含进程启动而单独报告。NumPy `dot` 保留为 BLAS negative control；手工向量化的 pandas/NumPy 重写可能更快。低于 1× 表示 Rextio 更慢；接近 1× 表示性能相当，而非实质性加速。
 
-[正式报告](https://github.com/rextio/rextio-benchmark/blob/e62a3f8fb1637f52288873fb077ba4efba0ead59/results/canonical/cohort-15fa2645c757b4a23541587f7d0757107952f7c6ade3386bcaacdbdd9cce12d8/report.md) · [测量提交](https://github.com/rextio/rextio-benchmark/commit/ff7f4fea34199d850bed0446a8a223ef730ddf17) · [证据提交](https://github.com/rextio/rextio-benchmark/commit/e62a3f8fb1637f52288873fb077ba4efba0ead59)
+标为 candidate 的插件版本是未发布的 Git 提交固定，不是 PyPI 上的 rextio-numpy 0.1.3 或 rextio-tensorflow 0.1.3 发行版。
+
+[正式报告](https://github.com/rextio/rextio-benchmark/blob/fced0b803b823e7855ec6c52277a58aebb0aa8b9/results/canonical/cohort-becd31f91c54dcf398f7b3c48abdbb353c16665cacf5d102af7a03072d2b170a/report.md) · [测量提交](https://github.com/rextio/rextio-benchmark/commit/afd73d76107f9b7f352c8f5bb8a0ed382051f8bc) · [证据提交](https://github.com/rextio/rextio-benchmark/commit/fced0b803b823e7855ec6c52277a58aebb0aa8b9)
 <!-- rextio-benchmark:end -->
 
 ```text
