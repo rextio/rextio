@@ -16,23 +16,21 @@ import 경로도, 동작도 그대로입니다.
 <!-- rextio-benchmark:start -->
 ## 검증된 CPU 벤치마크 스냅샷
 
-동일한 Python 소스와 결정론적 입력; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-버전: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@7316c47393a8, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@346ca58148ed, rextio-torch 0.1.2.
+동일한 Python 소스와 결정론적 입력; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**. Mac CPU에서 세 차례 실행했으며, 상단 표의 여섯 workload는 모두 **10% 안정성 veto**를 통과했습니다. 표는 시간순으로 첫 번째 적격 실행을 의도적으로 선택합니다.
+버전: 아직 릴리스되지 않은 정확한 Git 후보 rextio 0.1.7@b8b8ed11f6b7, rextio-numpy 0.1.3@cf461e677578, rextio-torch 0.1.3@1e92b24b154c, rextio-tensorflow 0.1.3@1fdb2e1cd91d; 릴리스된 rextio-networkx 0.1.1 및 rextio-pandas 0.1.2.
 
 | 영역 | Python 소스 | Rextio native | 속도비 (소스 ÷ native) |
 | --- | ---: | ---: | ---: |
-| Core hybrid | 7.989583 ms | 0.140795 ms | 57.392× |
-| NumPy mixed fusion | 0.052636 ms | 0.174234 ms | 0.302× |
-| NetworkX Dijkstra | 53.579948 ms | 13.893143 ms | 3.868× |
-| pandas Series.map | 179.848385 ms | 2.790601 ms | 65.172× |
-| PyTorch CPU deep MLP | 0.390064 ms | 0.384463 ms | 1.014× |
-| TensorFlow CPU eager chain | 0.650397 ms | 0.653509 ms | 0.997× |
+| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
+| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
+| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
+| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
+| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
+| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
 
-각 수치는 해당 workload의 결과이며 라이브러리 전체 성능을 뜻하지 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
+각 수치는 해당 workload의 결과이며 라이브러리 전체 성능이나 BLAS, libtorch, TensorFlow kernel 고유 가속을 뜻하지 않고 CUDA를 주장하지도 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. 세 번 실행한 중앙값 속도비는 Core 57.729×, NumPy 2.523×, NetworkX 3.679×, pandas 66.143×, Torch 1.017×, TensorFlow 1.040×입니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
 
-candidate로 표시된 플러그인 버전은 PyPI rextio-numpy 0.1.3 또는 rextio-tensorflow 0.1.3 릴리스가 아니라 미배포 Git 커밋 핀입니다.
-
-[정식 보고서](https://github.com/rextio/rextio-benchmark/blob/fced0b803b823e7855ec6c52277a58aebb0aa8b9/results/canonical/cohort-becd31f91c54dcf398f7b3c48abdbb353c16665cacf5d102af7a03072d2b170a/report.md) · [측정 커밋](https://github.com/rextio/rextio-benchmark/commit/afd73d76107f9b7f352c8f5bb8a0ed382051f8bc) · [증거 커밋](https://github.com/rextio/rextio-benchmark/commit/fced0b803b823e7855ec6c52277a58aebb0aa8b9)
+[정식 보고서](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [측정 커밋](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [증거 커밋](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
 <!-- rextio-benchmark:end -->
 
 ```text
