@@ -4,8 +4,9 @@
 
 **把符合條件的 typed Python 函式編譯為 Rust，其餘一切保留在 Python fallback 上。**
 
-Rextio **0.1.6** 是 alpha 階段本地建置工具，已於 2026-07-26 發佈至 PyPI，
-使用 plugin API **1.6**、tooling contract **2.27.0** 和 readiness policy
+Rextio **0.1.7** 是本分支的 Core 候選（plugin API **1.7**、tooling contract
+**2.28.0**）。最新 **已發佈** PyPI 仍為 **0.1.6**（2026-07-26；plugin API
+**1.6**、tooling contract **2.27.0** 和 readiness policy
 **11**，並取代 0.1.5。
 它找出可以安全下沉到 Rust
 的帶型別 Python 函式，用 PyO3 提前（ahead-of-time）編譯它們，其餘部分
@@ -261,7 +262,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.6 中唯一實作的 native 目標是 Rust。
+0.1.7 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -386,7 +387,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.6 刻意支援一個小的 subset。這個 subset 就是以 native
+Rextio 0.1.7 刻意支援一個小的 subset。這個 subset 就是以 native
 Rust 執行的程式碼。
 
 支援的型別:

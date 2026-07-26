@@ -1,10 +1,11 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (experimental tier). The current published producer is core
-**0.1.6**, released on 2026-07-26 with `contract_version` **`2.27.0`**, plugin
-API **1.6**, and readiness policy **11**, superseding core 0.1.5 / contract
-2.24.0. The Train C surfaces retained from 0.1.5 and the plugin/device
-contracts added in 0.1.6 remain Experimental/Alpha.
+Status: **draft** (experimental tier). The current candidate producer is core
+**0.1.7** with `contract_version` **`2.28.0`** and plugin API **1.7**. The
+latest published producer remains core **0.1.6** (2026-07-26;
+`contract_version` **`2.27.0`**, plugin API **1.6**, readiness policy **11**),
+superseding core 0.1.5 / contract 2.24.0. The Train C surfaces retained from
+0.1.5 and the plugin/device contracts added in 0.1.6 remain Experimental/Alpha.
 Consumers: rextio-agent-skill, rextio-lsp, rextio-vscode, third-party Rextio plugins
 
 ## Purpose
@@ -22,10 +23,10 @@ consume instead:
 
 ## Contract versioning
 
-Both JSON surfaces carry a top-level field. The published 0.1.6 producer emits:
+Both JSON surfaces carry a top-level field. The 0.1.7 candidate producer emits:
 
 ```json
-{ "contract_version": "2.27.0" }
+{ "contract_version": "2.28.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of

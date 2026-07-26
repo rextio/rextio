@@ -1,8 +1,9 @@
 # Rextio
 
-Rextio **0.1.6** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-26 with plugin API **1.6**, tooling contract
-**2.27.0**, and readiness policy **11**. It supersedes 0.1.5. It retains the
+Rextio **0.1.7** is the current Core candidate (plugin API **1.7**, tooling
+contract **2.28.0**). Latest published PyPI remains **0.1.6** (2026-07-26;
+plugin API **1.6**, tooling contract **2.27.0**, readiness policy **11**),
+superseding 0.1.5. It retains the
 experimental host source-AOT/executable and bounded Full-C6 + C5.2 Alpha from
 Release Train C, and adds bounded plugin comparison expressions, Device
 Provider API 1 selection/preflight/build wiring, and fail-closed static

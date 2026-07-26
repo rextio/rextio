@@ -5,14 +5,17 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio **0.1.6** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-26 with plugin API **1.6**, tooling contract
-**2.27.0**, and readiness policy **11**, superseding 0.1.5. It finds
+Rextio **0.1.7** is the current Core candidate on this branch (plugin API
+**1.7**, tooling contract **2.28.0**). The latest **published** PyPI release
+remains **0.1.6** (2026-07-26; plugin API **1.6**, tooling contract **2.27.0**,
+readiness policy **11**), superseding 0.1.5. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
-**0.1.6 Release Train E foundation:** this published release adds bounded
+**0.1.7 candidate:** optional plugin function-scope RAII guards (API 1.7 /
+contract 2.28.0) for used plugins on accepted generated native functions.
+**0.1.6 Release Train E foundation:** the published release adds bounded
 plugin comparison expressions, Device Provider API 1 selection/preflight/build
 wiring, and fail-closed static device-domain lowering authorization. An
 accelerator-bearing plugin type contributes exact device/runtime requirements,
@@ -612,7 +615,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.6.
+Rust is the only implemented native target in 0.1.7.
 
 Device-provider selection is an advanced, experimental build integration. It
 loads only the explicitly named `rextio.device_providers` entry point and
@@ -625,7 +628,7 @@ binding digest. `rextio capabilities` reports a configured provider/capability
 identity without provider discovery, preflight, or option disclosure. See
 [Device Provider API 1](docs/specs/device-provider.md).
 
-Core 0.1.6 adds plugin API **1.6** / tooling contract **2.27.0** static
+Core 0.1.7 candidate adds plugin API **1.7** / tooling contract **2.28.0** function-scope guards. Core 0.1.6 added plugin API **1.6** / tooling contract **2.27.0** static
 device-domain authorization. An accepted
 accelerator plugin type contributes structured artifact requirements, and its
 lowerer receives a minimal redacted authorization only after the explicitly
@@ -1054,7 +1057,8 @@ Core **0.1.5** was published on 2026-07-23 with plugin API **1.4**, tooling
 contract **2.24.0**, and readiness policy **11**. Its Train C surfaces remain
 Experimental/Alpha under the bounded scope described above.
 Core **0.1.6** was published on 2026-07-26 with plugin API **1.6**, tooling
-contract **2.27.0**, and Device Provider API **1**. It retains the same
+contract **2.27.0**, and Device Provider API **1**. Core **0.1.7** candidate
+adds plugin API **1.7** / contract **2.28.0** function-scope RAII guards. It retains the same
 readiness policy and fail-closed Alpha boundaries.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
@@ -1140,7 +1144,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.6 supports a deliberately small subset. This is the code
+Rextio 0.1.7 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:

@@ -1,11 +1,12 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6 → 1.7)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** published core **0.1.6** ships plugin API **1.6**, tooling
-contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
+**Release framing:** candidate core **0.1.7** implements plugin API **1.7** and
+tooling contract **2.28.0**. Published core **0.1.6** ships plugin API **1.6**,
+tooling contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
 1.4 and tooling contract 2.24.0. The standalone artifact
 capability shape below first appeared in unpublished/internal intermediate
 tooling contract **2.4.0**. Core 0.1.5's published producer was **2.24.0**
@@ -45,7 +46,9 @@ requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
 
-Core 0.1.6 implements plugin API **1.6** and tooling contract **2.27.0**.
+Core 0.1.7 candidate implements plugin API **1.7** and tooling contract **2.28.0**.
+API 1.7 adds optional function-scope RAII guards (§11). Core 0.1.6 implements
+plugin API **1.6** and tooling contract **2.27.0**.
 API 1.5 was introduced by contract 2.25.0 with one
 explicitly version-gated
 ``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
@@ -640,6 +643,9 @@ result equivalence with hypothesis — the same posture as core's own
   stable key and can flow from one claim into another, but source annotations
   cannot name it. Codegen rechecks that every `compare` claim still has an
   API-1.5 provider, guarding against stale IR/provider-version drift.
+- **Plugin API 1.7** (additive, same major; candidate with core **0.1.7**):
+  optional `function_scope_guard(ctx)` for used plugins; Core-owned let-bound
+  RAII guards; capabilities presence `function_scope_guard_declared`.
 - **Plugin API 1.6** (additive, same major; published with core **0.1.6** on
   2026-07-26): adds optional
   structured static device-value metadata to `PluginType` and a defaulted
@@ -1036,6 +1042,53 @@ host-executable profiles. A full positive end-to-end host-executable
 integration (entrypoint + plugin-capable call graph + cargo binary) may still
 be expanded beyond the rust-crate positive vertical slice; until then,
 unsupported or undeclared plugin reachability remains fail-closed pre-Cargo.
+
+## 11. Function-scope RAII guards (plugin API 1.7)
+
+Optional, independent of the all-or-none lowering members
+(`type_vocabulary` / `claim` / `lower` / `crate_dependencies`), but still
+requires a lowering-capable provider.
+
+```python
+@dataclass(frozen=True)
+class PluginFunctionScopeContext:
+    function_qualname: str
+    used_rule_ids: tuple[str, ...]     # sorted; this plugin's claims only
+    used_type_keys: tuple[str, ...]    # sorted; this plugin's type keys only
+    backend: str                       # "pyo3" | "standalone-rust"
+    artifact_profile: ArtifactProfile | None = None  # standalone only
+
+@dataclass(frozen=True)
+class PluginFunctionScopeGuard:
+    rust: str                          # one non-fallible expression
+    uses: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
+
+class RextioFunctionScopeGuardPlugin(Protocol):
+    def function_scope_guard(
+        self, ctx: PluginFunctionScopeContext
+    ) -> PluginFunctionScopeGuard | None: ...
+```
+
+- Presence requires `api_version >= 1.7` and a lowering provider (loader
+  fail-closed). Protocol stubs do not count as concrete declarations.
+- Core calls the hook only for plugins **used** by an accepted generated
+  native function (owned claim rule ids and/or directly used namespaced type
+  keys). Unused installed plugins are excluded.
+- Core owns collision-free binding names
+  (`__rextio_plugin_scope_guard_<plugin>`), let-binds guards at the very
+  beginning of the function (before conversions/body), ordered by plugin id,
+  and keeps each binding alive to lexical end so Rust `Drop` covers normal
+  return, early return, and error propagation.
+- At most one non-fallible expression per used plugin per function. Empty,
+  multiline, statement-like, or fallible (`?`) declarations fail closed as
+  `RustCodegenError`. Hook exceptions and wrong return types likewise.
+- PyO3 always supports the hook. Standalone rust-crate / host-executable only
+  when the same plugin/function already passes `artifact_capability`/profile
+  authorization; undeclared uses/helpers fail closed without widening
+  eligibility.
+- `rextio capabilities` reports presence-only `function_scope_guard_declared`
+  (no hook execution).
 
 ## Non-goals
 
