@@ -153,9 +153,7 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
         # participates in the by-key analyzer/IR vocabulary. Materialized
         # types and pre-1.5 resident types retain the historical requirement.
         result_only_resident = (
-            plugin_type.is_resident
-            and provider_api >= (1, 5)
-            and not plugin_type.annotations
+            plugin_type.is_resident and provider_api >= (1, 5) and not plugin_type.annotations
         )
         if not plugin_type.annotations and not result_only_resident:
             raise PluginError(
@@ -488,25 +486,6 @@ def _artifact_capability_declared(
     return True
 
 
-def _provider_declares_concrete_function_scope_guard(provider: Any) -> bool:
-    """Return whether a non-Protocol class in the MRO defines the hook.
-
-    Inheritance of a Protocol that lists ``function_scope_guard`` must not count
-    as a declaration (Protocol stubs are callable but not implementations).
-    """
-    for cls in type(provider).__mro__:
-        if _is_protocol_class(cls):
-            continue
-        if "function_scope_guard" not in cls.__dict__:
-            continue
-        attr = cls.__dict__["function_scope_guard"]
-        if isinstance(attr, (staticmethod, classmethod)):
-            attr = attr.__func__
-        if callable(attr):
-            return True
-    return False
-
-
 def _function_scope_guard_declared(
     plugin: RextioPlugin, provider: Any, *, lowering_provided: bool
 ) -> bool:
@@ -516,8 +495,14 @@ def _function_scope_guard_declared(
     pre-1.7 provider that implements the hook is a load error (fail closed).
     Describe-only (non-lowering) providers may not declare the hook: scope
     guards only have meaning for lowering providers.
+
+    Concrete-hook detection is delegated to
+    :func:`rextio.plugins.function_scope.provider_declares_function_scope_guard`
+    via a local import to avoid a module-load cycle.
     """
-    if not _provider_declares_concrete_function_scope_guard(provider):
+    from rextio.plugins.function_scope import provider_declares_function_scope_guard
+
+    if not provider_declares_function_scope_guard(provider):
         return False
     if not lowering_provided:
         raise PluginError(

@@ -48,9 +48,9 @@ from rextio.plugins.api import (
 )
 from rextio.plugins.capabilities import StandalonePluginContext, claim_plugin_type_keys
 from rextio.plugins.function_scope import (
+    allocate_function_scope_guard_bindings,
     build_function_scope_context,
     collect_function_plugin_usage,
-    core_owned_guard_binding_name,
     lowering_backend_for_mode,
     resolve_function_scope_guard,
 )
@@ -889,7 +889,10 @@ class _FunctionRenderer:
                     "requires standalone artifact capability authorization"
                 )
             artifact_profile = self.standalone.profile
-        prelude: list[str] = []
+        # Resolve hooks first in sorted plugin-id order, then allocate ordinal
+        # bindings only for plugins that actually emit a guard (still ordered
+        # by plugin id so collisions cannot arise from id sanitization).
+        resolved: list[tuple[str, object]] = []
         for plugin_id in sorted(usage):
             provider = self.plugin_providers.get(plugin_id)
             if provider is None:
@@ -921,7 +924,11 @@ class _FunctionRenderer:
             self.plugin_uses.update(guard.uses)
             for helper in guard.helpers:
                 self.plugin_helpers.setdefault(helper)
-            binding = core_owned_guard_binding_name(plugin_id)
+            resolved.append((plugin_id, guard))
+        bindings = allocate_function_scope_guard_bindings(plugin_id for plugin_id, _ in resolved)
+        prelude: list[str] = []
+        for plugin_id, guard in resolved:
+            binding = bindings[plugin_id]
             prelude.append(f"let {binding} = {guard.rust};")
         return prelude
 
@@ -1886,9 +1893,7 @@ class _FunctionRenderer:
         # observes them; a legacy provider always sees the pre-1.3 site shape.
         is_api_13 = _plugin_api_at_least(provider_api, 1, 3)
         ctx_device_authorization = (
-            self.device_authorization
-            if _plugin_api_at_least(provider_api, 1, 6)
-            else None
+            self.device_authorization if _plugin_api_at_least(provider_api, 1, 6) else None
         )
         receiver_binding: str | None = None
         ctx_receiver: str | None = None

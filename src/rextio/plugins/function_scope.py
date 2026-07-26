@@ -1,25 +1,22 @@
 """Plugin API 1.7 function-scope RAII guard resolution and validation.
 
-A used API-1.7 plugin may return at most one non-fallible Rust guard expression
-plus validated ``use`` lines and helper items. Core owns collision-free binding
-names and emits let-bound guards at the start of accepted generated native
-functions so Rust ``Drop`` covers normal return, early return, and error paths.
+A used API-1.7 plugin may return at most one non-fallible zero-argument Rust
+path-call expression plus validated ``use`` lines and helper items. Core owns
+collision-free ordinal bindings and emits let-bound guards at the start of
+accepted generated native functions so Rust ``Drop`` covers normal return,
+early return, and error paths.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from typing import Any, cast
+from dataclasses import fields, is_dataclass
 
 from rextio.artifacts.models import ArtifactProfile
 from rextio.codegen.rust.errors import RustCodegenError
-from rextio.ir.nodes import (
-    BlockIR,
-    ExprIR,
-    FunctionIR,
-    PluginClaimIR,
-    StatementIR,
-)
+from rextio.ir.nodes import FunctionIR, PluginClaimIR
 from rextio.ir.types import RxtPluginType, RxtType
 from rextio.plugins.api import (
     LOWERING_BACKEND_PYO3,
@@ -27,36 +24,31 @@ from rextio.plugins.api import (
     PluginFunctionScopeContext,
     PluginFunctionScopeGuard,
 )
-from rextio.plugins.loader import PluginError
 
-# Statement-like prefixes that must never appear as a "guard expression".
-_STATEMENT_PREFIXES = (
-    "let ",
-    "return ",
-    "if ",
-    "while ",
-    "for ",
-    "loop ",
-    "match ",
-    "break",
-    "continue",
-    "unsafe ",
-    "async ",
-    "await ",
-    "use ",
-    "mod ",
-    "fn ",
-    "struct ",
-    "enum ",
-    "impl ",
-    "type ",
-    "const ",
-    "static ",
-    "trait ",
-    "pub ",
+# Bounded grammar for ``PluginFunctionScopeGuard.rust`` (plugin API 1.7):
+#
+#   PATH_CALL ::= IDENT ( "::" IDENT )* "()"
+#   IDENT     ::= [A-Za-z_][A-Za-z0-9_]*
+#
+# Accepted examples: ``tch::no_grad_guard()``, ``AlphaGuard::enter()``, ``enter()``.
+# Rejected: arguments, macros (``!``), blocks, operators, method chains (``.``),
+# ``?``, statements, bare identifiers, and any parameter reference.
+_ZERO_ARG_PATH_CALL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*\(\)$")
+# Final path segments that are semantically fallible / non-RAII even as zero-arg calls.
+_REJECTED_FINAL_SEGMENTS = frozenset(
+    {
+        "unwrap",
+        "expect",
+        "unwrap_err",
+        "unwrap_or",
+        "unwrap_or_else",
+        "unwrap_or_default",
+        "panic",
+        "todo",
+        "unimplemented",
+        "unreachable",
+    }
 )
-
-_BINDING_SAFE = re.compile(r"[^0-9A-Za-z_]+")
 
 
 def _version_tuple(version: str) -> tuple[int, int]:
@@ -102,6 +94,9 @@ def validate_function_scope_guard_hook_version(
     Returns True when the hook is present (and legal). Raises PluginError when a
     pre-1.7 provider exposes the hook. Returns False when the hook is absent.
     """
+    # Local import avoids a loader <-> function_scope import cycle at module load.
+    from rextio.plugins.loader import PluginError
+
     if not provider_declares_function_scope_guard(provider):
         return False
     if _version_tuple(api_version) < (1, 7):
@@ -113,70 +108,70 @@ def validate_function_scope_guard_hook_version(
     return True
 
 
-def core_owned_guard_binding_name(plugin_id: str) -> str:
-    """Return Core's collision-free let-binding name for one plugin's guard.
+def allocate_function_scope_guard_bindings(
+    plugin_ids: Sequence[str] | Iterable[str],
+) -> dict[str, str]:
+    """Allocate Core-owned, collision-free guard bindings for used plugins.
 
-    Uses the reserved ``__rextio`` prefix so user identifiers cannot collide
-    (analyzer rejects that prefix) and Rust treats the binding as intentionally
-    unused while keeping it alive for ``Drop`` until lexical function end.
+    Bindings are assigned in sorted plugin-id order with a stable ordinal so
+    distinct plugin ids (including pairs that sanitize identically, such as
+    ``rextio-a-b`` vs ``rextio-a_b``) never share a binding name. Format:
+    ``__rextio_plugin_scope_guard_{ordinal}``.
     """
-    mangled = _BINDING_SAFE.sub("_", plugin_id).strip("_") or "plugin"
-    if mangled[0].isdigit():
-        mangled = f"p_{mangled}"
-    return f"__rextio_plugin_scope_guard_{mangled}"
+    ordered = sorted(plugin_ids)
+    return {
+        plugin_id: f"__rextio_plugin_scope_guard_{index}" for index, plugin_id in enumerate(ordered)
+    }
+
+
+def core_owned_guard_binding_name(plugin_id: str, *, ordinal: int) -> str:
+    """Return the Core-owned binding for one plugin at a known sorted ordinal.
+
+    Prefer :func:`allocate_function_scope_guard_bindings` when allocating a set
+    of names; this helper exists for single-name assertions.
+    """
+    if ordinal < 0:
+        raise ValueError("guard binding ordinal must be non-negative")
+    return f"__rextio_plugin_scope_guard_{ordinal}"
 
 
 def _is_plugin_type_key(value: object) -> bool:
     return isinstance(value, str) and "/" in value and bool(value.split("/", 1)[0])
 
 
-def _walk_expr_claims(expr: ExprIR | None, out: list[PluginClaimIR]) -> None:
-    if expr is None:
+def _walk_ir_for_claims(node: object, out: list[PluginClaimIR]) -> None:
+    """Deterministic generic IR traversal that visits every nested claim.
+
+    Walks dataclasses, lists/tuples (including ``DictIR`` key/value pairs),
+    comprehension generators, try handlers, and other IR containers without
+    relying on ad hoc type branches that miss nested containers.
+    """
+    if isinstance(node, PluginClaimIR):
+        out.append(node)
         return
-    claim = getattr(expr, "claim", None)
-    if isinstance(claim, PluginClaimIR):
-        out.append(claim)
-    for value in vars(expr).values():
-        if isinstance(value, ExprIR):
-            _walk_expr_claims(value, out)
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, ExprIR):
-                    _walk_expr_claims(item, out)
-                elif isinstance(item, BlockIR):
-                    _walk_block_claims(item, out)
-
-
-def _walk_statement_claims(statement: StatementIR, out: list[PluginClaimIR]) -> None:
-    for value in vars(statement).values():
-        if isinstance(value, ExprIR):
-            _walk_expr_claims(value, out)
-        elif isinstance(value, BlockIR):
-            _walk_block_claims(value, out)
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, ExprIR):
-                    _walk_expr_claims(item, out)
-                elif isinstance(item, BlockIR):
-                    _walk_block_claims(item, out)
-                elif isinstance(item, StatementIR):
-                    _walk_statement_claims(item, out)
-
-
-def _walk_block_claims(block: BlockIR, out: list[PluginClaimIR]) -> None:
-    for statement in block.statements:
-        _walk_statement_claims(statement, out)
+    if is_dataclass(node) and not isinstance(node, type):
+        for field in fields(cast(Any, node)):
+            _walk_ir_for_claims(getattr(node, field.name), out)
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            _walk_ir_for_claims(item, out)
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _walk_ir_for_claims(key, out)
+            _walk_ir_for_claims(value, out)
 
 
 def collect_function_plugin_usage(
     function: FunctionIR,
 ) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
-    """Map plugin id → (sorted rule ids, sorted type keys) actually used by ``function``.
+    """Map plugin id → (sorted unique rule ids, sorted unique type keys).
 
     A plugin is used only when the function has a claim owned by it or a
     directly used plugin type key namespaced to it (signature parameter/return
     types plus claim operand/result/receiver types). Unused installed plugins
-    are absent from the result.
+    are absent from the result. Facts are unique and deterministically sorted.
     """
     rule_ids_by_plugin: dict[str, set[str]] = {}
     type_keys_by_plugin: dict[str, set[str]] = {}
@@ -196,7 +191,7 @@ def collect_function_plugin_usage(
     add_type(function.return_type)
 
     claims: list[PluginClaimIR] = []
-    _walk_block_claims(function.body, claims)
+    _walk_ir_for_claims(function.body, claims)
     for claim in claims:
         rule_ids_by_plugin.setdefault(claim.plugin_id, set()).add(claim.rule_id)
         if claim.result_type is not None:
@@ -233,7 +228,11 @@ def validate_function_scope_guard(
     qualname: str,
     guard: PluginFunctionScopeGuard,
 ) -> PluginFunctionScopeGuard:
-    """Validate a guard declaration fail-closed with actionable context."""
+    """Validate a guard declaration fail-closed with actionable context.
+
+    ``rust`` must match the zero-argument path-call grammar documented on this
+    module (e.g. ``AlphaGuard::enter()`` / ``tch::no_grad_guard()``).
+    """
     rust = guard.rust.strip()
     if not rust:
         raise RustCodegenError(
@@ -241,29 +240,22 @@ def validate_function_scope_guard(
             f"expression for {qualname}"
         )
     _reject_multiline("rust expression", rust, plugin_id=plugin_id, qualname=qualname)
-    if rust.endswith(";"):
+    if _ZERO_ARG_PATH_CALL.fullmatch(rust) is None:
         raise RustCodegenError(
             f"plugin {plugin_id!r} function_scope_guard() rust expression for "
-            f"{qualname} must not end with a semicolon (Core owns the statement)"
+            f"{qualname} must be a zero-argument path call such as "
+            f"'AlphaGuard::enter()' or 'tch::no_grad_guard()' "
+            f"(no arguments, macros, blocks, operators, method chains, '?', "
+            f"statements, or parameter references); got {rust!r}"
         )
-    if ";" in rust:
+    final_segment = rust[: -len("()")].rsplit("::", 1)[-1]
+    if final_segment in _REJECTED_FINAL_SEGMENTS:
         raise RustCodegenError(
             f"plugin {plugin_id!r} function_scope_guard() rust expression for "
-            f"{qualname} must be a single non-statement expression (found ';')"
+            f"{qualname} must be a zero-argument path call such as "
+            f"'AlphaGuard::enter()' or 'tch::no_grad_guard()' "
+            f"(rejected fallible/non-RAII path segment {final_segment!r}); got {rust!r}"
         )
-    if "?" in rust:
-        raise RustCodegenError(
-            f"plugin {plugin_id!r} function_scope_guard() rust expression for "
-            f"{qualname} must be non-fallible (found '?')"
-        )
-    lowered = rust.lstrip()
-    for prefix in _STATEMENT_PREFIXES:
-        if lowered.startswith(prefix) or lowered == prefix.rstrip():
-            raise RustCodegenError(
-                f"plugin {plugin_id!r} function_scope_guard() rust expression for "
-                f"{qualname} looks statement-like ({prefix!r}); emit a pure "
-                "expression that constructs an RAII value"
-            )
     uses: list[str] = []
     for use in guard.uses:
         item = use.strip()
@@ -287,7 +279,6 @@ def validate_function_scope_guard(
                 f"plugin {plugin_id!r} function_scope_guard() returned an empty helper "
                 f"item for {qualname}"
             )
-        # Helpers are module items; reject control characters other than newline.
         if "\0" in item or "\r" in item:
             raise RustCodegenError(
                 f"plugin {plugin_id!r} function_scope_guard() helper item for "
@@ -344,6 +335,10 @@ def resolve_function_scope_guard(
         ) from exc
 
 
+def _unique_sorted(values: Iterable[str]) -> tuple[str, ...]:
+    return tuple(sorted(set(values)))
+
+
 def build_function_scope_context(
     *,
     function_qualname: str,
@@ -352,11 +347,11 @@ def build_function_scope_context(
     backend: str,
     artifact_profile: ArtifactProfile | None = None,
 ) -> PluginFunctionScopeContext:
-    """Build a validated context with deterministically sorted usage facts."""
+    """Build a validated context with unique, deterministically sorted usage facts."""
     return PluginFunctionScopeContext(
         function_qualname=function_qualname,
-        used_rule_ids=tuple(sorted(used_rule_ids)),
-        used_type_keys=tuple(sorted(used_type_keys)),
+        used_rule_ids=_unique_sorted(used_rule_ids),
+        used_type_keys=_unique_sorted(used_type_keys),
         backend=backend,
         artifact_profile=artifact_profile,
     )

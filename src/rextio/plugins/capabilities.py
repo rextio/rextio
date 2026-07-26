@@ -150,9 +150,7 @@ def _canonicalize_capability(
     key_prefix = f"{plugin_id}/"
     rule_ids = capability.rule_ids
     if len(set(rule_ids)) != len(rule_ids):
-        raise PluginError(
-            f"plugin {plugin_id!r} artifact_capability declares duplicate rule ids"
-        )
+        raise PluginError(f"plugin {plugin_id!r} artifact_capability declares duplicate rule ids")
     for rule_id in rule_ids:
         if not rule_id.startswith(key_prefix):
             raise PluginError(
@@ -243,9 +241,7 @@ def _validate_capability_against_registry(
         if record.provider == plugin_id or record.id.startswith(f"{plugin_id}/")
     }
     known_types = {
-        binding.plugin_type.key
-        for binding in registry.types
-        if binding.plugin_id == plugin_id
+        binding.plugin_type.key for binding in registry.types if binding.plugin_id == plugin_id
     }
     for rule_id in capability.rule_ids:
         if rule_id not in known_rules:
@@ -361,9 +357,7 @@ def coverage_for_function(
         involved_plugins.add(plugin_id)
 
     unsupported_plugins = tuple(
-        plugin_id
-        for plugin_id in sorted(involved_plugins)
-        if capabilities.get(plugin_id) is None
+        plugin_id for plugin_id in sorted(involved_plugins) if capabilities.get(plugin_id) is None
     )
     unsupported_plugin_set = set(unsupported_plugins)
     for plugin_id, rule_id in claims:
@@ -625,9 +619,7 @@ class StandalonePluginContext:
             return frozenset()
         return capability.allowed_helpers()
 
-    def type_support(
-        self, plugin_id: str, type_key: str
-    ) -> PluginArtifactTypeSupport | None:
+    def type_support(self, plugin_id: str, type_key: str) -> PluginArtifactTypeSupport | None:
         """Return the profile-specific type support for ``type_key``, if covered."""
         capability = self.capability_for(plugin_id)
         if capability is None:
@@ -681,12 +673,8 @@ def build_standalone_plugin_context(
     """
     function_list = list(functions)
     capabilities = resolve_registry_artifact_capabilities(registry, profile)
-    decisions = collect_function_decisions(
-        functions=function_list, capabilities=capabilities
-    )
-    capable = frozenset(
-        decision.qualname for decision in decisions if decision.supported
-    )
+    decisions = collect_function_decisions(functions=function_list, capabilities=capabilities)
+    capable = frozenset(decision.qualname for decision in decisions if decision.supported)
     return StandalonePluginContext(
         profile=profile,
         capabilities=capabilities,
@@ -698,14 +686,17 @@ def build_standalone_plugin_context(
 def declaration_presence(plugins: Iterable[RextioPlugin]) -> list[dict[str, object]]:
     """Return additive capability-presence records for capabilities introspection.
 
-    Does not call profile hooks or probe the host.
+    Does not call profile hooks or probe the host. ``function_scope_guard_declared``
+    is emitted only when True so pre-1.7 / no-hook rows keep prior key shapes.
     """
-    return [
-        {
+    rows: list[dict[str, object]] = []
+    for plugin in sorted(plugins, key=lambda item: item.id):
+        row: dict[str, object] = {
             "plugin_id": plugin.id,
             "api_version": plugin.api_version,
             "artifact_capability_declared": plugin.artifact_capability_declared,
-            "function_scope_guard_declared": plugin.function_scope_guard_declared,
         }
-        for plugin in sorted(plugins, key=lambda item: item.id)
-    ]
+        if plugin.function_scope_guard_declared:
+            row["function_scope_guard_declared"] = True
+        rows.append(row)
+    return rows

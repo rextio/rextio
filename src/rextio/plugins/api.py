@@ -1558,9 +1558,9 @@ class PluginFunctionScopeContext:
     """Immutable facts Core hands to ``function_scope_guard`` (plugin API 1.7).
 
     Carries the exact accepted generated function identity, the deterministic
-    sorted rule ids and plugin type keys this plugin actually contributes to
-    that function, closed backend facts (``pyo3`` vs ``standalone-rust``), and
-    the authorized :class:`ArtifactProfile` only for standalone backends.
+    unique sorted rule ids and plugin type keys this plugin actually contributes
+    to that function, closed backend facts (``pyo3`` vs ``standalone-rust``),
+    and the authorized :class:`ArtifactProfile` only for standalone backends.
     """
 
     function_qualname: str
@@ -1570,7 +1570,7 @@ class PluginFunctionScopeContext:
     artifact_profile: ArtifactProfile | None = None
 
     def __post_init__(self) -> None:
-        """Validate identity, closed backend set, and sorted fact shapes."""
+        """Validate identity, closed backend set, and unique sorted fact shapes."""
         if not isinstance(self.function_qualname, str) or not self.function_qualname:
             raise ValueError(
                 "PluginFunctionScopeContext.function_qualname must be a non-empty string"
@@ -1581,9 +1581,10 @@ class PluginFunctionScopeContext:
             raise ValueError(
                 "PluginFunctionScopeContext.used_rule_ids must be a tuple of non-empty strings"
             )
-        if tuple(sorted(self.used_rule_ids)) != self.used_rule_ids:
+        if self.used_rule_ids != tuple(sorted(set(self.used_rule_ids))):
             raise ValueError(
-                "PluginFunctionScopeContext.used_rule_ids must be sorted deterministically"
+                "PluginFunctionScopeContext.used_rule_ids must be unique and sorted "
+                "deterministically"
             )
         if not isinstance(self.used_type_keys, tuple) or not all(
             isinstance(type_key, str) and type_key for type_key in self.used_type_keys
@@ -1591,9 +1592,10 @@ class PluginFunctionScopeContext:
             raise ValueError(
                 "PluginFunctionScopeContext.used_type_keys must be a tuple of non-empty strings"
             )
-        if tuple(sorted(self.used_type_keys)) != self.used_type_keys:
+        if self.used_type_keys != tuple(sorted(set(self.used_type_keys))):
             raise ValueError(
-                "PluginFunctionScopeContext.used_type_keys must be sorted deterministically"
+                "PluginFunctionScopeContext.used_type_keys must be unique and sorted "
+                "deterministically"
             )
         if self.backend not in LOWERING_BACKENDS:
             options = ", ".join(sorted(LOWERING_BACKENDS))
@@ -1634,11 +1636,14 @@ class PluginFunctionScopeContext:
 class PluginFunctionScopeGuard:
     """One non-fallible Rust RAII guard expression plus module support (API 1.7).
 
-    ``rust`` is a single non-fallible expression (no trailing semicolon, no
-    newlines). Core owns the let-binding name and keeps the binding alive to
-    lexical function end so Rust ``Drop`` covers normal return, early return,
-    and error propagation. ``uses``/``helpers`` follow the same module-support
-    shapes as :class:`LoweredExpr`.
+    ``rust`` must be a zero-argument path call matching
+    ``IDENT ("::" IDENT)* "()"`` (for example ``AlphaGuard::enter()`` or
+    ``tch::no_grad_guard()``). Arguments, macros, blocks, operators, method
+    chains, ``?``, statements, and parameter references are rejected. Core
+    owns the let-binding name and keeps the binding alive to lexical function
+    end so Rust ``Drop`` covers normal return, early return, and error
+    propagation. ``uses``/``helpers`` follow the same module-support shapes as
+    :class:`LoweredExpr`.
     """
 
     rust: str

@@ -133,7 +133,7 @@ class RextioPlugin:
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-serializable dict form of this object."""
-        return {
+        data: dict[str, object] = {
             "id": self.id,
             "name": self.name,
             "source_language": self.source_language,
@@ -149,8 +149,12 @@ class RextioPlugin:
             "api_version": self.api_version,
             "lowering_provided": self.lowering_provided,
             "artifact_capability_declared": self.artifact_capability_declared,
-            "function_scope_guard_declared": self.function_scope_guard_declared,
         }
+        # Plugin API 1.7: omit when false so pre-1.7 / no-hook report shapes
+        # keep their prior exact serialized keys.
+        if self.function_scope_guard_declared:
+            data["function_scope_guard_declared"] = True
+        return data
 
 
 @dataclass(frozen=True)
