@@ -12,6 +12,26 @@ typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
+<!-- rextio-benchmark:start -->
+## Verified CPU benchmark snapshot
+
+Same Python source and deterministic inputs; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
+Versions: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.2, rextio-pandas 0.1.2, rextio-tensorflow 0.1.2, rextio-torch 0.1.2.
+
+| Domain | Python source | Rextio native | Speedup (source ÷ native) |
+| --- | ---: | ---: | ---: |
+| Core hybrid | 7.915661 ms | 0.138143 ms | 57.712× |
+| NumPy mixed fusion | 0.041840 ms | 0.086150 ms | 0.485× |
+| NetworkX Dijkstra | 50.581281 ms | 13.472185 ms | 3.751× |
+| pandas Series.map | 179.454594 ms | 2.719183 ms | 66.002× |
+| PyTorch CPU deep MLP | 0.388957 ms | 0.383640 ms | 1.014× |
+| TensorFlow CPU eager chain | 0.727017 ms | 0.738452 ms | 0.984× |
+
+These are workload-specific results, not library-wide performance claims. Build, import, first-call, and worker-process startup are excluded from these steady-state rows. The Core executable is separate because process startup is included. NumPy `dot` remains a BLAS-owned negative control; a manually vectorized pandas/NumPy rewrite may be faster. Ratios below 1× mean Rextio was slower; values near 1× indicate parity, not a material speedup.
+
+[Canonical report](https://github.com/rextio/rextio-benchmark/blob/e62a3f8fb1637f52288873fb077ba4efba0ead59/results/canonical/cohort-15fa2645c757b4a23541587f7d0757107952f7c6ade3386bcaacdbdd9cce12d8/report.md) · [measurement commit](https://github.com/rextio/rextio-benchmark/commit/ff7f4fea34199d850bed0446a8a223ef730ddf17) · [evidence commit](https://github.com/rextio/rextio-benchmark/commit/e62a3f8fb1637f52288873fb077ba4efba0ead59)
+<!-- rextio-benchmark:end -->
+
 **0.1.6 Release Train E foundation:** this published release adds bounded
 plugin comparison expressions, Device Provider API 1 selection/preflight/build
 wiring, and fail-closed static device-domain lowering authorization. An

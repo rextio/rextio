@@ -11,6 +11,26 @@ Rextio **0.1.6** 是 alpha 阶段本地构建工具，已于 2026-07-26 发布�
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
 全部继续通过生成的 Python fallback 代码运行 — import 路径与行为保持不变。
 
+<!-- rextio-benchmark:start -->
+## 已验证的 CPU 基准快照
+
+相同的 Python 源码和确定性输入; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
+版本: rextio 0.1.6, rextio-networkx 0.1.1, rextio-numpy 0.1.2, rextio-pandas 0.1.2, rextio-tensorflow 0.1.2, rextio-torch 0.1.2.
+
+| 领域 | Python 源码 | Rextio native | 加速比 (source ÷ native) |
+| --- | ---: | ---: | ---: |
+| Core hybrid | 7.915661 ms | 0.138143 ms | 57.712× |
+| NumPy mixed fusion | 0.041840 ms | 0.086150 ms | 0.485× |
+| NetworkX Dijkstra | 50.581281 ms | 13.472185 ms | 3.751× |
+| pandas Series.map | 179.454594 ms | 2.719183 ms | 66.002× |
+| PyTorch CPU deep MLP | 0.388957 ms | 0.383640 ms | 1.014× |
+| TensorFlow CPU eager chain | 0.727017 ms | 0.738452 ms | 0.984× |
+
+这些数值仅代表对应 workload，并非对整个库的性能声明。这些 steady-state 行不含构建、import、首次调用和 worker 进程启动。Core 可执行文件因包含进程启动而单独报告。NumPy `dot` 保留为 BLAS negative control；手工向量化的 pandas/NumPy 重写可能更快。低于 1× 表示 Rextio 更慢；接近 1× 表示性能相当，而非实质性加速。
+
+[正式报告](https://github.com/rextio/rextio-benchmark/blob/e62a3f8fb1637f52288873fb077ba4efba0ead59/results/canonical/cohort-15fa2645c757b4a23541587f7d0757107952f7c6ade3386bcaacdbdd9cce12d8/report.md) · [测量提交](https://github.com/rextio/rextio-benchmark/commit/ff7f4fea34199d850bed0446a8a223ef730ddf17) · [证据提交](https://github.com/rextio/rextio-benchmark/commit/e62a3f8fb1637f52288873fb077ba4efba0ead59)
+<!-- rextio-benchmark:end -->
+
 ```text
 带类型的 Python 项目
   -> 分析受支持的 native 候选
