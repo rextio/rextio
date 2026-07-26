@@ -762,6 +762,14 @@ class _FunctionRenderer:
         # successfully resolved and emitted for this exact function. Kept
         # provider-local so one plugin declining a guard cannot affect another.
         self._active_function_scope_guard_plugins: set[str] = set()
+        # Exact declaration-ordered Core-owned bindings for accepted guards.
+        # Normal materialized plugin returns consume these in reverse order
+        # before plugin-owned PyO3 output conversion runs.
+        self._active_function_scope_guard_bindings: list[str] = []
+        # Parameters, all user-bound locals, and generated Core temporaries.
+        # ``next_temp`` and guard allocation skip these names so explicit Drop
+        # can never resolve to a shadowing user binding.
+        self._reserved_rust_identifiers: set[str] = set()
 
     def _standalone_capable(self) -> bool:
         """Whether this function may render plugin-lowered sites without PyO3."""
@@ -780,12 +788,23 @@ class _FunctionRenderer:
         # arrives from a claim's LoweredExpr deduplicates to one item.
         # Standalone mode uses only profile-declared capability support.
         self._collect_signature_type_support()
-        # Plugin API 1.7: resolve function-scope RAII guards for plugins that
-        # are actually used by this function. Collect support and prelude
-        # bindings before body/conversions so Drop covers error propagation
-        # from conversions and early returns.
-        scope_guard_prelude = self._collect_function_scope_guards()
         assigned_names = _assigned_names(self.function.body)
+        # Reset both guard projections together before resolving this
+        # function's exact guards, and restart Core temporary allocation.
+        self._active_function_scope_guard_plugins.clear()
+        self._active_function_scope_guard_bindings.clear()
+        self.temp_index = 0
+        self._reserved_rust_identifiers = {
+            rust_identifier(param.name) for param in self.function.params
+        }
+        self._reserved_rust_identifiers.update(
+            rust_identifier(name) for name in assigned_names
+        )
+        # Plugin API 1.7: resolve function-scope RAII guards for plugins that
+        # are actually used by this function. Resolution happens before body
+        # lowering so each provider sees its exact active bit, while emission
+        # is placed after materialized input conversion below.
+        scope_guard_prelude = self._collect_function_scope_guards()
         # Only MATERIALIZED plugin types (with a boundary conversion) drive the
         # PyO3 boundary signature: they arrive as their PyO3 param type and
         # convert in the prologue, and return through the conversion expression.
@@ -842,9 +861,9 @@ class _FunctionRenderer:
                 *(["#[pyfunction]"] if self.pyo3_exported else []),
                 f"fn {rust_name}<'py>({', '.join(param_parts)}) -> PyResult<{return_type}> {{",
             ]
-            # Guards first (API 1.7), then boundary conversions, then body.
-            lines.extend(f"{_indent(1)}{line}" for line in scope_guard_prelude)
+            # Plugin-owned PyO3 input conversion executes outside guard state.
             lines.extend(f"{_indent(1)}{line}" for line in prologue)
+            lines.extend(f"{_indent(1)}{line}" for line in scope_guard_prelude)
         else:
             params = ", ".join(
                 f"{'mut ' if param.name in assigned_names else ''}"
@@ -878,7 +897,6 @@ class _FunctionRenderer:
         capability authorization; otherwise fail closed without widening
         eligibility.
         """
-        self._active_function_scope_guard_plugins.clear()
         if not self.plugin_providers:
             return []
         usage = collect_function_plugin_usage(self.function)
@@ -935,7 +953,14 @@ class _FunctionRenderer:
         self._active_function_scope_guard_plugins.update(
             plugin_id for plugin_id, _guard in resolved
         )
-        bindings = allocate_function_scope_guard_bindings(plugin_id for plugin_id, _ in resolved)
+        bindings = allocate_function_scope_guard_bindings(
+            (plugin_id for plugin_id, _ in resolved),
+            reserved_names=self._reserved_rust_identifiers,
+        )
+        self._active_function_scope_guard_bindings.extend(
+            bindings[plugin_id] for plugin_id, _guard in resolved
+        )
+        self._reserved_rust_identifiers.update(self._active_function_scope_guard_bindings)
         prelude: list[str] = []
         for plugin_id, guard in resolved:
             binding = bindings[plugin_id]
@@ -1062,6 +1087,25 @@ class _FunctionRenderer:
                 # the plugin's conversion expression (owned, newly allocated). A
                 # resident return has no conversion: it is an internal native-only
                 # value returned as-is to a native caller.
+                if self._active_function_scope_guard_bindings:
+                    # Native evaluation stays guarded and happens exactly once.
+                    # Then leave every active scope in reverse declaration order
+                    # before plugin-owned PyO3 materialization can execute.
+                    native_result = self.next_temp("__rextio_plugin_native_result")
+                    materialized = self.function.return_type.return_expr.format(
+                        value=native_result
+                    )
+                    return [
+                        *lines,
+                        f"{prefix}let {native_result} = {value};",
+                        *(
+                            f"{prefix}std::mem::drop({binding});"
+                            for binding in reversed(
+                                self._active_function_scope_guard_bindings
+                            )
+                        ),
+                        f"{prefix}return Ok({materialized});",
+                    ]
                 value = self.function.return_type.return_expr.format(value=value)
             return [*lines, f"{prefix}return Ok({value});"]
         if isinstance(statement, IfIR):
@@ -1430,8 +1474,13 @@ class _FunctionRenderer:
         )
 
     def next_temp(self, prefix: str) -> str:
-        self.temp_index += 1
-        return f"{prefix}_{self.temp_index}"
+        while True:
+            self.temp_index += 1
+            candidate = f"{prefix}_{self.temp_index}"
+            if candidate in self._reserved_rust_identifiers:
+                continue
+            self._reserved_rust_identifiers.add(candidate)
+            return candidate
 
     def named_expr_prelude(self, expr: ExprIR, indent: int) -> list[str]:
         bindings = self.collect_named_expr_bindings(expr)

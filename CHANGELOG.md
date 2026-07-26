@@ -22,10 +22,12 @@ providers without the new hook keep load and generated-output behavior.
 - A used API-1.7 plugin may return at most one non-fallible
   `PluginFunctionScopeGuard` expression plus validated `use` lines and helper
   items. Core allocates collision-free `__rextio_plugin_scope_guard_*` bindings,
-  let-binds guards at the start of every accepted generated native function that
-  actually uses that plugin (before conversions/body), ordered by plugin id, and
-  keeps bindings alive to lexical end so Rust `Drop` covers normal return, early
-  return, and error propagation.
+  ordered by plugin id. Materialized PyO3 input conversion runs first, guards
+  span the native body, and a normal materialized plugin return evaluates its
+  native value exactly once before dropping guards in reverse order and running
+  output conversion. Plugin-owned PyO3 `param_expr` / `return_expr` code
+  therefore executes outside guard state; Rust RAII still covers early returns
+  and error propagation from the native body.
 - Treat a plugin as used only for owned claims or directly used namespaced type
   keys; unused installed plugins are excluded. Expressions and support validate
   fail-closed (empty/multiline/statement-like/fallible/`?`); hook exceptions and
@@ -40,7 +42,10 @@ providers without the new hook keep load and generated-output behavior.
   parameter-dependent init, global/TLS state, or Torch plugin edits.
 - Guard bindings are Core-owned **ordinals** in sorted plugin-id order
   (`__rextio_plugin_scope_guard_{n}`), so ids that sanitize identically never
-  collide. Usage collection walks the full IR tree (dict items, comprehension
+  collide. Core also skips normalized parameter and function-scope assigned
+  names (including named expressions and handler bodies), plus generated
+  temporaries, so explicit reverse-order `Drop` cannot resolve to a user
+  binding. Usage collection walks the full IR tree (dict items, comprehension
   generators, try handlers). Guard `rust` is restricted to the zero-argument
   path-call grammar `IDENT ("::" IDENT)* "()"`.
 - Pass `LoweringContext.function_scope_guard_active` independently to each

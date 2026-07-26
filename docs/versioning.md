@@ -17,6 +17,9 @@ authorization without claiming certified accelerator execution. Candidate
 0.1.7 adds optional function-scope RAII guards (plugin API 1.7), including an
 RXT075 Python-boundary fact and a provider-local lowering-active bit so a
 whole-function guard cannot silently span an in-process Python callback.
+Materialized plugin input/output conversion also stays outside guard state:
+guards begin after PyO3 input conversion and are explicitly unwound before a
+normal PyO3 output materializer runs.
 
 ## Pre-1.0 (0.x): what "alpha" means
 

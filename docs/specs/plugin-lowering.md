@@ -1101,10 +1101,17 @@ parameter-dependent form.
   re-entrant work it performs.
 - Core owns collision-free ordinal bindings
   (`__rextio_plugin_scope_guard_{ordinal}` in sorted plugin-id order), so
-  ids that sanitize identically never share a name. Guards are let-bound at
-  the very beginning of the function (before conversions/body) and kept alive
-  to lexical end so Rust `Drop` covers normal return, early return, and error
-  propagation.
+  ids that sanitize identically never share a name. Allocation also skips
+  normalized parameter names, function-scope assigned names (including named
+  expressions and handler bodies), and existing Core temporaries.
+- For a PyO3 function with materialized plugin parameters, plugin-owned
+  `param_expr` input conversion runs **before** guards are let-bound. Guards
+  then span the native body. At each normal materialized plugin return, Core
+  evaluates the native result exactly once into a collision-free temporary,
+  explicitly drops active guards in reverse declaration order, and only then
+  evaluates the plugin-owned `return_expr` output conversion. Thus plugin-owned
+  PyO3 conversion code always executes outside guard state. Native-body early
+  returns and error propagation continue to unwind guards through Rust RAII.
 - At most one path-call expression per used plugin per function. Invalid
   grammar, empty/multiline support, hook exceptions, and wrong return types
   fail closed as `RustCodegenError`.

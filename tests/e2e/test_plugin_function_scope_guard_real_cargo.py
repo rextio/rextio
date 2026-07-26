@@ -17,8 +17,8 @@ import pytest
 
 from rextio.artifacts.models import ArtifactKind
 from rextio.artifacts.profiles import rust_crate_profile
-from rextio.codegen.rust.cargo import render_importable_cargo_toml
-from rextio.codegen.rust.generator import generate_rust_crate_module
+from rextio.codegen.rust.cargo import render_cargo_toml, render_importable_cargo_toml
+from rextio.codegen.rust.generator import generate_rust_crate_module, generate_rust_module
 from rextio.config.schema import RextioConfig
 from rextio.ir.nodes import (
     BlockIR,
@@ -87,6 +87,15 @@ impl Drop for ProbeGuard {
                 .and_then(|mut f| writeln!(f, "drop"));
         }
     }
+}
+"""
+MATERIALIZED_BOUNDARY_HELPER = """\
+fn materialize_input(value: i64) -> i64 {
+    value
+}
+
+fn materialize_output(value: i64) -> i64 {
+    value
 }
 """
 
@@ -184,15 +193,26 @@ class ScopeGuardCargoProvider:
         )
 
     def function_scope_guard(self, ctx: PluginFunctionScopeContext):
-        assert ctx.backend == "standalone-rust"
+        assert ctx.backend in {"pyo3", "standalone-rust"}
         assert ctx.has_python_boundary_calls is False
+        if ctx.backend == "standalone-rust":
+            assert ctx.artifact_profile is not None
+        else:
+            assert ctx.artifact_profile is None
         # Helpers are declared only on the authorized capability type support;
-        # the guard declaration itself is just the zero-arg path call.
+        # the materialized test supplies the same helper through its PluginType.
+        # The guard declaration itself is just the zero-arg path call.
         return PluginFunctionScopeGuard(rust="ProbeGuard::enter()")
 
 
-def _function(name: str, target: str, rule_id: str) -> FunctionIR:
-    rxt = RxtPluginType(key=TYPE_KEY, native_rust="i64")
+def _function(
+    name: str,
+    target: str,
+    rule_id: str,
+    *,
+    rxt: RxtPluginType | None = None,
+) -> FunctionIR:
+    rxt = rxt or RxtPluginType(key=TYPE_KEY, native_rust="i64")
     claim = PluginClaimIR(
         plugin_id=PLUGIN_ID,
         rule_id=rule_id,
@@ -283,3 +303,49 @@ fn main() {
     lines = probe.read_text(encoding="utf-8").splitlines()
     # main: ok, err, ok, ok => 4 enter/drop pairs.
     assert lines == ["enter", "drop"] * 4
+
+
+def test_materialized_return_drop_order_compiles_with_real_cargo(tmp_path: Path) -> None:
+    """PyO3 conversions compile outside the generated guard lifetime."""
+    provider = ScopeGuardCargoProvider()
+    materialized = RxtPluginType(
+        key=TYPE_KEY,
+        native_rust="i64",
+        param_rust="i64",
+        param_expr="materialize_input({param})",
+        return_rust="i64",
+        return_expr="materialize_output({value})",
+        helpers=(PROBE_HELPER, MATERIALIZED_BOUNDARY_HELPER),
+    )
+    function = _function("materialized", "demo.ok", RULE_OK, rxt=materialized)
+    source = generate_rust_module(
+        ModuleIR(functions=[function]),
+        plugin_providers={PLUGIN_ID: provider},
+        plugin_types_by_key={TYPE_KEY: materialized},
+    )
+    binding = "__rextio_plugin_scope_guard_0"
+    native_result = "__rextio_plugin_native_result_1"
+    input_idx = source.index("let x = materialize_input(x);")
+    guard_idx = source.index(f"let {binding} = ProbeGuard::enter();")
+    native_idx = source.index(f"let {native_result} = (x * 2);")
+    drop_idx = source.index(f"std::mem::drop({binding});")
+    output_idx = source.index(f"materialize_output({native_result})")
+    assert input_idx < guard_idx < native_idx < drop_idx < output_idx
+
+    crate_dir = tmp_path / "materialized-crate"
+    src_dir = crate_dir / "src"
+    src_dir.mkdir(parents=True)
+    (crate_dir / "Cargo.toml").write_text(
+        render_cargo_toml("rextio_scope_guard_materialized"),
+        encoding="utf-8",
+    )
+    (src_dir / "lib.rs").write_text(source, encoding="utf-8")
+    result = subprocess.run(
+        ["cargo", "check", "--quiet", "--manifest-path", str(crate_dir / "Cargo.toml")],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=crate_dir,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from rextio.artifacts.models import ArtifactKind
@@ -21,6 +23,7 @@ from rextio.ir.nodes import (
     LiteralIR,
     ModuleIR,
     NameIR,
+    NamedExprIR,
     ParamIR,
     PluginClaimIR,
     ReturnIR,
@@ -68,6 +71,22 @@ RXT_B = RxtPluginType(
     param_expr="{param}",
     return_rust="i64",
     return_expr="{value}",
+)
+RXT_A_MATERIALIZED = RxtPluginType(
+    key=TYPE_A,
+    native_rust="i64",
+    param_rust="i64",
+    param_expr="input_materialize({param})",
+    return_rust="i64",
+    return_expr="output_materialize(py, {value})",
+)
+RXT_B_MATERIALIZED = RxtPluginType(
+    key=TYPE_B,
+    native_rust="i64",
+    param_rust="i64",
+    param_expr="{param}",
+    return_rust="i64",
+    return_expr="beta_output_materialize(py, {value})",
 )
 
 # Exact fixed golden for the generated function body under a pre-1.7 / no-hook
@@ -294,7 +313,7 @@ def _boundary_call_function() -> FunctionIR:
     )
 
 
-def _multi_plugin_function() -> FunctionIR:
+def _multi_plugin_function(*, return_type: RxtPluginType = RXT_B) -> FunctionIR:
     alpha_claim = _claim(PLUGIN_A, RULE_A, "alpha.double", TYPE_A)
     beta_claim = _claim(PLUGIN_B, RULE_B, "beta.triple", TYPE_A)
     beta_claim = PluginClaimIR(
@@ -312,7 +331,7 @@ def _multi_plugin_function() -> FunctionIR:
         qualname="kernels.scale",
         module_name="kernels",
         params=[ParamIR("x", RXT_A)],
-        return_type=RXT_B,
+        return_type=return_type,
         body=BlockIR(statements=[ReturnIR(value=outer)]),
         plugin_lowered=True,
     )
@@ -337,20 +356,25 @@ def test_legacy_provider_matches_pre_feature_golden_snapshot() -> None:
     )
 
 
-def test_guard_emitted_before_conversions_and_body() -> None:
+def test_guard_wraps_native_body_but_not_materialized_boundary_conversions() -> None:
     provider = AlphaProvider()
     out = generate_rust_module(
-        ModuleIR(functions=[_claimed_function()]),
+        ModuleIR(functions=[_claimed_function(rxt_type=RXT_A_MATERIALIZED)]),
         plugin_providers={PLUGIN_A: provider},
-        plugin_types_by_key={TYPE_A: RXT_A},
+        plugin_types_by_key={TYPE_A: RXT_A_MATERIALIZED},
     )
     binding = core_owned_guard_binding_name(PLUGIN_A, ordinal=0)
     guard_line = f"let {binding} = AlphaGuard::enter();"
     assert guard_line in out
     guard_idx = out.index(guard_line)
-    convert_idx = out.index("let x = x;")
-    body_idx = out.index("* 2")
-    assert guard_idx < convert_idx < body_idx
+    convert_idx = out.index("let x = input_materialize(x);")
+    native_result = "__rextio_plugin_native_result_1"
+    native_idx = out.index(f"let {native_result} = (x * 2);")
+    drop_idx = out.index(f"std::mem::drop({binding});")
+    materialize_idx = out.index(f"output_materialize(py, {native_result})")
+    assert convert_idx < guard_idx < native_idx < drop_idx < materialize_idx
+    # The claim expression is evaluated into the Core temp exactly once.
+    assert out.count("(x * 2)") == 1
     assert "use alpha_support::AlphaGuard;" in out
     assert "struct AlphaGuard;" in out
     assert len(provider.calls) == 1
@@ -426,6 +450,26 @@ def test_multi_plugin_ordering_and_ordinal_bindings() -> None:
     assert beta.lower_calls and beta.lower_calls[0].function_scope_guard_active is True
 
 
+def test_materialized_return_drops_multiple_guards_in_reverse_order() -> None:
+    alpha = AlphaProvider()
+    beta = BetaProvider()
+    out = generate_rust_module(
+        ModuleIR(functions=[_multi_plugin_function(return_type=RXT_B_MATERIALIZED)]),
+        plugin_providers={PLUGIN_B: beta, PLUGIN_A: alpha},
+        plugin_types_by_key={TYPE_A: RXT_A, TYPE_B: RXT_B_MATERIALIZED},
+    )
+    a_bind = core_owned_guard_binding_name(PLUGIN_A, ordinal=0)
+    b_bind = core_owned_guard_binding_name(PLUGIN_B, ordinal=1)
+    native_result = "__rextio_plugin_native_result_1"
+    native_idx = out.index(f"let {native_result} = ")
+    b_drop_idx = out.index(f"std::mem::drop({b_bind});")
+    a_drop_idx = out.index(f"std::mem::drop({a_bind});")
+    materialize_idx = out.index(f"beta_output_materialize(py, {native_result})")
+    assert native_idx < b_drop_idx < a_drop_idx < materialize_idx
+    assert out.count("* 2") == 1
+    assert out.count("* 3") == 1
+
+
 def test_multi_plugin_guard_active_bits_are_provider_local() -> None:
     alpha = AlphaProvider()
     beta = DecliningBetaProvider()
@@ -492,6 +536,61 @@ def test_colliding_sanitized_plugin_ids_get_distinct_bindings() -> None:
     # Exactly one binding each — no rebinding/shadow of the first name.
     assert out.count("__rextio_plugin_scope_guard_0") == 1
     assert out.count("__rextio_plugin_scope_guard_1") == 1
+
+
+def test_guard_allocator_skips_reserved_user_identifiers() -> None:
+    id_dash = "rextio-a-b"
+    id_under = "rextio-a_b"
+    bindings = allocate_function_scope_guard_bindings(
+        [id_under, id_dash],
+        reserved_names={
+            "__rextio_plugin_scope_guard_0",
+            "__rextio_plugin_scope_guard_2",
+        },
+    )
+    assert bindings == {
+        id_dash: "__rextio_plugin_scope_guard_1",
+        id_under: "__rextio_plugin_scope_guard_3",
+    }
+
+
+def test_codegen_fresh_names_skip_params_and_later_named_expr_bindings() -> None:
+    guard_param = "__rextio_plugin_scope_guard_0"
+    guard_local = "__rextio_plugin_scope_guard_1"
+    result_param = "__rextio_plugin_native_result_1"
+    function = _claimed_function()
+    claimed_return = function.body.statements[0]
+    assert isinstance(claimed_return, ReturnIR)
+    assert claimed_return.value is not None
+    function = replace(
+        function,
+        params=[
+            *function.params,
+            ParamIR(guard_param, RxtInt()),
+            ParamIR(result_param, RxtInt()),
+        ],
+        body=BlockIR(
+            statements=[
+                ReturnIR(
+                    value=NamedExprIR(
+                        target=NameIR(id=guard_local),
+                        value=claimed_return.value,
+                    )
+                )
+            ]
+        ),
+    )
+    out = generate_rust_module(
+        ModuleIR(functions=[function]),
+        plugin_providers={PLUGIN_A: AlphaProvider()},
+        plugin_types_by_key={TYPE_A: RXT_A},
+    )
+    # Guard ordinals 0 and 1 are user-bound; Core deterministically skips both.
+    assert "let __rextio_plugin_scope_guard_2 = AlphaGuard::enter();" in out
+    assert "std::mem::drop(__rextio_plugin_scope_guard_2);" in out
+    # The first native-result candidate is also a user parameter.
+    assert "let __rextio_plugin_native_result_2 = " in out
+    assert f"let mut {guard_local}" in out
 
 
 def test_type_only_usage_facts() -> None:

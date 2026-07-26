@@ -2,9 +2,9 @@
 
 A used API-1.7 plugin may return at most one non-fallible zero-argument Rust
 path-call expression plus validated ``use`` lines and helper items. Core owns
-collision-free ordinal bindings and emits let-bound guards at the start of
-accepted generated native functions so Rust ``Drop`` covers normal return,
-early return, and error paths.
+collision-free ordinal bindings and emits let-bound guards around the native
+body of accepted generated functions so Rust ``Drop`` covers normal return,
+early return, and error paths without spanning plugin-owned PyO3 conversions.
 """
 
 from __future__ import annotations
@@ -110,18 +110,30 @@ def validate_function_scope_guard_hook_version(
 
 def allocate_function_scope_guard_bindings(
     plugin_ids: Sequence[str] | Iterable[str],
+    *,
+    reserved_names: Iterable[str] = (),
 ) -> dict[str, str]:
     """Allocate Core-owned, collision-free guard bindings for used plugins.
 
     Bindings are assigned in sorted plugin-id order with a stable ordinal so
     distinct plugin ids (including pairs that sanitize identically, such as
     ``rextio-a-b`` vs ``rextio-a_b``) never share a binding name. Format:
-    ``__rextio_plugin_scope_guard_{ordinal}``.
+    ``__rextio_plugin_scope_guard_{ordinal}``. Ordinals whose names collide
+    with a caller-provided reserved Rust identifier are skipped.
     """
     ordered = sorted(plugin_ids)
-    return {
-        plugin_id: f"__rextio_plugin_scope_guard_{index}" for index, plugin_id in enumerate(ordered)
-    }
+    reserved = set(reserved_names)
+    bindings: dict[str, str] = {}
+    ordinal = 0
+    for plugin_id in ordered:
+        while True:
+            candidate = core_owned_guard_binding_name(plugin_id, ordinal=ordinal)
+            ordinal += 1
+            if candidate not in reserved:
+                break
+        bindings[plugin_id] = candidate
+        reserved.add(candidate)
+    return bindings
 
 
 def core_owned_guard_binding_name(plugin_id: str, *, ordinal: int) -> str:

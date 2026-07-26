@@ -63,9 +63,11 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # existing behavior.
 # 1.7 adds the optional ``function_scope_guard(ctx)`` hook: a used API-1.7
 # plugin may declare at most one non-fallible Rust RAII guard expression that
-# Core let-binds (Core-owned name) at the start of each accepted generated
-# native function that actually uses that plugin. The hook is NOT part of the
-# all-or-none lowering member set; absence preserves 1.1–1.6 behavior.
+# Core let-binds under a Core-owned name after materialized PyO3 input
+# conversion and across the native body of each accepted generated function
+# that actually uses that plugin. Core unwinds guards before normal materialized
+# plugin output conversion. The hook is NOT part of the all-or-none lowering
+# member set; absence preserves 1.1–1.6 behavior.
 # All additions are optional/defaulted, so 1.1–1.6 providers remain source-
 # and behavior-compatible for host-extension builds (major must still match).
 PLUGIN_API_VERSION = "1.7"
@@ -1666,9 +1668,10 @@ class PluginFunctionScopeGuard:
     ``IDENT ("::" IDENT)* "()"`` (for example ``AlphaGuard::enter()`` or
     ``tch::no_grad_guard()``). Arguments, macros, blocks, operators, method
     chains, ``?``, statements, and parameter references are rejected. Core
-    owns the let-binding name and keeps the binding alive to lexical function
-    end so Rust ``Drop`` covers normal return, early return, and error
-    propagation. ``uses``/``helpers`` follow the same module-support shapes as
+    owns the let-binding name. It spans native execution after materialized
+    input conversion; Core explicitly drops it before normal materialized
+    plugin output conversion, while Rust RAII covers native early/error exits.
+    ``uses``/``helpers`` follow the same module-support shapes as
     :class:`LoweredExpr`.
     """
 
@@ -1721,9 +1724,12 @@ class RextioFunctionScopeGuardPlugin(Protocol):
         Core calls the hook only for plugins **actually used** by an accepted
         generated native function (owned claim rule ids and/or directly used
         namespaced plugin type keys). Core allocates a collision-free binding
-        name, let-binds the returned expression at the start of the function
-        (before conversions/body), and keeps the binding alive to lexical end.
-        Return ``None`` to emit no guard for that function. Return an immutable
+        name and let-binds the returned expression after materialized PyO3 input
+        conversion. It spans the native body; on a normal materialized plugin
+        return, Core evaluates the native result once, drops guards in reverse
+        declaration order, and only then runs plugin-owned output conversion.
+        Native early/error exits retain automatic RAII Drop. Return ``None`` to
+        emit no guard for that function. Return an immutable
         :class:`PluginFunctionScopeGuard` with a single non-fallible expression.
         Core validates the declaration fail-closed. When
         ``ctx.has_python_boundary_calls`` is true, the provider must return
