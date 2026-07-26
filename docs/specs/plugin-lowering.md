@@ -1053,14 +1053,14 @@ requires a lowering-capable provider.
 @dataclass(frozen=True)
 class PluginFunctionScopeContext:
     function_qualname: str
-    used_rule_ids: tuple[str, ...]     # sorted; this plugin's claims only
-    used_type_keys: tuple[str, ...]    # sorted; this plugin's type keys only
+    used_rule_ids: tuple[str, ...]     # unique sorted; this plugin only
+    used_type_keys: tuple[str, ...]    # unique sorted; this plugin only
     backend: str                       # "pyo3" | "standalone-rust"
     artifact_profile: ArtifactProfile | None = None  # standalone only
 
 @dataclass(frozen=True)
 class PluginFunctionScopeGuard:
-    rust: str                          # one non-fallible expression
+    rust: str                          # zero-argument path call (see grammar)
     uses: tuple[str, ...] = ()
     helpers: tuple[str, ...] = ()
 
@@ -1070,25 +1070,41 @@ class RextioFunctionScopeGuardPlugin(Protocol):
     ) -> PluginFunctionScopeGuard | None: ...
 ```
 
+**Exact ``rust`` grammar (fail-closed):**
+
+```text
+PATH_CALL ::= IDENT ( "::" IDENT )* "()"
+IDENT     ::= [A-Za-z_][A-Za-z0-9_]*
+```
+
+Accepted: `tch::no_grad_guard()`, `AlphaGuard::enter()`, `enter()`.
+Rejected: arguments (`Guard::enter(x)`), macros (`panic!()`), blocks,
+operators, method chains (`.`), `?`, statements, bare identifiers, and any
+parameter-dependent form.
+
 - Presence requires `api_version >= 1.7` and a lowering provider (loader
   fail-closed). Protocol stubs do not count as concrete declarations.
 - Core calls the hook only for plugins **used** by an accepted generated
   native function (owned claim rule ids and/or directly used namespaced type
-  keys). Unused installed plugins are excluded.
-- Core owns collision-free binding names
-  (`__rextio_plugin_scope_guard_<plugin>`), let-binds guards at the very
-  beginning of the function (before conversions/body), ordered by plugin id,
-  and keeps each binding alive to lexical end so Rust `Drop` covers normal
-  return, early return, and error propagation.
-- At most one non-fallible expression per used plugin per function. Empty,
-  multiline, statement-like, or fallible (`?`) declarations fail closed as
-  `RustCodegenError`. Hook exceptions and wrong return types likewise.
+  keys, including claims nested under dict items, comprehension generators,
+  and try handlers). Unused installed plugins are excluded. Usage facts are
+  unique and sorted.
+- Core owns collision-free ordinal bindings
+  (`__rextio_plugin_scope_guard_{ordinal}` in sorted plugin-id order), so
+  ids that sanitize identically never share a name. Guards are let-bound at
+  the very beginning of the function (before conversions/body) and kept alive
+  to lexical end so Rust `Drop` covers normal return, early return, and error
+  propagation.
+- At most one path-call expression per used plugin per function. Invalid
+  grammar, empty/multiline support, hook exceptions, and wrong return types
+  fail closed as `RustCodegenError`.
 - PyO3 always supports the hook. Standalone rust-crate / host-executable only
   when the same plugin/function already passes `artifact_capability`/profile
   authorization; undeclared uses/helpers fail closed without widening
   eligibility.
-- `rextio capabilities` reports presence-only `function_scope_guard_declared`
-  (no hook execution).
+- `rextio capabilities` / plugin serialization report
+  `function_scope_guard_declared: true` only when a concrete hook is present;
+  the key is **omitted** when false so pre-1.7 / no-hook shapes stay unchanged.
 
 ## Non-goals
 

@@ -188,9 +188,9 @@ def test_capabilities_merges_v2_plugin_rules(
             "api_version": "1.0",
             "lowering_provided": False,
             "artifact_capability_declared": False,
-            "function_scope_guard_declared": False,
         }
     ]
+    assert "function_scope_guard_declared" not in plugin_entries[0]
     plugin_rules = [rule for rule in manifest["rules"] if rule["provider"] == "rextio-numpy"]
     assert [rule["id"] for rule in plugin_rules] == ["rextio-numpy/elementwise-float64"]
     assert plugin_rules[0]["diagnostic_code"] == "RXTP-NUMPY-001"

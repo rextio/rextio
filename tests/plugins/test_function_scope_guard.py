@@ -143,6 +143,24 @@ def test_api_17_with_hook_declares_presence() -> None:
     assert plugin.to_dict()["function_scope_guard_declared"] is True
 
 
+def test_false_function_scope_guard_declared_omitted_from_serialization() -> None:
+    registry = load(("rextio-demo", BaseLoweringPlugin()))
+    plugin = registry.active[0]
+    assert plugin.function_scope_guard_declared is False
+    data = plugin.to_dict()
+    assert "function_scope_guard_declared" not in data
+    from rextio.plugins.capabilities import declaration_presence
+
+    rows = declaration_presence(registry.active)
+    assert rows == [
+        {
+            "plugin_id": "rextio-demo",
+            "api_version": "1.6",
+            "artifact_capability_declared": False,
+        }
+    ]
+
+
 def test_describe_only_provider_with_hook_fails_load() -> None:
     class DescribeOnly:
         plugin_id = "rextio-demo"
@@ -173,7 +191,7 @@ def test_protocol_stub_inheritance_does_not_count_as_declaration() -> None:
     assert registry.active[0].function_scope_guard_declared is False
 
 
-def test_context_requires_sorted_facts_and_backend_rules() -> None:
+def test_context_requires_unique_sorted_facts_and_backend_rules() -> None:
     ctx = PluginFunctionScopeContext(
         function_qualname="app.f",
         used_rule_ids=("rextio-demo/a", "rextio-demo/b"),
@@ -181,10 +199,16 @@ def test_context_requires_sorted_facts_and_backend_rules() -> None:
         backend="pyo3",
     )
     assert ctx.to_dict()["backend"] == "pyo3"
-    with pytest.raises(ValueError, match="sorted"):
+    with pytest.raises(ValueError, match="unique and sorted"):
         PluginFunctionScopeContext(
             function_qualname="app.f",
             used_rule_ids=("rextio-demo/b", "rextio-demo/a"),
+            used_type_keys=(),
+        )
+    with pytest.raises(ValueError, match="unique and sorted"):
+        PluginFunctionScopeContext(
+            function_qualname="app.f",
+            used_rule_ids=("rextio-demo/a", "rextio-demo/a"),
             used_type_keys=(),
         )
     with pytest.raises(ValueError, match="artifact_profile"):

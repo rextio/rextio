@@ -31,9 +31,15 @@ providers without the new hook keep load and generated-output behavior.
   it only when the same plugin/function already passes existing
   `artifact_capability`/profile authorization; undeclared standalone
   uses/helpers fail closed without widening eligibility.
-- Capabilities/plugin manifest add presence-only
-  `function_scope_guard_declared` (no hook execution). No arbitrary epilogues,
+- Capabilities/plugin manifest include `function_scope_guard_declared: true`
+  only when a concrete hook is present and **omit** the key when false so
+  pre-1.7 serialization stays byte-compatible. No arbitrary epilogues,
   parameter-dependent init, global/TLS state, or Torch plugin edits.
+- Guard bindings are Core-owned **ordinals** in sorted plugin-id order
+  (`__rextio_plugin_scope_guard_{n}`), so ids that sanitize identically never
+  collide. Usage collection walks the full IR tree (dict items, comprehension
+  generators, try handlers). Guard `rust` is restricted to the zero-argument
+  path-call grammar `IDENT ("::" IDENT)* "()"`.
 
 ## 0.1.6 — 2026-07-26
 
