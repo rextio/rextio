@@ -1057,6 +1057,7 @@ class PluginFunctionScopeContext:
     used_type_keys: tuple[str, ...]    # unique sorted; this plugin only
     backend: str                       # "pyo3" | "standalone-rust"
     artifact_profile: ArtifactProfile | None = None  # standalone only
+    has_python_boundary_calls: bool = False  # exact RXT075 FunctionIR fact
 
 @dataclass(frozen=True)
 class PluginFunctionScopeGuard:
@@ -1068,6 +1069,9 @@ class RextioFunctionScopeGuardPlugin(Protocol):
     def function_scope_guard(
         self, ctx: PluginFunctionScopeContext
     ) -> PluginFunctionScopeGuard | None: ...
+
+# Additive field on the per-claim context handed to this provider's lower():
+LoweringContext.function_scope_guard_active: bool = False
 ```
 
 **Exact ``rust`` grammar (fail-closed):**
@@ -1089,6 +1093,12 @@ parameter-dependent form.
   keys, including claims nested under dict items, comprehension generators,
   and try handlers). Unused installed plugins are excluded. Usage facts are
   unique and sorted.
+- `has_python_boundary_calls` is the exact deterministic projection of
+  `FunctionIR.has_boundary_calls`: it means the function performs an
+  in-process scalar call to Python fallback code (RXT075). A provider must
+  return `None` for that function. Core rejects any non-`None` whole-function
+  guard fail-closed so guard state cannot span the Python callback or
+  re-entrant work it performs.
 - Core owns collision-free ordinal bindings
   (`__rextio_plugin_scope_guard_{ordinal}` in sorted plugin-id order), so
   ids that sanitize identically never share a name. Guards are let-bound at
@@ -1102,6 +1112,12 @@ parameter-dependent form.
   when the same plugin/function already passes `artifact_capability`/profile
   authorization; undeclared uses/helpers fail closed without widening
   eligibility.
+- For each claimed expression, Core sets the default-compatible
+  `LoweringContext.function_scope_guard_active` independently for that claim's
+  provider. It is true only when the provider's hook returned a guard that
+  Core accepted and emitted for this function. Plugins that use the bit to
+  omit per-operation guards must emit distinctly named guarded and guardless
+  helper variants when both modes can coexist in one generated module.
 - `rextio capabilities` / plugin serialization report
   `function_scope_guard_declared: true` only when a concrete hook is present;
   the key is **omitted** when false so pre-1.7 / no-hook shapes stay unchanged.

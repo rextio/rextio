@@ -59,6 +59,38 @@ def add(a: int, b: int) -> int:
     }
 
 
+def test_lowers_rxt075_boundary_target_to_function_ir_fact(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        """
+import rextio
+
+@rextio.exempt
+def helper(x: int) -> int:
+    return x + 1
+
+@rextio.native
+def compute(x: int) -> int:
+    return helper(x) * 2
+""",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_project(tmp_path)
+    compute = next(
+        function
+        for module in analysis.modules
+        for function in module.functions
+        if function.qualname == "app.compute"
+    )
+    assert compute.boundary_call_targets == {"app.helper"}
+
+    module_ir = lower_project(analysis)
+    compute_ir = next(
+        function for function in module_ir.functions if function.qualname == "app.compute"
+    )
+    assert compute_ir.has_boundary_calls is True
+
+
 def test_pyo3_codegen_rejects_distinct_project_qualnames_with_one_native_symbol(
     tmp_path: Path,
 ) -> None:

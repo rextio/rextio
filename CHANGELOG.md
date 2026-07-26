@@ -15,7 +15,10 @@ providers without the new hook keep load and generated-output behavior.
 - Hand Core-owned immutable `PluginFunctionScopeContext` facts: exact accepted
   function qualname, deterministic sorted used rule ids and plugin type keys for
   that plugin, closed backend (`pyo3` / `standalone-rust`), and authorized
-  `ArtifactProfile` only on standalone backends.
+  `ArtifactProfile` only on standalone backends. The context also carries the
+  exact `FunctionIR.has_boundary_calls` projection as
+  `has_python_boundary_calls`; a provider must decline its guard for an RXT075
+  in-process Python callback, and Core rejects a non-`None` guard fail-closed.
 - A used API-1.7 plugin may return at most one non-fallible
   `PluginFunctionScopeGuard` expression plus validated `use` lines and helper
   items. Core allocates collision-free `__rextio_plugin_scope_guard_*` bindings,
@@ -40,6 +43,10 @@ providers without the new hook keep load and generated-output behavior.
   collide. Usage collection walks the full IR tree (dict items, comprehension
   generators, try handlers). Guard `rust` is restricted to the zero-argument
   path-call grammar `IDENT ("::" IDENT)* "()"`.
+- Pass `LoweringContext.function_scope_guard_active` independently to each
+  provider claim. It is true only when that provider's guard was accepted and
+  emitted for the enclosing function, so plugins can select distinct guarded
+  versus guardless helper variants without assuming another plugin's state.
 
 ## 0.1.6 — 2026-07-26
 

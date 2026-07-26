@@ -15,6 +15,7 @@ from rextio.plugins.api import (
     CoverageDecl,
     CrateDependency,
     LoweredExpr,
+    LoweringContext,
     PluginFunctionScopeContext,
     PluginFunctionScopeGuard,
     PluginType,
@@ -199,6 +200,15 @@ def test_context_requires_unique_sorted_facts_and_backend_rules() -> None:
         backend="pyo3",
     )
     assert ctx.to_dict()["backend"] == "pyo3"
+    assert ctx.has_python_boundary_calls is False
+    assert ctx.to_dict()["has_python_boundary_calls"] is False
+    boundary_ctx = PluginFunctionScopeContext(
+        function_qualname="app.boundary",
+        used_rule_ids=("rextio-demo/a",),
+        used_type_keys=(),
+        has_python_boundary_calls=True,
+    )
+    assert boundary_ctx.to_dict()["has_python_boundary_calls"] is True
     with pytest.raises(ValueError, match="unique and sorted"):
         PluginFunctionScopeContext(
             function_qualname="app.f",
@@ -217,6 +227,36 @@ def test_context_requires_unique_sorted_facts_and_backend_rules() -> None:
             used_rule_ids=(),
             used_type_keys=(),
             backend="standalone-rust",
+        )
+    with pytest.raises(ValueError, match="has_python_boundary_calls must be a bool"):
+        PluginFunctionScopeContext(
+            function_qualname="app.f",
+            used_rule_ids=(),
+            used_type_keys=(),
+            has_python_boundary_calls=1,  # type: ignore[arg-type]
+        )
+
+
+def test_lowering_context_scope_guard_active_defaults_and_validates() -> None:
+    default = LoweringContext(
+        operands=("x",),
+        target_language="rust",
+        fresh_name=lambda prefix: prefix,
+    )
+    assert default.function_scope_guard_active is False
+    active = LoweringContext(
+        operands=("x",),
+        target_language="rust",
+        fresh_name=lambda prefix: prefix,
+        function_scope_guard_active=True,
+    )
+    assert active.function_scope_guard_active is True
+    with pytest.raises(ValueError, match="function_scope_guard_active must be a bool"):
+        LoweringContext(
+            operands=("x",),
+            target_language="rust",
+            fresh_name=lambda prefix: prefix,
+            function_scope_guard_active=1,  # type: ignore[arg-type]
         )
 
 

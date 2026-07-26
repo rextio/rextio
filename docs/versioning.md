@@ -14,7 +14,9 @@ executable, and bounded Full-C6/C5.2 surfaces in core 0.1.5. Core 0.1.6 added
 Experimental plugin comparison expressions, Device Provider API 1
 selection/preflight/build wiring, and static device-domain lowering
 authorization without claiming certified accelerator execution. Candidate
-0.1.7 adds optional function-scope RAII guards (plugin API 1.7).
+0.1.7 adds optional function-scope RAII guards (plugin API 1.7), including an
+RXT075 Python-boundary fact and a provider-local lowering-active bit so a
+whole-function guard cannot silently span an in-process Python callback.
 
 ## Pre-1.0 (0.x): what "alpha" means
 

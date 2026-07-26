@@ -154,6 +154,7 @@ class ScopeGuardCargoProvider:
         return Claimed(rule_id=RULE_OK, result_type=TYPE_KEY)
 
     def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+        assert ctx.function_scope_guard_active is True
         # Expression-only: early error via nested return inside a block, so
         # Drop of the let-bound guard still runs on the Err path.
         if site.rule_id == RULE_ERR:
@@ -184,6 +185,7 @@ class ScopeGuardCargoProvider:
 
     def function_scope_guard(self, ctx: PluginFunctionScopeContext):
         assert ctx.backend == "standalone-rust"
+        assert ctx.has_python_boundary_calls is False
         # Helpers are declared only on the authorized capability type support;
         # the guard declaration itself is just the zero-arg path call.
         return PluginFunctionScopeGuard(rust="ProbeGuard::enter()")

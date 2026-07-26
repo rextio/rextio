@@ -87,6 +87,7 @@ class AlphaProvider:
 
     def __init__(self) -> None:
         self.calls: list[PluginFunctionScopeContext] = []
+        self.lower_calls: list[LoweringContext] = []
 
     def claim(self, site: ClaimSite, config: RextioConfig):
         if site.kind == "call" and site.target == "alpha.double":
@@ -94,10 +95,13 @@ class AlphaProvider:
         return NotCovered()
 
     def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+        self.lower_calls.append(ctx)
         return LoweredExpr(rust=f"({ctx.operands[0]} * 2)")
 
     def function_scope_guard(self, ctx: PluginFunctionScopeContext):
         self.calls.append(ctx)
+        if ctx.has_python_boundary_calls:
+            return None
         return PluginFunctionScopeGuard(
             rust="AlphaGuard::enter()",
             uses=("use alpha_support::AlphaGuard;",),
@@ -111,6 +115,7 @@ class BetaProvider:
 
     def __init__(self) -> None:
         self.calls: list[PluginFunctionScopeContext] = []
+        self.lower_calls: list[LoweringContext] = []
 
     def claim(self, site: ClaimSite, config: RextioConfig):
         if site.kind == "call" and site.target == "beta.triple":
@@ -118,11 +123,28 @@ class BetaProvider:
         return NotCovered()
 
     def lower(self, site: ClaimSite, ctx: LoweringContext) -> LoweredExpr:
+        self.lower_calls.append(ctx)
         return LoweredExpr(rust=f"({ctx.operands[0]} * 3)")
 
     def function_scope_guard(self, ctx: PluginFunctionScopeContext):
         self.calls.append(ctx)
         return PluginFunctionScopeGuard(rust="BetaGuard::enter()")
+
+
+class DecliningBetaProvider(BetaProvider):
+    """Declines a guard to prove active state is provider-local."""
+
+    def function_scope_guard(self, ctx: PluginFunctionScopeContext):
+        self.calls.append(ctx)
+        return None
+
+
+class MisbehavingBoundaryGuardProvider(AlphaProvider):
+    """Incorrectly returns a whole-function guard across an RXT075 callback."""
+
+    def function_scope_guard(self, ctx: PluginFunctionScopeContext):
+        self.calls.append(ctx)
+        return PluginFunctionScopeGuard(rust="AlphaGuard::enter()")
 
 
 class LegacyProvider:
@@ -251,6 +273,27 @@ def _type_only_function() -> FunctionIR:
     )
 
 
+def _boundary_call_function() -> FunctionIR:
+    claim = _claim(PLUGIN_A, RULE_A, "alpha.double", TYPE_A)
+    claimed = CallIR(function="alpha.double", args=[NameIR(id="x")], claim=claim)
+    boundary_call = CallIR(function="fallback.observe", args=[LiteralIR(7)])
+    return FunctionIR(
+        name="with_boundary",
+        qualname="kernels.with_boundary",
+        module_name="kernels",
+        params=[ParamIR("x", RXT_A)],
+        return_type=RxtInt(),
+        body=BlockIR(
+            statements=[
+                EffectCallIR(call=claimed),
+                ReturnIR(value=boundary_call),
+            ]
+        ),
+        has_boundary_calls=True,
+        plugin_lowered=True,
+    )
+
+
 def _multi_plugin_function() -> FunctionIR:
     alpha_claim = _claim(PLUGIN_A, RULE_A, "alpha.double", TYPE_A)
     beta_claim = _claim(PLUGIN_B, RULE_B, "beta.triple", TYPE_A)
@@ -317,6 +360,39 @@ def test_guard_emitted_before_conversions_and_body() -> None:
     assert TYPE_A in ctx.used_type_keys
     assert ctx.backend == "pyo3"
     assert ctx.artifact_profile is None
+    assert ctx.has_python_boundary_calls is False
+    assert provider.lower_calls
+    assert provider.lower_calls[0].function_scope_guard_active is True
+
+
+def test_rxt075_provider_declines_guard_and_lower_sees_inactive() -> None:
+    provider = AlphaProvider()
+    out = generate_rust_module(
+        ModuleIR(functions=[_boundary_call_function()]),
+        boundary_call_return_types={"fallback.observe": "int"},
+        plugin_providers={PLUGIN_A: provider},
+        plugin_types_by_key={TYPE_A: RXT_A},
+    )
+    assert "__rextio_bhook.call1" in out
+    assert "AlphaGuard::enter()" not in out
+    assert provider.calls
+    assert provider.calls[0].has_python_boundary_calls is True
+    assert provider.lower_calls
+    assert provider.lower_calls[0].function_scope_guard_active is False
+
+
+def test_rxt075_provider_returning_guard_fails_closed() -> None:
+    provider = MisbehavingBoundaryGuardProvider()
+    with pytest.raises(
+        RustCodegenError,
+        match=r"in-process Python fallback call \(RXT075\).*must return None",
+    ):
+        generate_rust_module(
+            ModuleIR(functions=[_boundary_call_function()]),
+            boundary_call_return_types={"fallback.observe": "int"},
+            plugin_providers={PLUGIN_A: provider},
+            plugin_types_by_key={TYPE_A: RXT_A},
+        )
 
 
 def test_unused_provider_excluded() -> None:
@@ -346,6 +422,22 @@ def test_multi_plugin_ordering_and_ordinal_bindings() -> None:
     a_idx = out.index(f"let {a_bind} = AlphaGuard::enter();")
     b_idx = out.index(f"let {b_bind} = BetaGuard::enter();")
     assert a_idx < b_idx
+    assert alpha.lower_calls and alpha.lower_calls[0].function_scope_guard_active is True
+    assert beta.lower_calls and beta.lower_calls[0].function_scope_guard_active is True
+
+
+def test_multi_plugin_guard_active_bits_are_provider_local() -> None:
+    alpha = AlphaProvider()
+    beta = DecliningBetaProvider()
+    out = generate_rust_module(
+        ModuleIR(functions=[_multi_plugin_function()]),
+        plugin_providers={PLUGIN_B: beta, PLUGIN_A: alpha},
+        plugin_types_by_key={TYPE_A: RXT_A, TYPE_B: RXT_B},
+    )
+    assert "AlphaGuard::enter()" in out
+    assert "BetaGuard::enter()" not in out
+    assert alpha.lower_calls and alpha.lower_calls[0].function_scope_guard_active is True
+    assert beta.lower_calls and beta.lower_calls[0].function_scope_guard_active is False
 
 
 def test_colliding_sanitized_plugin_ids_get_distinct_bindings() -> None:

@@ -326,6 +326,13 @@ def resolve_function_scope_guard(
             f"PluginFunctionScopeGuard or None for {ctx.function_qualname}, "
             f"got {type(result).__name__}"
         )
+    if ctx.has_python_boundary_calls:
+        raise RustCodegenError(
+            f"plugin {plugin_id!r} function_scope_guard() returned a whole-function "
+            f"guard for {ctx.function_qualname}, but that function performs an "
+            "in-process Python fallback call (RXT075); the provider must return "
+            "None so guard state cannot span a Python callback"
+        )
     try:
         return validate_function_scope_guard(plugin_id, ctx.function_qualname, result)
     except ValueError as exc:
@@ -346,6 +353,7 @@ def build_function_scope_context(
     used_type_keys: Iterable[str],
     backend: str,
     artifact_profile: ArtifactProfile | None = None,
+    has_python_boundary_calls: bool = False,
 ) -> PluginFunctionScopeContext:
     """Build a validated context with unique, deterministically sorted usage facts."""
     return PluginFunctionScopeContext(
@@ -354,6 +362,7 @@ def build_function_scope_context(
         used_type_keys=_unique_sorted(used_type_keys),
         backend=backend,
         artifact_profile=artifact_profile,
+        has_python_boundary_calls=has_python_boundary_calls,
     )
 
 

@@ -45,6 +45,7 @@ from rextio.plugins.api import (
     ClaimSite,
     LoweredExpr,
     LoweringContext,
+    PluginFunctionScopeGuard,
 )
 from rextio.plugins.capabilities import StandalonePluginContext, claim_plugin_type_keys
 from rextio.plugins.function_scope import (
@@ -757,6 +758,10 @@ class _FunctionRenderer:
         # Plugin API 1.4 standalone artifact capability for crate/executable.
         self.standalone = standalone
         self.device_authorization = device_authorization
+        # Populated before body lowering from concrete guards that Core
+        # successfully resolved and emitted for this exact function. Kept
+        # provider-local so one plugin declining a guard cannot affect another.
+        self._active_function_scope_guard_plugins: set[str] = set()
 
     def _standalone_capable(self) -> bool:
         """Whether this function may render plugin-lowered sites without PyO3."""
@@ -873,6 +878,7 @@ class _FunctionRenderer:
         capability authorization; otherwise fail closed without widening
         eligibility.
         """
+        self._active_function_scope_guard_plugins.clear()
         if not self.plugin_providers:
             return []
         usage = collect_function_plugin_usage(self.function)
@@ -892,7 +898,7 @@ class _FunctionRenderer:
         # Resolve hooks first in sorted plugin-id order, then allocate ordinal
         # bindings only for plugins that actually emit a guard (still ordered
         # by plugin id so collisions cannot arise from id sanitization).
-        resolved: list[tuple[str, object]] = []
+        resolved: list[tuple[str, PluginFunctionScopeGuard]] = []
         for plugin_id in sorted(usage):
             provider = self.plugin_providers.get(plugin_id)
             if provider is None:
@@ -904,6 +910,7 @@ class _FunctionRenderer:
                 used_type_keys=used_type_keys,
                 backend=backend,
                 artifact_profile=artifact_profile,
+                has_python_boundary_calls=self.function.has_boundary_calls,
             )
             guard = resolve_function_scope_guard(plugin_id, provider, ctx)
             if guard is None:
@@ -925,6 +932,9 @@ class _FunctionRenderer:
             for helper in guard.helpers:
                 self.plugin_helpers.setdefault(helper)
             resolved.append((plugin_id, guard))
+        self._active_function_scope_guard_plugins.update(
+            plugin_id for plugin_id, _guard in resolved
+        )
         bindings = allocate_function_scope_guard_bindings(plugin_id for plugin_id, _ in resolved)
         prelude: list[str] = []
         for plugin_id, guard in resolved:
@@ -1910,6 +1920,9 @@ class _FunctionRenderer:
                 leaf_operands=leaf_operands,
                 receiver=ctx_receiver,
                 device_authorization=ctx_device_authorization,
+                function_scope_guard_active=(
+                    claim.plugin_id in self._active_function_scope_guard_plugins
+                ),
             )
         else:
             if self.standalone is None:
@@ -1935,6 +1948,9 @@ class _FunctionRenderer:
                 backend=LOWERING_BACKEND_STANDALONE_RUST,
                 artifact_profile=self.standalone.profile,
                 device_authorization=ctx_device_authorization,
+                function_scope_guard_active=(
+                    claim.plugin_id in self._active_function_scope_guard_plugins
+                ),
             )
         try:
             lowered = provider.lower(site, ctx)  # type: ignore[attr-defined]

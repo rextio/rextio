@@ -1290,6 +1290,11 @@ class LoweringContext:
       or only literal leaves. Fusion-aware providers use these to emit one
       helper call without intermediate plugin array results; 1.1 providers
       keep using ``operands`` unchanged.
+
+    Plugin API 1.7 adds the default-false provider-local
+    ``function_scope_guard_active`` fact. It is true only when Core accepted
+    and emitted this provider's function-scope guard for the enclosing
+    function; another plugin's guard never makes it true.
     """
 
     operands: tuple[str, ...]
@@ -1314,9 +1319,15 @@ class LoweringContext:
     # a matching provider plan for the exact accelerator artifact profile.
     # CPU-only and legacy paths retain None.
     device_authorization: DeviceLoweringAuthorization | None = None
+    # Plugin API 1.7 addition. True only for the provider currently being
+    # lowered when its concrete function_scope_guard() hook returned a guard
+    # that Core accepted and emitted for the enclosing generated function.
+    # The provider can use this fact to select a guardless helper variant;
+    # legacy/no-hook/declined-guard paths retain False.
+    function_scope_guard_active: bool = False
 
     def __post_init__(self) -> None:
-        """Validate the closed backend set for API 1.4 fields."""
+        """Validate closed backend/device/scope-guard context fields."""
         if self.backend not in LOWERING_BACKENDS:
             options = ", ".join(sorted(LOWERING_BACKENDS))
             raise ValueError(
@@ -1332,6 +1343,10 @@ class LoweringContext:
         ):
             raise ValueError(
                 "LoweringContext.device_authorization must be DeviceLoweringAuthorization or None"
+            )
+        if not isinstance(self.function_scope_guard_active, bool):
+            raise ValueError(
+                "LoweringContext.function_scope_guard_active must be a bool"
             )
 
 
@@ -1560,7 +1575,9 @@ class PluginFunctionScopeContext:
     Carries the exact accepted generated function identity, the deterministic
     unique sorted rule ids and plugin type keys this plugin actually contributes
     to that function, closed backend facts (``pyo3`` vs ``standalone-rust``),
-    and the authorized :class:`ArtifactProfile` only for standalone backends.
+    the authorized :class:`ArtifactProfile` only for standalone backends, and
+    the exact RXT075 in-process Python-boundary-call fact. A whole-function
+    guard is forbidden when that final fact is true.
     """
 
     function_qualname: str
@@ -1568,6 +1585,10 @@ class PluginFunctionScopeContext:
     used_type_keys: tuple[str, ...]
     backend: str = LOWERING_BACKEND_PYO3
     artifact_profile: ArtifactProfile | None = None
+    # Exact FunctionIR.has_boundary_calls projection. True means the generated
+    # function performs an in-process RXT075 call into Python fallback code;
+    # Core forbids a whole-function guard from spanning that callback.
+    has_python_boundary_calls: bool = False
 
     def __post_init__(self) -> None:
         """Validate identity, closed backend set, and unique sorted fact shapes."""
@@ -1618,6 +1639,10 @@ class PluginFunctionScopeContext:
             raise ValueError(
                 "PluginFunctionScopeContext.artifact_profile must be ArtifactProfile or None"
             )
+        if not isinstance(self.has_python_boundary_calls, bool):
+            raise ValueError(
+                "PluginFunctionScopeContext.has_python_boundary_calls must be a bool"
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Return the deterministic JSON-serializable form of this context."""
@@ -1626,6 +1651,7 @@ class PluginFunctionScopeContext:
             "used_rule_ids": list(self.used_rule_ids),
             "used_type_keys": list(self.used_type_keys),
             "backend": self.backend,
+            "has_python_boundary_calls": self.has_python_boundary_calls,
         }
         if self.artifact_profile is not None:
             data["artifact_profile"] = self.artifact_profile.to_dict()
@@ -1699,6 +1725,9 @@ class RextioFunctionScopeGuardPlugin(Protocol):
         (before conversions/body), and keeps the binding alive to lexical end.
         Return ``None`` to emit no guard for that function. Return an immutable
         :class:`PluginFunctionScopeGuard` with a single non-fallible expression.
-        Core validates the declaration fail-closed.
+        Core validates the declaration fail-closed. When
+        ``ctx.has_python_boundary_calls`` is true, the provider must return
+        ``None``; Core rejects a whole-function guard rather than allowing its
+        state to span the RXT075 Python callback.
         """
         ...
