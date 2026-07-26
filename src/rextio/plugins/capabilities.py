@@ -705,6 +705,7 @@ def declaration_presence(plugins: Iterable[RextioPlugin]) -> list[dict[str, obje
             "plugin_id": plugin.id,
             "api_version": plugin.api_version,
             "artifact_capability_declared": plugin.artifact_capability_declared,
+            "function_scope_guard_declared": plugin.function_scope_guard_declared,
         }
         for plugin in sorted(plugins, key=lambda item: item.id)
     ]

@@ -47,6 +47,13 @@ from rextio.plugins.api import (
     LoweringContext,
 )
 from rextio.plugins.capabilities import StandalonePluginContext, claim_plugin_type_keys
+from rextio.plugins.function_scope import (
+    build_function_scope_context,
+    collect_function_plugin_usage,
+    core_owned_guard_binding_name,
+    lowering_backend_for_mode,
+    resolve_function_scope_guard,
+)
 from rextio.ir.nodes import (
     AppendIR,
     AssignIR,
@@ -768,6 +775,11 @@ class _FunctionRenderer:
         # arrives from a claim's LoweredExpr deduplicates to one item.
         # Standalone mode uses only profile-declared capability support.
         self._collect_signature_type_support()
+        # Plugin API 1.7: resolve function-scope RAII guards for plugins that
+        # are actually used by this function. Collect support and prelude
+        # bindings before body/conversions so Drop covers error propagation
+        # from conversions and early returns.
+        scope_guard_prelude = self._collect_function_scope_guards()
         assigned_names = _assigned_names(self.function.body)
         # Only MATERIALIZED plugin types (with a boundary conversion) drive the
         # PyO3 boundary signature: they arrive as their PyO3 param type and
@@ -825,6 +837,8 @@ class _FunctionRenderer:
                 *(["#[pyfunction]"] if self.pyo3_exported else []),
                 f"fn {rust_name}<'py>({', '.join(param_parts)}) -> PyResult<{return_type}> {{",
             ]
+            # Guards first (API 1.7), then boundary conversions, then body.
+            lines.extend(f"{_indent(1)}{line}" for line in scope_guard_prelude)
             lines.extend(f"{_indent(1)}{line}" for line in prologue)
         else:
             params = ", ".join(
@@ -842,11 +856,74 @@ class _FunctionRenderer:
                 lines = [
                     f"pub fn {rust_name}({params}) -> Result<{return_type}, RextioError> {{",
                 ]
+            lines.extend(f"{_indent(1)}{line}" for line in scope_guard_prelude)
         lines.extend(self.render_block(self.function.body, indent=1))
         if not _block_always_returns(self.function.body):
             lines.append(f"{_indent(1)}Ok({default_return(return_type)})")
         lines.append("}")
         return "\n".join(lines)
+
+    def _collect_function_scope_guards(self) -> list[str]:
+        """Resolve and render API 1.7 function-scope RAII guards for used plugins.
+
+        Only plugins that this function actually uses (owned claims or directly
+        used namespaced type keys) are considered. Unused installed plugins are
+        excluded. Guards are ordered by plugin id. Core owns binding names.
+        Standalone backends require the function already pass artifact
+        capability authorization; otherwise fail closed without widening
+        eligibility.
+        """
+        if not self.plugin_providers:
+            return []
+        usage = collect_function_plugin_usage(self.function)
+        if not usage:
+            return []
+        backend = lowering_backend_for_mode(self.mode)
+        artifact_profile = None
+        if self.mode != "pyo3":
+            if self.standalone is None or not self.standalone.is_capable(self.function.qualname):
+                # Plugin-using functions already fail earlier without capability;
+                # this is defense-in-depth so a guard cannot widen eligibility.
+                raise RustCodegenError(
+                    f"function-scope guard emission for {self.function.qualname} "
+                    "requires standalone artifact capability authorization"
+                )
+            artifact_profile = self.standalone.profile
+        prelude: list[str] = []
+        for plugin_id in sorted(usage):
+            provider = self.plugin_providers.get(plugin_id)
+            if provider is None:
+                continue
+            used_rule_ids, used_type_keys = usage[plugin_id]
+            ctx = build_function_scope_context(
+                function_qualname=self.function.qualname,
+                used_rule_ids=used_rule_ids,
+                used_type_keys=used_type_keys,
+                backend=backend,
+                artifact_profile=artifact_profile,
+            )
+            guard = resolve_function_scope_guard(plugin_id, provider, ctx)
+            if guard is None:
+                continue
+            if self.mode != "pyo3" and self.standalone is not None:
+                allowed_uses = self.standalone.allowed_uses_for(plugin_id)
+                allowed_helpers = self.standalone.allowed_helpers_for(plugin_id)
+                undeclared_uses = [use for use in guard.uses if use not in allowed_uses]
+                undeclared_helpers = [
+                    helper for helper in guard.helpers if helper not in allowed_helpers
+                ]
+                if undeclared_uses or undeclared_helpers:
+                    raise RustCodegenError(
+                        f"plugin {plugin_id!r} function_scope_guard() emitted "
+                        f"undeclared standalone support for {self.function.qualname}: "
+                        f"uses={undeclared_uses!r}, helpers={undeclared_helpers!r}"
+                    )
+            self.plugin_uses.update(guard.uses)
+            for helper in guard.helpers:
+                self.plugin_helpers.setdefault(helper)
+            binding = core_owned_guard_binding_name(plugin_id)
+            prelude.append(f"let {binding} = {guard.rust};")
+        return prelude
 
     def _collect_signature_type_support(self) -> None:
         """Merge module support owned by plugin types in this function's signature.

@@ -395,19 +395,24 @@ def _annotate_v2_plugin(plugin: RextioPlugin, provider: Any) -> RextioPlugin:
     capability_declared = _artifact_capability_declared(
         plugin, provider, lowering_provided=lowering
     )
+    scope_guard_declared = _function_scope_guard_declared(
+        plugin, provider, lowering_provided=lowering
+    )
     return replace(
         plugin,
         rules_provided=True,
         api_version=api_version,
         lowering_provided=lowering,
         artifact_capability_declared=capability_declared,
+        function_scope_guard_declared=scope_guard_declared,
     )
 
 
 # The plugin API 1.1 lowering members. They arrive together: implementing a
 # strict subset is a load error, so a half-wired plugin cannot look like a
-# describe-only one. artifact_capability (API 1.4) is deliberately excluded —
-# it is optional and independent of host-extension lowering.
+# describe-only one. artifact_capability (API 1.4) and function_scope_guard
+# (API 1.7) are deliberately excluded — they are optional and independent of
+# the all-or-none lowering member set (still require a lowering provider).
 _LOWERING_MEMBERS = ("type_vocabulary", "claim", "lower", "crate_dependencies")
 
 
@@ -479,6 +484,53 @@ def _artifact_capability_declared(
             f"plugin {plugin.id!r} implements artifact_capability() but declares "
             f"plugin-API {declared!r}; standalone artifact capability requires "
             "api_version >= 1.4"
+        )
+    return True
+
+
+def _provider_declares_concrete_function_scope_guard(provider: Any) -> bool:
+    """Return whether a non-Protocol class in the MRO defines the hook.
+
+    Inheritance of a Protocol that lists ``function_scope_guard`` must not count
+    as a declaration (Protocol stubs are callable but not implementations).
+    """
+    for cls in type(provider).__mro__:
+        if _is_protocol_class(cls):
+            continue
+        if "function_scope_guard" not in cls.__dict__:
+            continue
+        attr = cls.__dict__["function_scope_guard"]
+        if isinstance(attr, (staticmethod, classmethod)):
+            attr = attr.__func__
+        if callable(attr):
+            return True
+    return False
+
+
+def _function_scope_guard_declared(
+    plugin: RextioPlugin, provider: Any, *, lowering_provided: bool
+) -> bool:
+    """Record whether the provider exposes the optional API 1.7 scope-guard hook.
+
+    The hook is never invoked at load or capabilities-introspection time. A
+    pre-1.7 provider that implements the hook is a load error (fail closed).
+    Describe-only (non-lowering) providers may not declare the hook: scope
+    guards only have meaning for lowering providers.
+    """
+    if not _provider_declares_concrete_function_scope_guard(provider):
+        return False
+    if not lowering_provided:
+        raise PluginError(
+            f"plugin {plugin.id!r} implements function_scope_guard() but does not "
+            "provide lowering members; function-scope RAII guards are only "
+            "valid on lowering providers (plugin API 1.7)"
+        )
+    declared = str(getattr(provider, "api_version", ""))
+    if _version_tuple(declared) < (1, 7):
+        raise PluginError(
+            f"plugin {plugin.id!r} implements function_scope_guard() but declares "
+            f"plugin-API {declared!r}; function-scope RAII guards require "
+            "api_version >= 1.7"
         )
     return True
 

@@ -32,9 +32,7 @@ if TYPE_CHECKING:
 # "binop" and "compare" describe operator lowering surfaces (ClaimSite kinds
 # with the same names), so a plugin can label element-wise arithmetic and
 # comparison rules accurately instead of presenting them as calls.
-RULE_SCOPE_KINDS = frozenset(
-    {"type", "syntax", "call", "binop", "compare", "import", "decorator"}
-)
+RULE_SCOPE_KINDS = frozenset({"type", "syntax", "call", "binop", "compare", "import", "decorator"})
 RULE_OUTCOMES = frozenset({"native", "fallback", "reject", "shim", "boundary"})
 RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 
@@ -63,9 +61,14 @@ RULE_STABILITY_TIERS = frozenset({"stable", "experimental"})
 # gives ``lower()`` a minimal Core-validated device authorization. The fields
 # are optional/defaulted, so CPU-only and 1.1-1.5 providers retain their
 # existing behavior.
-# All additions are optional/defaulted, so 1.1–1.5 providers remain source-
+# 1.7 adds the optional ``function_scope_guard(ctx)`` hook: a used API-1.7
+# plugin may declare at most one non-fallible Rust RAII guard expression that
+# Core let-binds (Core-owned name) at the start of each accepted generated
+# native function that actually uses that plugin. The hook is NOT part of the
+# all-or-none lowering member set; absence preserves 1.1–1.6 behavior.
+# All additions are optional/defaulted, so 1.1–1.6 providers remain source-
 # and behavior-compatible for host-extension builds (major must still match).
-PLUGIN_API_VERSION = "1.6"
+PLUGIN_API_VERSION = "1.7"
 
 # Crate dependency pins are exact by decree of the lowering spec: a plugin
 # without an exact pin fails to load.
@@ -287,9 +290,7 @@ class PluginType:
         if self.device_value_metadata is not None and not isinstance(
             self.device_value_metadata, DeviceValueMetadata
         ):
-            raise ValueError(
-                "PluginType.device_value_metadata must be DeviceValueMetadata or None"
-            )
+            raise ValueError("PluginType.device_value_metadata must be DeviceValueMetadata or None")
 
     @property
     def is_resident(self) -> bool:
@@ -1330,8 +1331,7 @@ class LoweringContext:
             self.device_authorization, DeviceLoweringAuthorization
         ):
             raise ValueError(
-                "LoweringContext.device_authorization must be "
-                "DeviceLoweringAuthorization or None"
+                "LoweringContext.device_authorization must be DeviceLoweringAuthorization or None"
             )
 
 
@@ -1427,7 +1427,9 @@ class PluginArtifactCapability:
         if not isinstance(self.rule_ids, tuple) or not all(
             isinstance(rule_id, str) and rule_id for rule_id in self.rule_ids
         ):
-            raise ValueError("PluginArtifactCapability.rule_ids must be a tuple of non-empty strings")
+            raise ValueError(
+                "PluginArtifactCapability.rule_ids must be a tuple of non-empty strings"
+            )
         if not isinstance(self.types, tuple) or not all(
             isinstance(item, PluginArtifactTypeSupport) for item in self.types
         ):
@@ -1532,9 +1534,7 @@ class RextioArtifactCapabilityPlugin(Protocol):
     all-or-none lowering set.
     """
 
-    def artifact_capability(
-        self, profile: ArtifactProfile
-    ) -> PluginArtifactCapability | None:
+    def artifact_capability(self, profile: ArtifactProfile) -> PluginArtifactCapability | None:
         """Declare standalone (boundary-free) support for an exact artifact profile.
 
         Plugin API **1.4** optional hook. Presence requires ``api_version >= 1.4``
@@ -1549,5 +1549,151 @@ class RextioArtifactCapabilityPlugin(Protocol):
         ownership, rule/type vocabulary membership, duplicates, and crate pins
         and fails closed with :class:`~rextio.plugins.loader.PluginError` on
         invalid declarations or hook exceptions.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class PluginFunctionScopeContext:
+    """Immutable facts Core hands to ``function_scope_guard`` (plugin API 1.7).
+
+    Carries the exact accepted generated function identity, the deterministic
+    sorted rule ids and plugin type keys this plugin actually contributes to
+    that function, closed backend facts (``pyo3`` vs ``standalone-rust``), and
+    the authorized :class:`ArtifactProfile` only for standalone backends.
+    """
+
+    function_qualname: str
+    used_rule_ids: tuple[str, ...]
+    used_type_keys: tuple[str, ...]
+    backend: str = LOWERING_BACKEND_PYO3
+    artifact_profile: ArtifactProfile | None = None
+
+    def __post_init__(self) -> None:
+        """Validate identity, closed backend set, and sorted fact shapes."""
+        if not isinstance(self.function_qualname, str) or not self.function_qualname:
+            raise ValueError(
+                "PluginFunctionScopeContext.function_qualname must be a non-empty string"
+            )
+        if not isinstance(self.used_rule_ids, tuple) or not all(
+            isinstance(rule_id, str) and rule_id for rule_id in self.used_rule_ids
+        ):
+            raise ValueError(
+                "PluginFunctionScopeContext.used_rule_ids must be a tuple of non-empty strings"
+            )
+        if tuple(sorted(self.used_rule_ids)) != self.used_rule_ids:
+            raise ValueError(
+                "PluginFunctionScopeContext.used_rule_ids must be sorted deterministically"
+            )
+        if not isinstance(self.used_type_keys, tuple) or not all(
+            isinstance(type_key, str) and type_key for type_key in self.used_type_keys
+        ):
+            raise ValueError(
+                "PluginFunctionScopeContext.used_type_keys must be a tuple of non-empty strings"
+            )
+        if tuple(sorted(self.used_type_keys)) != self.used_type_keys:
+            raise ValueError(
+                "PluginFunctionScopeContext.used_type_keys must be sorted deterministically"
+            )
+        if self.backend not in LOWERING_BACKENDS:
+            options = ", ".join(sorted(LOWERING_BACKENDS))
+            raise ValueError(
+                f"unsupported PluginFunctionScopeContext.backend: {self.backend!r}. Use {options}."
+            )
+        if self.backend == LOWERING_BACKEND_STANDALONE_RUST and self.artifact_profile is None:
+            raise ValueError(
+                "PluginFunctionScopeContext.artifact_profile is required when backend is "
+                f"{LOWERING_BACKEND_STANDALONE_RUST!r}"
+            )
+        if self.backend == LOWERING_BACKEND_PYO3 and self.artifact_profile is not None:
+            raise ValueError(
+                "PluginFunctionScopeContext.artifact_profile must be None when backend is "
+                f"{LOWERING_BACKEND_PYO3!r}"
+            )
+        if self.artifact_profile is not None and not isinstance(
+            self.artifact_profile, ArtifactProfile
+        ):
+            raise ValueError(
+                "PluginFunctionScopeContext.artifact_profile must be ArtifactProfile or None"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable form of this context."""
+        data: dict[str, object] = {
+            "function_qualname": self.function_qualname,
+            "used_rule_ids": list(self.used_rule_ids),
+            "used_type_keys": list(self.used_type_keys),
+            "backend": self.backend,
+        }
+        if self.artifact_profile is not None:
+            data["artifact_profile"] = self.artifact_profile.to_dict()
+        return data
+
+
+@dataclass(frozen=True)
+class PluginFunctionScopeGuard:
+    """One non-fallible Rust RAII guard expression plus module support (API 1.7).
+
+    ``rust`` is a single non-fallible expression (no trailing semicolon, no
+    newlines). Core owns the let-binding name and keeps the binding alive to
+    lexical function end so Rust ``Drop`` covers normal return, early return,
+    and error propagation. ``uses``/``helpers`` follow the same module-support
+    shapes as :class:`LoweredExpr`.
+    """
+
+    rust: str
+    uses: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Validate container shapes; expression safety is enforced by Core."""
+        if not isinstance(self.rust, str):
+            raise ValueError("PluginFunctionScopeGuard.rust must be a string")
+        for label, support in (("uses", self.uses), ("helpers", self.helpers)):
+            if not isinstance(support, tuple):
+                raise ValueError(f"PluginFunctionScopeGuard.{label} must be a tuple of strings")
+            for item in support:
+                if not isinstance(item, str) or not item:
+                    raise ValueError(
+                        f"PluginFunctionScopeGuard.{label} must contain only non-empty strings"
+                    )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the deterministic JSON-serializable form of this guard."""
+        data: dict[str, object] = {"rust": self.rust}
+        if self.uses:
+            data["uses"] = list(self.uses)
+        if self.helpers:
+            data["helpers"] = list(self.helpers)
+        return data
+
+
+class RextioFunctionScopeGuardPlugin(Protocol):
+    """Optional plugin API 1.7 extension for function-scope RAII guards.
+
+    Deliberately **separate** from :class:`RextioLoweringPlugin` so a concrete
+    class that inherits the legacy lowering Protocol does not inherit a
+    callable ``function_scope_guard`` stub. Presence is detected by a concrete
+    (non-Protocol) implementation on the provider; the hook is not part of the
+    all-or-none lowering set but still requires a lowering-capable provider.
+    """
+
+    def function_scope_guard(
+        self, ctx: PluginFunctionScopeContext
+    ) -> PluginFunctionScopeGuard | None:
+        """Declare at most one function-scope RAII guard for a used plugin.
+
+        Plugin API **1.7** optional hook. Presence requires ``api_version >= 1.7``
+        and a lowering-capable provider; absence is valid and preserves 1.1–1.6
+        generated output byte-for-byte when the hook is not declared.
+
+        Core calls the hook only for plugins **actually used** by an accepted
+        generated native function (owned claim rule ids and/or directly used
+        namespaced plugin type keys). Core allocates a collision-free binding
+        name, let-binds the returned expression at the start of the function
+        (before conversions/body), and keeps the binding alive to lexical end.
+        Return ``None`` to emit no guard for that function. Return an immutable
+        :class:`PluginFunctionScopeGuard` with a single non-fallible expression.
+        Core validates the declaration fail-closed.
         """
         ...

@@ -96,6 +96,9 @@ class RextioPlugin:
     # Plugin API 1.4: True when the provider exposes artifact_capability().
     # Presence only — capabilities introspection never executes the hook.
     artifact_capability_declared: bool = False
+    # Plugin API 1.7: True when the provider exposes function_scope_guard().
+    # Presence only — capabilities introspection never executes the hook.
+    function_scope_guard_declared: bool = False
 
     def matches(self, target: TargetSpec) -> bool:
         """Report whether this plugin applies to the given target spec."""
@@ -146,6 +149,7 @@ class RextioPlugin:
             "api_version": self.api_version,
             "lowering_provided": self.lowering_provided,
             "artifact_capability_declared": self.artifact_capability_declared,
+            "function_scope_guard_declared": self.function_scope_guard_declared,
         }
 
 
