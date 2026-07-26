@@ -4,8 +4,9 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio **0.1.6** 是 alpha 阶段本地构建工具，已于 2026-07-26 发布到 PyPI，
-使用 plugin API **1.6**、tooling contract **2.27.0** 和 readiness policy
+Rextio **0.1.7** 是本分支的 Core 候选（plugin API **1.7**、tooling contract
+**2.28.0**）。最新 **已发布** PyPI 仍为 **0.1.6**（2026-07-26；plugin API
+**1.6**、tooling contract **2.27.0** 和 readiness policy
 **11**，并取代 0.1.5。
 它找出可以安全下沉到 Rust
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
@@ -260,7 +261,7 @@ CLI 参数 > 环境变量 > rextio.toml > 内置默认值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.6 中唯一实现的 native 目标是 Rust。
+0.1.7 中唯一实现的 native 目标是 Rust。
 
 Rextio 插件是用 `pip` 或 `uv` 等工具安装的普通 Python 包。插件包通过
 `rextio.plugins` entry point 组暴露元数据，包括它覆盖的 Python 包名。
@@ -384,7 +385,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.6 刻意支持一个小的 subset。这个 subset 就是以 native
+Rextio 0.1.7 刻意支持一个小的 subset。这个 subset 就是以 native
 Rust 运行的代码。
 
 支持的类型:

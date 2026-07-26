@@ -5,9 +5,10 @@
 **적합한 typed Python 함수는 Rust로 컴파일하고, 나머지는 전부 Python
 fallback으로 유지합니다.**
 
-Rextio **0.1.6**은 plugin API **1.6**, tooling contract **2.27.0**, readiness
-policy **11**로 2026-07-26 PyPI에 게시된 alpha 단계 로컬 빌드 도구이며
-0.1.5를 대체합니다.
+Rextio **0.1.7**은 이 브랜치의 Core 후보(plugin API **1.7**, tooling contract
+**2.28.0**)입니다. 최신 **게시** PyPI 릴리스는 **0.1.6**(2026-07-26; plugin API
+**1.6**, tooling contract **2.27.0**, readiness policy **11**)이며 0.1.5를
+대체합니다.
 타입이 지정된 Python
 함수 중 안전하게 Rust로 낮출 수 있는 것을 찾아 PyO3로 미리(ahead-of-time)
 컴파일하고, 나머지는 전부 생성된 Python fallback 코드로 계속 실행합니다 —
@@ -403,7 +404,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## 지원하는 direct Rust subset
 
-Rextio 0.1.6은 의도적으로 작은 subset을 지원합니다. 이 subset이
+Rextio 0.1.7은 의도적으로 작은 subset을 지원합니다. 이 subset이
 native Rust로 실행되는 코드입니다.
 
 지원 타입:

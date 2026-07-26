@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.1.7 — unreleased candidate
+
+**Candidate package version** `0.1.7` (not yet tagged/published). Plugin API
+**1.7**, tooling contract **2.28.0**. Additive over published 0.1.6; API 1.1–1.6
+providers without the new hook keep load and generated-output behavior.
+
+### Plugin function-scope RAII guards (plugin API 1.7; tooling contract 2.28.0)
+
+- Add optional, version-gated `function_scope_guard(ctx)` on a separate Protocol
+  from the all-or-none lowering members. Presence requires `api_version >= 1.7`
+  and a lowering-capable provider; pre-1.7 concrete hooks and describe-only
+  providers fail closed at load. Inherited Protocol stubs do not count.
+- Hand Core-owned immutable `PluginFunctionScopeContext` facts: exact accepted
+  function qualname, deterministic sorted used rule ids and plugin type keys for
+  that plugin, closed backend (`pyo3` / `standalone-rust`), and authorized
+  `ArtifactProfile` only on standalone backends. The context also carries the
+  exact `FunctionIR.has_boundary_calls` projection as
+  `has_python_boundary_calls`; a provider must decline its guard for an RXT075
+  in-process Python callback, and Core rejects a non-`None` guard fail-closed.
+- A used API-1.7 plugin may return at most one non-fallible
+  `PluginFunctionScopeGuard` expression plus validated `use` lines and helper
+  items. Core allocates collision-free `__rextio_plugin_scope_guard_*` bindings,
+  ordered by plugin id. Materialized PyO3 input conversion runs first, guards
+  span the native body, and a normal materialized plugin return evaluates its
+  native value exactly once before dropping guards in reverse order and running
+  output conversion. Plugin-owned PyO3 `param_expr` / `return_expr` code
+  therefore executes outside guard state; Rust RAII still covers early returns
+  and error propagation from the native body.
+- Treat a plugin as used only for owned claims or directly used namespaced type
+  keys; unused installed plugins are excluded. Expressions and support validate
+  fail-closed (empty/multiline/statement-like/fallible/`?`); hook exceptions and
+  wrong return types become `RustCodegenError` with actionable context.
+- PyO3 always supports the hook. Standalone rust-crate / host-executable support
+  it only when the same plugin/function already passes existing
+  `artifact_capability`/profile authorization; undeclared standalone
+  uses/helpers fail closed without widening eligibility.
+- Capabilities/plugin manifest include `function_scope_guard_declared: true`
+  only when a concrete hook is present and **omit** the key when false so
+  pre-1.7 serialization stays byte-compatible. No arbitrary epilogues,
+  parameter-dependent init, global/TLS state, or Torch plugin edits.
+- Guard bindings are Core-owned **ordinals** in sorted plugin-id order
+  (`__rextio_plugin_scope_guard_{n}`), so ids that sanitize identically never
+  collide. Core also skips normalized parameter and function-scope assigned
+  names (including named expressions and handler bodies), plus generated
+  temporaries, so explicit reverse-order `Drop` cannot resolve to a user
+  binding. Usage collection walks the full IR tree (dict items, comprehension
+  generators, try handlers). Guard `rust` is restricted to the zero-argument
+  path-call grammar `IDENT ("::" IDENT)* "()"`.
+- Pass `LoweringContext.function_scope_guard_active` independently to each
+  provider claim. It is true only when that provider's guard was accepted and
+  emitted for the enclosing function, so plugins can select distinct guarded
+  versus guardless helper variants without assuming another plugin's state.
+
 ## 0.1.6 — 2026-07-26
 
 **Published release.** Package version `0.1.6` is tagged and published to PyPI

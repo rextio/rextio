@@ -21,8 +21,8 @@ from rextio.plugins.api import (
 )
 
 
-def test_plugin_api_version_is_16() -> None:
-    assert PLUGIN_API_VERSION == "1.6"
+def test_plugin_api_version_is_17() -> None:
+    assert PLUGIN_API_VERSION == "1.7"
 
 
 def test_legacy_claim_site_to_dict_shape_unchanged() -> None:

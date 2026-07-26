@@ -1,11 +1,12 @@
 # Spec: Plugin Lowering (claim/lower Hook)
 
-Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6)
+Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 → 1.2 → 1.3 → 1.4 → 1.5 → 1.6 → 1.7)
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** published core **0.1.6** ships plugin API **1.6**, tooling
-contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
+**Release framing:** candidate core **0.1.7** implements plugin API **1.7** and
+tooling contract **2.28.0**. Published core **0.1.6** ships plugin API **1.6**,
+tooling contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
 1.4 and tooling contract 2.24.0. The standalone artifact
 capability shape below first appeared in unpublished/internal intermediate
 tooling contract **2.4.0**. Core 0.1.5's published producer was **2.24.0**
@@ -45,7 +46,9 @@ requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
 
-Core 0.1.6 implements plugin API **1.6** and tooling contract **2.27.0**.
+Core 0.1.7 candidate implements plugin API **1.7** and tooling contract **2.28.0**.
+API 1.7 adds optional function-scope RAII guards (§11). Core 0.1.6 implements
+plugin API **1.6** and tooling contract **2.27.0**.
 API 1.5 was introduced by contract 2.25.0 with one
 explicitly version-gated
 ``ClaimSite(kind="compare")`` surface for a non-chained comparison from the
@@ -640,6 +643,9 @@ result equivalence with hypothesis — the same posture as core's own
   stable key and can flow from one claim into another, but source annotations
   cannot name it. Codegen rechecks that every `compare` claim still has an
   API-1.5 provider, guarding against stale IR/provider-version drift.
+- **Plugin API 1.7** (additive, same major; candidate with core **0.1.7**):
+  optional `function_scope_guard(ctx)` for used plugins; Core-owned let-bound
+  RAII guards; capabilities presence `function_scope_guard_declared`.
 - **Plugin API 1.6** (additive, same major; published with core **0.1.6** on
   2026-07-26): adds optional
   structured static device-value metadata to `PluginType` and a defaulted
@@ -1036,6 +1042,92 @@ host-executable profiles. A full positive end-to-end host-executable
 integration (entrypoint + plugin-capable call graph + cargo binary) may still
 be expanded beyond the rust-crate positive vertical slice; until then,
 unsupported or undeclared plugin reachability remains fail-closed pre-Cargo.
+
+## 11. Function-scope RAII guards (plugin API 1.7)
+
+Optional, independent of the all-or-none lowering members
+(`type_vocabulary` / `claim` / `lower` / `crate_dependencies`), but still
+requires a lowering-capable provider.
+
+```python
+@dataclass(frozen=True)
+class PluginFunctionScopeContext:
+    function_qualname: str
+    used_rule_ids: tuple[str, ...]     # unique sorted; this plugin only
+    used_type_keys: tuple[str, ...]    # unique sorted; this plugin only
+    backend: str                       # "pyo3" | "standalone-rust"
+    artifact_profile: ArtifactProfile | None = None  # standalone only
+    has_python_boundary_calls: bool = False  # exact RXT075 FunctionIR fact
+
+@dataclass(frozen=True)
+class PluginFunctionScopeGuard:
+    rust: str                          # zero-argument path call (see grammar)
+    uses: tuple[str, ...] = ()
+    helpers: tuple[str, ...] = ()
+
+class RextioFunctionScopeGuardPlugin(Protocol):
+    def function_scope_guard(
+        self, ctx: PluginFunctionScopeContext
+    ) -> PluginFunctionScopeGuard | None: ...
+
+# Additive field on the per-claim context handed to this provider's lower():
+LoweringContext.function_scope_guard_active: bool = False
+```
+
+**Exact ``rust`` grammar (fail-closed):**
+
+```text
+PATH_CALL ::= IDENT ( "::" IDENT )* "()"
+IDENT     ::= [A-Za-z_][A-Za-z0-9_]*
+```
+
+Accepted: `tch::no_grad_guard()`, `AlphaGuard::enter()`, `enter()`.
+Rejected: arguments (`Guard::enter(x)`), macros (`panic!()`), blocks,
+operators, method chains (`.`), `?`, statements, bare identifiers, and any
+parameter-dependent form.
+
+- Presence requires `api_version >= 1.7` and a lowering provider (loader
+  fail-closed). Protocol stubs do not count as concrete declarations.
+- Core calls the hook only for plugins **used** by an accepted generated
+  native function (owned claim rule ids and/or directly used namespaced type
+  keys, including claims nested under dict items, comprehension generators,
+  and try handlers). Unused installed plugins are excluded. Usage facts are
+  unique and sorted.
+- `has_python_boundary_calls` is the exact deterministic projection of
+  `FunctionIR.has_boundary_calls`: it means the function performs an
+  in-process scalar call to Python fallback code (RXT075). A provider must
+  return `None` for that function. Core rejects any non-`None` whole-function
+  guard fail-closed so guard state cannot span the Python callback or
+  re-entrant work it performs.
+- Core owns collision-free ordinal bindings
+  (`__rextio_plugin_scope_guard_{ordinal}` in sorted plugin-id order), so
+  ids that sanitize identically never share a name. Allocation also skips
+  normalized parameter names, function-scope assigned names (including named
+  expressions and handler bodies), and existing Core temporaries.
+- For a PyO3 function with materialized plugin parameters, plugin-owned
+  `param_expr` input conversion runs **before** guards are let-bound. Guards
+  then span the native body. At each normal materialized plugin return, Core
+  evaluates the native result exactly once into a collision-free temporary,
+  explicitly drops active guards in reverse declaration order, and only then
+  evaluates the plugin-owned `return_expr` output conversion. Thus plugin-owned
+  PyO3 conversion code always executes outside guard state. Native-body early
+  returns and error propagation continue to unwind guards through Rust RAII.
+- At most one path-call expression per used plugin per function. Invalid
+  grammar, empty/multiline support, hook exceptions, and wrong return types
+  fail closed as `RustCodegenError`.
+- PyO3 always supports the hook. Standalone rust-crate / host-executable only
+  when the same plugin/function already passes `artifact_capability`/profile
+  authorization; undeclared uses/helpers fail closed without widening
+  eligibility.
+- For each claimed expression, Core sets the default-compatible
+  `LoweringContext.function_scope_guard_active` independently for that claim's
+  provider. It is true only when the provider's hook returned a guard that
+  Core accepted and emitted for this function. Plugins that use the bit to
+  omit per-operation guards must emit distinctly named guarded and guardless
+  helper variants when both modes can coexist in one generated module.
+- `rextio capabilities` / plugin serialization report
+  `function_scope_guard_declared: true` only when a concrete hook is present;
+  the key is **omitted** when false so pre-1.7 / no-hook shapes stay unchanged.
 
 ## Non-goals
 

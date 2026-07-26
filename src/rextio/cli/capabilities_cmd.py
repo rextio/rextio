@@ -109,6 +109,30 @@ def build_manifest(
             },
             "local_probe_performed": False,
         }
+    # Sorted by id (not entry-point discovery order) so the manifest is
+    # byte-stable across environments, matching the rules array.
+    active_plugins = sorted(target_plan.plugins.active, key=lambda plugin: (plugin.id, plugin.name))
+    plugin_rows: list[dict[str, object]] = []
+    for plugin in active_plugins:
+        row: dict[str, object] = {
+            "id": plugin.id,
+            "name": plugin.name,
+            # Distribution version: the manifest cache key is documented
+            # as (fingerprint, rextio version, plugin versions), so the
+            # manifest must supply the plugin-version component itself.
+            "version": plugin.version,
+            "packages": list(plugin.packages),
+            "rules_provided": plugin.rules_provided,
+            "api_version": plugin.api_version,
+            "lowering_provided": plugin.lowering_provided,
+            # Plugin API 1.4/1.7: presence only. Capabilities never executes
+            # profile or function-scope hooks or resolves allow/deny.
+            "artifact_capability_declared": plugin.artifact_capability_declared,
+        }
+        # Omit when false so pre-1.7 / no-hook rows keep prior exact keys.
+        if plugin.function_scope_guard_declared:
+            row["function_scope_guard_declared"] = True
+        plugin_rows.append(row)
     return {
         "contract_version": TOOLING_CONTRACT_VERSION,
         "rextio_version": __version__,
@@ -134,28 +158,7 @@ def build_manifest(
             "set_item_types": sorted(SET_ITEM_TYPES),
         },
         "rules": [record.to_dict() for record in rules],
-        "plugins": [
-            {
-                "id": plugin.id,
-                "name": plugin.name,
-                # Distribution version: the manifest cache key is documented
-                # as (fingerprint, rextio version, plugin versions), so the
-                # manifest must supply the plugin-version component itself.
-                "version": plugin.version,
-                "packages": list(plugin.packages),
-                "rules_provided": plugin.rules_provided,
-                "api_version": plugin.api_version,
-                "lowering_provided": plugin.lowering_provided,
-                # Plugin API 1.4: presence only. Capabilities never executes
-                # profile hooks or resolves allow/deny for a host profile.
-                "artifact_capability_declared": plugin.artifact_capability_declared,
-            }
-            # Sorted by id (not entry-point discovery order) so the manifest
-            # is byte-stable across environments, matching the rules array.
-            for plugin in sorted(
-                target_plan.plugins.active, key=lambda plugin: (plugin.id, plugin.name)
-            )
-        ],
+        "plugins": plugin_rows,
     }
 
 

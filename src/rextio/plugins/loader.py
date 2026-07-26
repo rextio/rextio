@@ -153,9 +153,7 @@ def _plugin_type_bindings(plugin: RextioPlugin, provider: Any) -> tuple[PluginTy
         # participates in the by-key analyzer/IR vocabulary. Materialized
         # types and pre-1.5 resident types retain the historical requirement.
         result_only_resident = (
-            plugin_type.is_resident
-            and provider_api >= (1, 5)
-            and not plugin_type.annotations
+            plugin_type.is_resident and provider_api >= (1, 5) and not plugin_type.annotations
         )
         if not plugin_type.annotations and not result_only_resident:
             raise PluginError(
@@ -395,19 +393,24 @@ def _annotate_v2_plugin(plugin: RextioPlugin, provider: Any) -> RextioPlugin:
     capability_declared = _artifact_capability_declared(
         plugin, provider, lowering_provided=lowering
     )
+    scope_guard_declared = _function_scope_guard_declared(
+        plugin, provider, lowering_provided=lowering
+    )
     return replace(
         plugin,
         rules_provided=True,
         api_version=api_version,
         lowering_provided=lowering,
         artifact_capability_declared=capability_declared,
+        function_scope_guard_declared=scope_guard_declared,
     )
 
 
 # The plugin API 1.1 lowering members. They arrive together: implementing a
 # strict subset is a load error, so a half-wired plugin cannot look like a
-# describe-only one. artifact_capability (API 1.4) is deliberately excluded —
-# it is optional and independent of host-extension lowering.
+# describe-only one. artifact_capability (API 1.4) and function_scope_guard
+# (API 1.7) are deliberately excluded — they are optional and independent of
+# the all-or-none lowering member set (still require a lowering provider).
 _LOWERING_MEMBERS = ("type_vocabulary", "claim", "lower", "crate_dependencies")
 
 
@@ -479,6 +482,40 @@ def _artifact_capability_declared(
             f"plugin {plugin.id!r} implements artifact_capability() but declares "
             f"plugin-API {declared!r}; standalone artifact capability requires "
             "api_version >= 1.4"
+        )
+    return True
+
+
+def _function_scope_guard_declared(
+    plugin: RextioPlugin, provider: Any, *, lowering_provided: bool
+) -> bool:
+    """Record whether the provider exposes the optional API 1.7 scope-guard hook.
+
+    The hook is never invoked at load or capabilities-introspection time. A
+    pre-1.7 provider that implements the hook is a load error (fail closed).
+    Describe-only (non-lowering) providers may not declare the hook: scope
+    guards only have meaning for lowering providers.
+
+    Concrete-hook detection is delegated to
+    :func:`rextio.plugins.function_scope.provider_declares_function_scope_guard`
+    via a local import to avoid a module-load cycle.
+    """
+    from rextio.plugins.function_scope import provider_declares_function_scope_guard
+
+    if not provider_declares_function_scope_guard(provider):
+        return False
+    if not lowering_provided:
+        raise PluginError(
+            f"plugin {plugin.id!r} implements function_scope_guard() but does not "
+            "provide lowering members; function-scope RAII guards are only "
+            "valid on lowering providers (plugin API 1.7)"
+        )
+    declared = str(getattr(provider, "api_version", ""))
+    if _version_tuple(declared) < (1, 7):
+        raise PluginError(
+            f"plugin {plugin.id!r} implements function_scope_guard() but declares "
+            f"plugin-API {declared!r}; function-scope RAII guards require "
+            "api_version >= 1.7"
         )
     return True
 
