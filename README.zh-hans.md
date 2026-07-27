@@ -4,11 +4,11 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio **0.1.7** 是 alpha 阶段的本地 Python 构建工具，于 2026-07-27 以
-plugin API **1.7**、tooling contract **2.28.0** 发布到 PyPI，取代 0.1.6。
-它找出可以安全下沉到 Rust
+Rextio 是 alpha 阶段的本地 Python 构建工具。它找出可以安全下沉到 Rust
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
 全部继续通过生成的 Python fallback 代码运行 — import 路径与行为保持不变。
+
+各版本变更请见 [CHANGELOG.md](CHANGELOG.md)。
 
 ```text
 带类型的 Python 项目

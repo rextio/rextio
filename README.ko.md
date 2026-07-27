@@ -5,12 +5,12 @@
 **적합한 typed Python 함수는 Rust로 컴파일하고, 나머지는 전부 Python
 fallback으로 유지합니다.**
 
-Rextio **0.1.7**은 alpha 단계 로컬 Python 빌드 도구로, 2026-07-27에 plugin API
-**1.7**, tooling contract **2.28.0**으로 PyPI에 게시되어 0.1.6을 대체합니다.
-타입이 지정된 Python
+Rextio는 alpha 단계의 로컬 Python 빌드 도구입니다. 타입이 지정된 Python
 함수 중 안전하게 Rust로 낮출 수 있는 것을 찾아 PyO3로 미리(ahead-of-time)
 컴파일하고, 나머지는 전부 생성된 Python fallback 코드로 계속 실행합니다 —
 import 경로도, 동작도 그대로입니다.
+
+릴리스별 변경 사항은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
 
 ```text
 타입이 지정된 Python 프로젝트

@@ -5,127 +5,12 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio **0.1.7** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-27 with plugin API **1.7**, tooling contract
-**2.28.0**, superseding 0.1.6. It finds
+Rextio is an alpha-stage local build tool for Python projects. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
-**0.1.7:** optional plugin function-scope RAII guards (API 1.7 /
-contract 2.28.0) for used plugins on accepted generated native functions.
-
-**0.1.6 Release Train E foundation:** this published release adds bounded
-plugin comparison expressions, Device Provider API 1 selection/preflight/build
-wiring, and fail-closed static device-domain lowering authorization. An
-accelerator-bearing plugin type contributes exact device/runtime requirements,
-and an API-1.6 lowerer receives only a redacted authorization after one
-explicitly selected provider has matched and preflighted that profile. Core
-itself does not add Torch or TensorFlow CUDA lowering, certify accelerator
-execution, or make a CUDA support claim.
-
-**0.1.5 Release Train C:** this published release adds experimental host source/
-artifact planning, a narrow initializer-before-main Rust executable slice, and
-plugin API **1.4** fail-closed standalone artifact capability (rust-crate /
-host-executable), plus a C5.1 external pure-Python source inventory/gate
-preview, a C6.1 bounded prebuild authorization-contract preview, and a C6.2
-bounded host-extension wheel SBOM/provenance preview (incomplete/unsigned; not
-full C6), plus a C6.3 opt-in required-evidence gate for that exact preview
-artifact set and a C6.4 sanitized, direct-only native runtime linkage inventory
-for macOS Mach-O and Linux ELF extensions. C6.5 adds an always-blocked,
-closed-vocabulary distribution-authorization readiness assessment that makes
-selected current-scope hard-authorization gaps explicit without granting
-authority. C6.6 adds a bounded observation-only inventory binding each accepted
-project-owned native function to its project-relative source hash, reliable
-range, semantic-AST hash, generated `src/lib.rs` input, closed generator/backend,
-and sorted plugin ids. It does not complete source-transformation provenance.
-C6.7 adds an exact, bounded observation-only inventory for every reachable
-Cargo package (including the generated path root), preserving each nonblank
-Cargo metadata license string verbatim as `declared-unvalidated` and recording
-blank/null values as `missing`. It performs no SPDX validation or legal/policy
-decision. C6.8 adds an exact, observation-only one-hop path record for every
-direct native dependency: trusted system names remain logical leaves, while
-contained Mach-O `@loader_path`/self-anchored `@rpath` and ELF `$ORIGIN`
-RPATH/RUNPATH candidates must bind one exact regular non-symlink wheel member.
-It does not claim actual loader selection or transitive closure. C6.9 builds on
-that root with a deterministic, cycle-safe graph over recursively inspected
-packaged Mach-O/ELF members and logical system leaves. Every packaged node is
-rebound to exact wheel bytes and inspected through an immutable private
-snapshot under closed node/edge/depth/candidate/inspector/output/size bounds.
-The graph remains observation-only and explicitly incomplete: it does not use
-ambient loader state, choose the actual loader result, hash system libraries,
-or observe `dlopen`. C6.10 adds a separate narrow replay receipt for nonempty,
-project-owned, plugin-free PyO3 function closures. It rereads source securely,
-rederives AST identities and UTF-8 ranges, relowers the complete accepted set,
-and requires byte-identical full `src/lib.rs` regeneration. C6.11 adds a
-separate, narrower project-owner policy receipt for the exact raw
-license metadata of every reachable Cargo registry component. It binds a fixed
-project-root lock and the full C6.7 inventory, but does not authenticate the
-owner, validate SPDX or license files, provide legal approval, or authorize
-distribution. C6.12 adds an independent owner-declaration receipt only when a
-valid C6.10 replay is present. The strict project-root
-`rextio.source-license.lock.json` binds that exact C6.10 receipt, its complete
-scoped project-source set, generated Rust `src/lib.rs`, and separate declared
-licenses for the source and generated output. It does not verify identity,
-SPDX, license/NOTICE files, obligations, compatibility, ownership,
-derivative-work rights, legal approval, signing, global policy, or distribution
-authority. C6.13 adds an optional, bounded analysis-input verification receipt
-for every C6.10 source's sibling `.pyi`: present stubs bind logical path, byte
-SHA-256, size, and deterministic supported-signature projection/version to the
-exact replay and source set; absent records remain metadata only. Present stubs
-are `project-python-stub` materials, while raw bytes, source text, absolute
-roots, and exception text are never serialized. Secure immutable snapshots are
-evidence-eligible; compatibility snapshots are analyzer-only and
-evidence-ineligible. C6.14 adds a compact, thirteen-class policy-coverage
-inventory over only the exact components already observed by C6.2-C6.13.
-Identity strength, scoped license-owner receipts, and transformation/input
-provenance are reported separately; all global coverage claims remain false.
-C6.15 optionally binds `rextio.artifact-policy.lock.json` to the semantic
-SHA-256 and exact ordered rows of that C6.14 partition. Its closed dispositions
-cannot weaken an existing C6.10-C6.13 receipt; the lock is one provenance
-material only, and every global policy/provenance/signing/authority claim stays
-false. Contracts **2.21.0** through **2.24.0** add a separate strict, signed
-Full-C6/C5.2 Alpha rather than promoting those preview records. It is frozen to
-CPython + PyO3 + Cargo on macOS arm64 or Linux x86_64, exactly one depth-1
-`py3-none-any` dependency, and direct typed scalar leaf calls. The original
-dependency remains an exact `Requires-Dist` runtime dependency and generated
-code verifies its installed identity/version/`RECORD` membership and exact
-source bytes without importing or introspecting the external module or callable.
-The Rextio host install must be non-editable and cache-free: install it with
-`pip --no-compile`, run every strict lifecycle process with
-`PYTHONDONTWRITEBYTECODE=1` (or `python -B`), and retain no `__pycache__` or
-`.pyc` entry among the `rextio/` RECORD members or in the physical `rextio/`
-tree. The package tree is limited to 256 MiB by both the pre-walk aggregate of
-declared `rextio/` RECORD-member sizes and the independently checked actual
-`stat`/read aggregate. This is an
-evidence-integrity gate for an owner-controlled process, not hostile secure boot.
-Contract 2.23.0 makes the non-authorizing bootstrap an exact public technical
-template: combined C6.14+C5.2 rows, transformations, and internal/external
-license observations. The owner supplies a separate explicit completion and
-uses `rextio policy finalize` to create the canonical v2 manifest before the
-signing-request and detached-signature publication stages. Rextio neither
-invents owner decisions nor accepts, creates, or retains private signing keys.
-Contract 2.24.0 adds a public, non-authorizing support-lock bootstrap and binds
-the fixed host support closure plus the production sandbox to path-free
-executor, SBOM, and SLSA receipts. Linux uses `bwrap`, sealed seccomp, an
-isolated support-locked CPython launcher, Landlock, and Cargo; macOS uses
-`sandbox-exec` with exact Xcode/SDK and sealed-system-volume anchors and removes
-inherited executable mappings below mutable/data-volume roots. Only an explicitly
-bound `read-execute` path or bound read-write directory capability regains
-executable mapping/process execution; ambient paths remain denied. The receipt's
-`sandbox_profile_sha256` is an engine-specific, path-tokenized semantic digest
-that is equal across the two builds and equivalent lifecycle runs; the raw
-rendered profile contains process-local paths and is neither public nor signed.
-This is a bounded Alpha integrity contract, not general hermetic execution.
-Plugins, executables, rust-crate output,
-top-level AOT, embedding, Windows, recursive promotion, and general
-external-source translation remain excluded. These surfaces ship in package
-**0.1.5** with tooling contract **2.24.0**, plugin API **1.4**, and readiness
-policy **11**. They remain Experimental/Alpha and do not claim broad Full C6,
-general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
-CI certification. See
-[Host source-AOT and native executables](docs/source-aot-and-executables.md) and
-[plugin lowering](docs/specs/plugin-lowering.md) §10.
+For release-by-release changes, see [CHANGELOG.md](CHANGELOG.md).
 
 ```text
 typed Python project

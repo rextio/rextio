@@ -5,11 +5,11 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio **0.1.7** は alpha 段階のローカル Python ビルドツールで、2026-07-27 に
-plugin API **1.7**、tooling contract **2.28.0** として PyPI に公開され、0.1.6 を
-置き換えます。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
+Rextio は alpha 段階のローカル Python ビルドツールです。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
 PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
+
+リリースごとの変更点は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 ```text
 型付き Python プロジェクト
