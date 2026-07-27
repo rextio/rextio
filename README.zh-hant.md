@@ -290,7 +290,7 @@ tooling contract **2.2.0**；在不改變既有 route/status/rejection 含義的
 前提下，加入獨立的 promotion assessment、可信 marker 意圖及函式/名稱範圍。
 Core **0.1.5** 於 2026-07-23 發佈，使用 plugin API **1.4**、tooling
 contract **2.24.0** 和 readiness policy **11**。Train C 的 host source-AOT、
-可執行檔與有限 Full-C6/C5.2 表面仍屬 Experimental/Alpha。
+可執行檔與嚴格的 artifact-evidence 功能仍屬 Experimental/Alpha。
 Core **0.1.6** 於 2026-07-26 發佈，使用 plugin API **1.6** 和 tooling
 contract **2.27.0**。它加入有限的外掛比較運算式、Device Provider API 1
 選擇/preflight/建置接線，以及靜態 device-domain lowering 授權；Core 本身

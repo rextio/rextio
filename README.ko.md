@@ -304,7 +304,7 @@ route/status/rejection 의미는 바꾸지 않으면서 분리된 승격 판정,
 marker 의도, 함수/이름 range를 추가합니다.
 Core **0.1.5**는 plugin API **1.4**, tooling contract **2.24.0**, readiness
 policy **11**로 2026-07-23 게시되었습니다. Train C의 host source-AOT,
-실행 파일, 제한된 Full-C6/C5.2 표면은 계속 Experimental/Alpha입니다.
+실행 파일, 엄격한 artifact-evidence 기능은 계속 Experimental/Alpha입니다.
 Core **0.1.6**은 plugin API **1.6**, tooling contract **2.27.0**으로
 2026-07-26 게시되었습니다. 제한된 plugin 비교식, Device Provider API 1
 선택·preflight·빌드 연결, 정적 device-domain lowering 승인을 추가하지만

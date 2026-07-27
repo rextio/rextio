@@ -309,7 +309,7 @@ route/status/rejection の意味を変えず、分離された promotion assessm
 信頼済み marker intent、関数／名前 range を追加します。
 Core **0.1.5** は plugin API **1.4**、tooling contract **2.24.0**、readiness
 policy **11** として 2026-07-23 に公開されました。Train C の host source-AOT、
-実行ファイル、限定 Full-C6/C5.2 サーフェスは引き続き Experimental/Alpha です。
+実行ファイル、厳格な artifact-evidence 機能は引き続き Experimental/Alpha です。
 Core **0.1.6** は plugin API **1.6**、tooling contract **2.27.0** として
 2026-07-26 に公開されました。限定的なプラグイン比較式、Device Provider
 API 1 の選択・preflight・ビルド接続、静的 device-domain lowering 認可を
