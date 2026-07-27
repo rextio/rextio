@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
@@ -13,6 +13,14 @@ import stat
 from typing import Literal
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    POLICY_BOOTSTRAP,
+    POLICY_COMPLETION,
+    ArtifactContractDialect,
+    require_current_dialect,
+    resolve_artifact_contract_dialect,
+)
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.build.full_c6_policy import (
     FULL_C6_LICENSE_DETECTOR_RECEIPT_KIND,
@@ -43,9 +51,12 @@ from rextio.build.full_c6_policy_template import (
 from rextio.build.owner_policy_lock import read_strict_owner_policy_lock
 
 
-FULL_C6_POLICY_COMPLETION_KIND = "full-c6-owner-policy-completion"
-FULL_C6_POLICY_COMPLETION_DOMAIN = "rextio.full-c6-owner-policy-completion.v1"
-FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION = 1
+_CURRENT_COMPLETION_IDENTITY = CURRENT.identity(POLICY_COMPLETION)
+FULL_C6_POLICY_COMPLETION_KIND = _CURRENT_COMPLETION_IDENTITY.kind
+FULL_C6_POLICY_COMPLETION_DOMAIN = _CURRENT_COMPLETION_IDENTITY.domain
+FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION = (
+    _CURRENT_COMPLETION_IDENTITY.schema_version
+)
 FULL_C6_TRANSFORMATION_ACCEPTANCE = "accept-exact-observed-transformation-set"
 MAX_FULL_C6_POLICY_COMPLETION_BYTES = MAX_FULL_C6_POLICY_SERIALIZED_BYTES
 _MAX_FINALIZE_INPUT_BYTES = MAX_FULL_C6_POLICY_TEMPLATE_BYTES + 256 * 1024
@@ -132,6 +143,18 @@ class FullC6OwnerPolicyCompletion:
     owner_declaration: FullC6OwnerDeclaration
     license_decisions: tuple[FullC6OwnerLicenseDecision, ...]
     transformation_decision: str = FULL_C6_TRANSFORMATION_ACCEPTANCE
+    kind: str = field(default=FULL_C6_POLICY_COMPLETION_KIND, init=False)
+    schema_version: int = field(
+        default=FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION,
+        init=False,
+    )
+    domain: str = field(default=FULL_C6_POLICY_COMPLETION_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not _is_sha256(self.bootstrap_request_sha256) or not _is_sha256(
@@ -164,9 +187,9 @@ class FullC6OwnerPolicyCompletion:
 
     def _payload(self) -> dict[str, object]:
         return {
-            "kind": FULL_C6_POLICY_COMPLETION_KIND,
-            "schema_version": FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION,
-            "domain": FULL_C6_POLICY_COMPLETION_DOMAIN,
+            "kind": self.kind,
+            "schema_version": self.schema_version,
+            "domain": self.domain,
             "bootstrap_request_sha256": self.bootstrap_request_sha256,
             "transformation_acceptance": {
                 "decision": FULL_C6_TRANSFORMATION_ACCEPTANCE,
@@ -224,12 +247,19 @@ def parse_full_c6_owner_policy_completion(value: bytes) -> FullC6OwnerPolicyComp
     if canonical_json_bytes(document) != value:
         raise FullC6PolicyCompletionError("Full C6 completion JSON is not canonical")
     data = _exact_dict(document, _COMPLETION_FIELDS, "completion")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            POLICY_COMPLETION,
+            kind=data["kind"],
+            schema_version=data["schema_version"],
+            domain=data["domain"],
+        )
+    except ValueError as exc:
+        raise FullC6PolicyCompletionError(
+            "Full C6 completion claims invalid authority"
+        ) from exc
     if (
-        data["kind"] != FULL_C6_POLICY_COMPLETION_KIND
-        or type(data["schema_version"]) is not int
-        or data["schema_version"] != FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION
-        or data["domain"] != FULL_C6_POLICY_COMPLETION_DOMAIN
-        or data["private_key_present"] is not False
+        data["private_key_present"] is not False
         or data["signature_present"] is not False
         or data["legal_advice_inferred"] is not False
         or data["distribution_authorized"] is not False
@@ -261,12 +291,38 @@ def parse_full_c6_owner_policy_completion(value: bytes) -> FullC6OwnerPolicyComp
         raise
     except (TypeError, ValueError) as exc:
         raise FullC6PolicyCompletionError("Full C6 completion values are invalid") from exc
+    _apply_completion_dialect(completion, dialect)
     if (
         data["completion_sha256"] != completion.completion_sha256
         or completion.to_bytes() != value
     ):
         raise FullC6PolicyCompletionError("Full C6 completion is stale or noncanonical")
     return completion
+
+
+def _completion_dialect(
+    value: FullC6OwnerPolicyCompletion,
+) -> ArtifactContractDialect:
+    dialect = resolve_artifact_contract_dialect(
+        POLICY_COMPLETION,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("policy completion dialect marker is inconsistent")
+    return dialect
+
+
+def _apply_completion_dialect(
+    value: FullC6OwnerPolicyCompletion,
+    dialect: ArtifactContractDialect,
+) -> None:
+    identity = dialect.identity(POLICY_COMPLETION)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
 
 
 def finalize_full_c6_policy_manifest(
@@ -279,6 +335,24 @@ def finalize_full_c6_policy_manifest(
         completion
     ) is not FullC6OwnerPolicyCompletion:
         raise FullC6PolicyCompletionError("Full C6 finalization requires typed inputs")
+    try:
+        bootstrap_dialect = resolve_artifact_contract_dialect(
+            POLICY_BOOTSTRAP,
+            kind=bootstrap.kind,
+            schema_version=bootstrap.schema_version,
+            domain=bootstrap.domain,
+        )
+        completion_dialect = _completion_dialect(completion)
+        require_current_dialect(bootstrap_dialect)
+        require_current_dialect(completion_dialect)
+    except ValueError as exc:
+        raise FullC6PolicyCompletionError(
+            "legacy policy contracts are read/verify-only"
+        ) from exc
+    if bootstrap_dialect is not completion_dialect:
+        raise FullC6PolicyCompletionError(
+            "policy bootstrap and completion dialects differ"
+        )
     template = bootstrap.technical_template
     if not hmac.compare_digest(
         completion.bootstrap_request_sha256,

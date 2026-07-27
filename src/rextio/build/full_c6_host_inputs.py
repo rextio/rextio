@@ -42,6 +42,10 @@ if TYPE_CHECKING:
 
 from rextio.__about__ import __version__
 from rextio.analyzer.project_namespace import has_builtin_ignored_part
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST_FILENAME,
+    CURRENT,
+)
 from rextio.artifacts.profiles import detect_host_target_triple
 from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
@@ -2566,7 +2570,7 @@ def _ensure_state_directory(root: Path, config: RextioConfig) -> Path:
     if type(request) is not str or not request:
         raise FullC6HostInputsError("Full C6 signing-request output path is required")
     request_path = _configured_project_path(root, request)
-    if request_path.name != "rextio.full-c6-final-authorization-request.json":
+    if request_path.name != CURRENT.filename(AUTHORIZATION_REQUEST_FILENAME):
         raise FullC6HostInputsError("Full C6 signing-request filename is not canonical")
     state = request_path.parent
     if state == root:

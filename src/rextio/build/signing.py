@@ -17,18 +17,31 @@ import hmac
 import json
 import re
 
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST,
+    AUTHORIZATION_SIGNATURE,
+    AUTHORIZATION_SIGNED_MESSAGE,
+    AUTHORIZATION_VERIFICATION_RECEIPT,
+    CURRENT,
+    LEGACY_0_1_7,
+    ArtifactContractDialect,
+    resolve_artifact_contract_dialect,
+)
 
-FINAL_AUTHORIZATION_REQUEST_KIND = "full-c6-final-authorization-request"
-FINAL_AUTHORIZATION_REQUEST_SCHEMA = 1
-FINAL_AUTHORIZATION_DOMAIN = "rextio.full-c6-final-authorization-request.v1"
+_CURRENT_REQUEST = CURRENT.identity(AUTHORIZATION_REQUEST)
+_CURRENT_SIGNATURE = CURRENT.identity(AUTHORIZATION_SIGNATURE)
+FINAL_AUTHORIZATION_REQUEST_KIND = _CURRENT_REQUEST.kind
+FINAL_AUTHORIZATION_REQUEST_SCHEMA = _CURRENT_REQUEST.schema_version
+FINAL_AUTHORIZATION_DOMAIN = _CURRENT_REQUEST.domain
 FINAL_AUTHORIZATION_SCOPE = "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
-DETACHED_SIGNATURE_KIND = "full-c6-detached-signature"
-DETACHED_SIGNATURE_SCHEMA = 1
+DETACHED_SIGNATURE_KIND = _CURRENT_SIGNATURE.kind
+DETACHED_SIGNATURE_SCHEMA = _CURRENT_SIGNATURE.schema_version
 DETACHED_SIGNATURE_ALGORITHM = "ed25519"
-DETACHED_SIGNATURE_DOMAIN = "rextio.full-c6-detached-signature.v1"
-SIGNATURE_RECEIPT_DOMAIN = "rextio.full-c6-signature-verification.v1"
-SIGNED_MESSAGE_PREFIX = b"REXTIO-FULL-C6-ED25519-V1\0"
+DETACHED_SIGNATURE_DOMAIN = _CURRENT_SIGNATURE.domain
+SIGNATURE_RECEIPT_DOMAIN = CURRENT.string_value(AUTHORIZATION_VERIFICATION_RECEIPT)
+SIGNED_MESSAGE_PREFIX = CURRENT.byte_value(AUTHORIZATION_SIGNED_MESSAGE)
 MAX_SIGNATURE_ENVELOPE_BYTES = 16 * 1024
+MAX_AUTHORIZATION_REQUEST_BYTES = 16 * 1024
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TARGET_TRIPLES = frozenset({"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"})
@@ -72,6 +85,12 @@ class FinalAuthorizationRequest:
     kind: str = field(default=FINAL_AUTHORIZATION_REQUEST_KIND, init=False)
     schema_version: int = field(default=FINAL_AUTHORIZATION_REQUEST_SCHEMA, init=False)
     domain: str = field(default=FINAL_AUTHORIZATION_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.target_triple) is not str or self.target_triple not in _TARGET_TRIPLES:
@@ -124,6 +143,12 @@ class DetachedSignatureEnvelope:
     schema_version: int = field(default=DETACHED_SIGNATURE_SCHEMA, init=False)
     algorithm: str = field(default=DETACHED_SIGNATURE_ALGORITHM, init=False)
     domain: str = field(default=DETACHED_SIGNATURE_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         _require_sha256(self.public_key_sha256, "public key")
@@ -184,7 +209,10 @@ class SignatureVerificationReceipt:
     authorizes_distribution: bool = False
 
     def __post_init__(self) -> None:
-        if self.domain != SIGNATURE_RECEIPT_DOMAIN:
+        if self.domain not in {
+            CURRENT.string_value(AUTHORIZATION_VERIFICATION_RECEIPT),
+            LEGACY_0_1_7.string_value(AUTHORIZATION_VERIFICATION_RECEIPT),
+        }:
             raise ValueError("signature receipt domain is invalid")
         if self.target_triple not in _TARGET_TRIPLES or self.scope != FINAL_AUTHORIZATION_SCOPE:
             raise ValueError("signature receipt scope is invalid")
@@ -221,58 +249,102 @@ class SignatureVerificationReceipt:
         return {**self._payload(), "digest": self.digest}
 
 
+def parse_final_authorization_request(
+    value: bytes | str,
+) -> FinalAuthorizationRequest:
+    """Parse an exact current or 0.1.7 authorization request."""
+    raw = _bounded_json_bytes(
+        value,
+        limit=MAX_AUTHORIZATION_REQUEST_BYTES,
+        label="authorization request",
+    )
+    document = _strict_json_document(raw, label="authorization request")
+    fields = {
+        "kind",
+        "schema_version",
+        "domain",
+        "scope",
+        "target_triple",
+        "project_sha256",
+        "artifact_sha256",
+        "evidence_sha256",
+        "reproducibility_sha256",
+        "policy_sha256",
+    }
+    if set(document) != fields:
+        raise SignatureVerificationError(
+            "authorization request fields are not the closed schema"
+        )
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            AUTHORIZATION_REQUEST,
+            kind=document["kind"],
+            schema_version=document["schema_version"],
+            domain=document["domain"],
+        )
+        request = FinalAuthorizationRequest(
+            target_triple=_require_string(
+                document["target_triple"],
+                "target triple",
+            ),
+            project_sha256=_require_sha256(document["project_sha256"], "project"),
+            artifact_sha256=_require_sha256(document["artifact_sha256"], "artifact"),
+            evidence_sha256=_require_sha256(document["evidence_sha256"], "evidence"),
+            reproducibility_sha256=_require_sha256(
+                document["reproducibility_sha256"],
+                "reproducibility",
+            ),
+            policy_sha256=_require_sha256(document["policy_sha256"], "policy"),
+            scope=_require_string(document["scope"], "scope"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise SignatureVerificationError(str(exc)) from exc
+    _apply_dialect_identity(request, dialect, AUTHORIZATION_REQUEST)
+    if not hmac.compare_digest(raw, request.canonical_manifest_bytes):
+        raise SignatureVerificationError("authorization request is not canonical JSON")
+    return request
+
+
 def parse_detached_signature_envelope(
     value: bytes | str,
 ) -> DetachedSignatureEnvelope:
     """Parse only the exact canonical JSON representation of an envelope."""
-    if type(value) is str:
-        raw = value.encode("utf-8")
-    elif type(value) is bytes:
-        raw = value
-    else:
-        raise SignatureVerificationError("signature envelope must be UTF-8 JSON bytes")
-    if not raw or len(raw) > MAX_SIGNATURE_ENVELOPE_BYTES:
-        raise SignatureVerificationError("signature envelope exceeds the byte bound")
-
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, item in pairs:
-            if key in result:
-                raise SignatureVerificationError("signature envelope contains a duplicate field")
-            result[key] = item
-        return result
-
-    def reject_constant(_value: str) -> object:
-        raise SignatureVerificationError("signature envelope contains invalid JSON")
-
-    try:
-        document = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=reject_duplicates,
-            parse_constant=reject_constant,
-        )
-    except SignatureVerificationError:
-        raise
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
-        raise SignatureVerificationError("signature envelope is not valid JSON") from exc
+    raw = _bounded_json_bytes(
+        value,
+        limit=MAX_SIGNATURE_ENVELOPE_BYTES,
+        label="signature envelope",
+    )
+    document = _strict_json_document(raw, label="signature envelope")
     if type(document) is not dict or set(document) != _ENVELOPE_FIELDS:
         raise SignatureVerificationError("signature envelope fields are not the closed schema")
-    if (
-        document.get("kind") != DETACHED_SIGNATURE_KIND
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != DETACHED_SIGNATURE_SCHEMA
-        or document.get("algorithm") != DETACHED_SIGNATURE_ALGORITHM
-        or document.get("domain") != DETACHED_SIGNATURE_DOMAIN
-    ):
+    if document.get("algorithm") != DETACHED_SIGNATURE_ALGORITHM:
         raise SignatureVerificationError("signature envelope metadata is invalid")
     try:
+        dialect = resolve_artifact_contract_dialect(
+            AUTHORIZATION_SIGNATURE,
+            kind=document["kind"],
+            schema_version=document["schema_version"],
+            domain=document["domain"],
+        )
+    except ValueError as exc:
+        raise SignatureVerificationError(
+            "signature envelope metadata is invalid"
+        ) from exc
+    try:
         envelope = DetachedSignatureEnvelope(
-            public_key_sha256=document["public_key_sha256"],
-            manifest_sha256=document["manifest_sha256"],
-            signature=document["signature"],
+            public_key_sha256=_require_sha256(
+                document["public_key_sha256"],
+                "public key",
+            ),
+            manifest_sha256=_require_sha256(
+                document["manifest_sha256"],
+                "manifest",
+            ),
+            signature=_require_string(document["signature"], "signature"),
         )
     except (TypeError, ValueError) as exc:
         raise SignatureVerificationError(str(exc)) from exc
+    _apply_dialect_identity(envelope, dialect, AUTHORIZATION_SIGNATURE)
     if not hmac.compare_digest(raw, envelope.canonical_json_bytes):
         raise SignatureVerificationError("signature envelope is not canonical JSON")
     return envelope
@@ -290,6 +362,15 @@ def verify_detached_authorization_signature(
         raise SignatureVerificationError("final authorization request has an invalid type")
     if type(envelope) is not DetachedSignatureEnvelope:
         raise SignatureVerificationError("detached signature envelope has an invalid type")
+    try:
+        request_dialect = _object_dialect(request, AUTHORIZATION_REQUEST)
+        envelope_dialect = _object_dialect(envelope, AUTHORIZATION_SIGNATURE)
+    except ValueError as exc:
+        raise SignatureVerificationError(str(exc)) from exc
+    if request_dialect is not envelope_dialect:
+        raise SignatureVerificationError(
+            "authorization request and signature use different contract dialects"
+        )
     if type(public_key) is not bytes or len(public_key) != 32:
         raise SignatureVerificationError("Ed25519 public key must be exactly 32 raw bytes")
     try:
@@ -306,7 +387,10 @@ def verify_detached_authorization_signature(
         raise SignatureVerificationError("signature envelope manifest does not match the request")
 
     signature = envelope.signature_bytes
-    message = SIGNED_MESSAGE_PREFIX + request.canonical_manifest_bytes
+    message = (
+        request_dialect.byte_value(AUTHORIZATION_SIGNED_MESSAGE)
+        + request.canonical_manifest_bytes
+    )
     if not verify_ed25519_signature(public_key, message, signature):
         raise SignatureVerificationError("Ed25519 signature verification failed")
     return SignatureVerificationReceipt(
@@ -315,7 +399,74 @@ def verify_detached_authorization_signature(
         manifest_sha256=request.manifest_sha256,
         public_key_sha256=actual_key_hash,
         signature_sha256=hashlib.sha256(signature).hexdigest(),
+        domain=request_dialect.string_value(AUTHORIZATION_VERIFICATION_RECEIPT),
     )
+
+
+def _bounded_json_bytes(value: bytes | str, *, limit: int, label: str) -> bytes:
+    if type(value) is str:
+        raw = value.encode("utf-8")
+    elif type(value) is bytes:
+        raw = value
+    else:
+        raise SignatureVerificationError(f"{label} must be UTF-8 JSON bytes")
+    if not raw or len(raw) > limit:
+        raise SignatureVerificationError(f"{label} exceeds the byte bound")
+    return raw
+
+
+def _strict_json_document(raw: bytes, *, label: str) -> dict[str, object]:
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise SignatureVerificationError(f"{label} contains a duplicate field")
+            result[key] = item
+        return result
+
+    def reject_constant(_value: str) -> object:
+        raise SignatureVerificationError(f"{label} contains invalid JSON")
+
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=reject_constant,
+        )
+    except SignatureVerificationError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise SignatureVerificationError(f"{label} is not valid JSON") from exc
+    if type(document) is not dict:
+        raise SignatureVerificationError(f"{label} root is invalid")
+    return document
+
+
+def _apply_dialect_identity(
+    value: FinalAuthorizationRequest | DetachedSignatureEnvelope,
+    dialect: ArtifactContractDialect,
+    artifact: str,
+) -> None:
+    identity = dialect.identity(artifact)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
+
+
+def _object_dialect(
+    value: FinalAuthorizationRequest | DetachedSignatureEnvelope,
+    artifact: str,
+) -> ArtifactContractDialect:
+    dialect = resolve_artifact_contract_dialect(
+        artifact,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("artifact contract dialect marker is inconsistent")
+    return dialect
 
 
 Point = tuple[int, int, int, int]
@@ -478,6 +629,12 @@ def _require_sha256(value: object, label: str) -> str:
     return value
 
 
+def _require_string(value: object, label: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{label} must be text")
+    return value
+
+
 def _canonical_json(value: object) -> bytes:
     return json.dumps(
         value,
@@ -492,15 +649,20 @@ __all__ = [
     "DETACHED_SIGNATURE_ALGORITHM",
     "DETACHED_SIGNATURE_DOMAIN",
     "DETACHED_SIGNATURE_KIND",
+    "DETACHED_SIGNATURE_SCHEMA",
     "DetachedSignatureEnvelope",
     "FINAL_AUTHORIZATION_DOMAIN",
+    "FINAL_AUTHORIZATION_REQUEST_KIND",
+    "FINAL_AUTHORIZATION_REQUEST_SCHEMA",
     "FINAL_AUTHORIZATION_SCOPE",
     "FinalAuthorizationRequest",
+    "MAX_AUTHORIZATION_REQUEST_BYTES",
     "MAX_SIGNATURE_ENVELOPE_BYTES",
     "SIGNED_MESSAGE_PREFIX",
     "SignatureVerificationError",
     "SignatureVerificationReceipt",
     "parse_detached_signature_envelope",
+    "parse_final_authorization_request",
     "verify_detached_authorization_signature",
     "verify_ed25519_signature",
 ]

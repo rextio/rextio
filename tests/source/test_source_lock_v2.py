@@ -361,7 +361,9 @@ def test_exact_signed_lock_admits_only_prebuild_and_serializes_digests(tmp_path:
     license_document = fixture.manifest.to_dict()["license"]
     assert isinstance(license_document, dict)
     assert license_document["observed"] == "MIT"
-    assert license_document["independent_detection"] == ("pending-final-full-c6-detector")
+    assert license_document["independent_detection"] == (
+        "pending-independent-license-detection"
+    )
     assert "detected" not in license_document
 
 
@@ -649,3 +651,119 @@ def test_symlinked_lock_signature_or_key_is_rejected(tmp_path: Path) -> None:
         else:
             changed = replace(fixture, key_path=linked)
         assert _verify(changed).status == "rejected"
+
+
+def test_current_sourcelock_emission_uses_v3_semantic_dialect(tmp_path: Path) -> None:
+    fixture = _write_signed(tmp_path)
+    document = fixture.manifest.to_dict()
+    assert (
+        document["kind"],
+        document["schema_version"],
+        document["domain"],
+    ) == (
+        "rextio.external-source-lock",
+        3,
+        "rextio.external-source-lock.v3",
+    )
+    signature_document = json.loads(fixture.signature_path.read_bytes())
+    assert (
+        signature_document["kind"],
+        signature_document["schema_version"],
+        signature_document["domain"],
+    ) == (
+        "rextio.external-source-lock-detached-signature",
+        2,
+        "rextio.external-source-lock-signature.v3",
+    )
+
+
+def test_exact_legacy_sourcelock_verifies_and_rejects_hybrid_or_v3_prefix(
+    tmp_path: Path,
+) -> None:
+    from rextio.artifacts.contract_dialects import (
+        CURRENT,
+        LEGACY_0_1_7,
+        SOURCE_LOCK_INDEPENDENT_DETECTION,
+        SOURCE_LOCK_MANIFEST,
+        SOURCE_LOCK_SIGNATURE,
+        SOURCE_LOCK_SIGNED_MESSAGE,
+    )
+    from rextio.source.source_lock_v2 import (
+        SourceLockV2Error,
+        parse_source_lock_v2_manifest,
+        parse_source_lock_v2_signature,
+    )
+
+    fixture = _write_signed(tmp_path)
+    legacy_manifest_identity = LEGACY_0_1_7.identity(SOURCE_LOCK_MANIFEST)
+    manifest_document = fixture.manifest.to_dict()
+    manifest_document.update(
+        {
+            "kind": legacy_manifest_identity.kind,
+            "schema_version": legacy_manifest_identity.schema_version,
+            "domain": legacy_manifest_identity.domain,
+        }
+    )
+    license_document = manifest_document["license"]
+    assert isinstance(license_document, dict)
+    license_document["independent_detection"] = LEGACY_0_1_7.string_value(
+        SOURCE_LOCK_INDEPENDENT_DETECTION
+    )
+    manifest_bytes = json.dumps(
+        manifest_document,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    manifest = parse_source_lock_v2_manifest(manifest_bytes)
+    assert manifest.canonical_json_bytes == manifest_bytes
+
+    public_key, signature = _sign(
+        SIGNING_SEED,
+        LEGACY_0_1_7.byte_value(SOURCE_LOCK_SIGNED_MESSAGE) + manifest_bytes,
+    )
+    key_hash = hashlib.sha256(public_key).hexdigest()
+    legacy_signature_identity = LEGACY_0_1_7.identity(SOURCE_LOCK_SIGNATURE)
+    signature_document = {
+        "kind": legacy_signature_identity.kind,
+        "schema_version": legacy_signature_identity.schema_version,
+        "algorithm": "ed25519",
+        "domain": legacy_signature_identity.domain,
+        "public_key_sha256": key_hash,
+        "manifest_sha256": manifest.manifest_sha256,
+        "signature": base64.b64encode(signature).decode(),
+    }
+    signature_bytes = json.dumps(
+        signature_document,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    envelope = parse_source_lock_v2_signature(signature_bytes)
+    assert envelope.canonical_json_bytes == signature_bytes
+    fixture.lock_path.write_bytes(manifest_bytes)
+    fixture.signature_path.write_bytes(signature_bytes)
+    assert _verify(replace(fixture, manifest=manifest)).prebuild_admitted is True
+
+    hybrid_document = dict(manifest_document)
+    hybrid_document["domain"] = CURRENT.identity(SOURCE_LOCK_MANIFEST).domain
+    with pytest.raises(SourceLockV2Error, match="schema"):
+        parse_source_lock_v2_manifest(
+            json.dumps(
+                hybrid_document,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+
+    _, wrong_signature = _sign(
+        SIGNING_SEED,
+        CURRENT.byte_value(SOURCE_LOCK_SIGNED_MESSAGE) + manifest_bytes,
+    )
+    signature_document["signature"] = base64.b64encode(wrong_signature).decode()
+    fixture.signature_path.write_bytes(
+        json.dumps(
+            signature_document,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    assert _verify(replace(fixture, manifest=manifest)).status == "rejected"

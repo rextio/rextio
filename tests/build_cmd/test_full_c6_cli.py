@@ -344,7 +344,7 @@ def test_bootstrap_lifecycle_preserves_context_and_writes_non_authorizing_result
             {
                 "created": True,
                 "distribution_authorized": False,
-                "filename": "rextio.full-c6-policy.bootstrap.json",
+                "filename": "rextio.artifact-policy.bootstrap.json",
                 "status": "bootstrap-required",
             }
         )

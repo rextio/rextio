@@ -32,6 +32,11 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 import unicodedata
 
 from rextio.analyzer.models import ProjectAnalysis
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST_FILENAME,
+    CURRENT,
+    require_current_dialect,
+)
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import full_c6_preauthorization_evidence_digest
 from rextio.build.full_c6_gate import (
@@ -48,6 +53,7 @@ from rextio.build.full_c6_host_inputs import (
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
 from rextio.build.full_c6_policy_manifest import (
     FullC6PolicyManifestError,
+    full_c6_policy_manifest_dialect,
     load_full_c6_policy_manifest,
 )
 from rextio.build.full_c6_publication import FullC6PublicationReceipt
@@ -80,7 +86,7 @@ if TYPE_CHECKING:
 
 
 FULL_C6_DISTRIBUTION_POLICY = "strict-evidence"
-FULL_C6_SIGNING_REQUEST_FILENAME = "rextio.full-c6-final-authorization-request.json"
+FULL_C6_SIGNING_REQUEST_FILENAME = CURRENT.filename(AUTHORIZATION_REQUEST_FILENAME)
 _MAX_PRIVATE_MATERIAL_BYTES = 16 * 1024 * 1024
 _CONTEXT_SEAL = object()
 _PUBLICATION_ADAPTER_SEAL = object()
@@ -567,6 +573,7 @@ def load_configured_full_c6_policy(
             _project_path(root, policy_path),
             expected_sha256=policy_sha256,
         )
+        require_current_dialect(full_c6_policy_manifest_dialect(receipt))
     except (FullC6PolicyManifestError, OSError, TypeError, ValueError) as exc:
         raise FullC6PipelineError(
             "RXT060 configured Full C6 owner policy manifest failed closed"

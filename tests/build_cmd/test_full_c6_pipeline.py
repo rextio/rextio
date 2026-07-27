@@ -386,7 +386,7 @@ def _write_policy_manifest(
     policy: object,
 ) -> tuple[str, str]:
     raw = full_c6_policy_manifest_bytes(policy)  # type: ignore[arg-type]
-    relative = "policy/rextio.full-c6-policy.json"
+    relative = "policy/rextio.artifact-policy.json"
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
@@ -681,7 +681,7 @@ def test_policy_bootstrap_does_not_weaken_the_strict_policy_loader(
     config = RextioConfig(
         build=BuildConfig(
             artifact_distribution_policy="strict-evidence",
-            artifact_policy_manifest="policy/rextio.full-c6-policy.json",
+            artifact_policy_manifest="policy/rextio.artifact-policy.json",
             artifact_policy_manifest_sha256=None,
             artifact_trusted_public_key="state/owner.pub",
             artifact_trusted_public_key_sha256="a" * 64,

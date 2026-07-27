@@ -8,11 +8,18 @@ host path, signature, private key, or distribution authority.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 from typing import Literal
+
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    POLICY_TEMPLATE,
+    ArtifactContractDialect,
+    resolve_artifact_contract_dialect,
+)
 import unicodedata
 
 from rextio.artifacts.evidence import (
@@ -316,6 +323,24 @@ class FullC6TechnicalPolicyTemplate:
     internal_license_observations: tuple[FullC6InternalLicenseObservation, ...]
     external_license_observation: FullC6ExternalLicenseObservation
     observed_owner_identity: str
+    kind: str = field(
+        default=CURRENT.identity(POLICY_TEMPLATE).kind,
+        init=False,
+    )
+    schema_version: int = field(
+        default=CURRENT.identity(POLICY_TEMPLATE).schema_version,
+        init=False,
+    )
+    domain: str = field(
+        default=CURRENT.identity(POLICY_TEMPLATE).domain,
+        init=False,
+    )
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.artifact_coverage) is not ArtifactPolicyCoverageInventory:
@@ -402,9 +427,11 @@ class FullC6TechnicalPolicyTemplate:
 
     def _payload(self) -> dict[str, object]:
         return {
-            "kind": FULL_C6_TECHNICAL_POLICY_TEMPLATE_KIND,
-            "schema_version": FULL_C6_TECHNICAL_POLICY_TEMPLATE_SCHEMA_VERSION,
-            "domain": FULL_C6_TECHNICAL_POLICY_TEMPLATE_DOMAIN,
+            "kind": _template_dialect(self).identity(POLICY_TEMPLATE).kind,
+            "schema_version": (
+                _template_dialect(self).identity(POLICY_TEMPLATE).schema_version
+            ),
+            "domain": _template_dialect(self).identity(POLICY_TEMPLATE).domain,
             "authority": "non-authorizing-technical-observation",
             "artifact_coverage": self.artifact_coverage.to_dict(),
             "external_authority": self.external_authority.to_dict(),
@@ -441,12 +468,19 @@ def parse_full_c6_technical_policy_template(
 ) -> FullC6TechnicalPolicyTemplate:
     """Parse one exact dict produced by :meth:`FullC6TechnicalPolicyTemplate.to_dict`."""
     data = _exact_dict(value, _TEMPLATE_FIELDS, "technical template")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            POLICY_TEMPLATE,
+            kind=data["kind"],
+            schema_version=data["schema_version"],
+            domain=data["domain"],
+        )
+    except ValueError as exc:
+        raise FullC6PolicyTemplateError(
+            "Full C6 technical template claims invalid authority"
+        ) from exc
     if (
-        data["kind"] != FULL_C6_TECHNICAL_POLICY_TEMPLATE_KIND
-        or type(data["schema_version"]) is not int
-        or data["schema_version"] != FULL_C6_TECHNICAL_POLICY_TEMPLATE_SCHEMA_VERSION
-        or data["domain"] != FULL_C6_TECHNICAL_POLICY_TEMPLATE_DOMAIN
-        or data["authority"] != "non-authorizing-technical-observation"
+        data["authority"] != "non-authorizing-technical-observation"
         or data["owner_completed"] is not False
         or data["legal_approval_inferred"] is not False
         or data["signed"] is not False
@@ -458,8 +492,8 @@ def parse_full_c6_technical_policy_template(
         _OWNER_REQUIREMENT_FIELDS,
         "owner completion requirements",
     )
-    for field in _OWNER_REQUIREMENT_BOOLEAN_FIELDS:
-        if requirements[field] is not True:
+    for requirement_field in _OWNER_REQUIREMENT_BOOLEAN_FIELDS:
+        if requirements[requirement_field] is not True:
             raise FullC6PolicyTemplateError("Full C6 owner completion requirement is weakened")
     rows_value = _exact_list(data["rows"], "technical rows")
     transformations_value = _exact_list(data["transformations"], "transformations")
@@ -487,6 +521,7 @@ def parse_full_c6_technical_policy_template(
             requirements["observed_owner_identity"], "observed owner identity"
         ),
     )
+    _apply_template_dialect(template, dialect)
     if (
         data["authority_partition_sha256"] != template.authority_partition_sha256
         or data["transformation_set_sha256"] != template.transformation_set_sha256
@@ -495,6 +530,31 @@ def parse_full_c6_technical_policy_template(
     ):
         raise FullC6PolicyTemplateError("Full C6 technical template is stale or noncanonical")
     return template
+
+
+def _template_dialect(
+    value: FullC6TechnicalPolicyTemplate,
+) -> ArtifactContractDialect:
+    dialect = resolve_artifact_contract_dialect(
+        POLICY_TEMPLATE,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("policy template dialect marker is inconsistent")
+    return dialect
+
+
+def _apply_template_dialect(
+    value: FullC6TechnicalPolicyTemplate,
+    dialect: ArtifactContractDialect,
+) -> None:
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
+    identity = dialect.identity(POLICY_TEMPLATE)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
 
 
 def _validate_rows_and_partitions(
@@ -809,9 +869,12 @@ def _digest(value: object) -> str:
         raise FullC6PolicyTemplateError("Full C6 technical template cannot be hashed") from exc
 
 
-FULL_C6_TECHNICAL_POLICY_TEMPLATE_KIND = "full-c6-owner-policy-technical-template"
-FULL_C6_TECHNICAL_POLICY_TEMPLATE_DOMAIN = "rextio.full-c6-owner-policy-template.v1"
-FULL_C6_TECHNICAL_POLICY_TEMPLATE_SCHEMA_VERSION = 1
+_CURRENT_TEMPLATE_IDENTITY = CURRENT.identity(POLICY_TEMPLATE)
+FULL_C6_TECHNICAL_POLICY_TEMPLATE_KIND = _CURRENT_TEMPLATE_IDENTITY.kind
+FULL_C6_TECHNICAL_POLICY_TEMPLATE_DOMAIN = _CURRENT_TEMPLATE_IDENTITY.domain
+FULL_C6_TECHNICAL_POLICY_TEMPLATE_SCHEMA_VERSION = (
+    _CURRENT_TEMPLATE_IDENTITY.schema_version
+)
 FULL_C6_TECHNICAL_TRANSFORMATION_SET_DOMAIN = "rextio.full-c6-transformation-set.v1"
 FULL_C6_INTERNAL_LICENSE_OBSERVATION_DOMAIN = (
     "rextio.full-c6-internal-license-observation.v1"

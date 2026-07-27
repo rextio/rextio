@@ -20,6 +20,17 @@ from pathlib import Path
 from typing import SupportsIndex
 
 from rextio.artifacts import ArtifactProvenance
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    LEGACY_0_1_7,
+    SOURCE_LOCK_INDEPENDENT_DETECTION,
+    SOURCE_LOCK_MANIFEST,
+    SOURCE_LOCK_SIGNATURE,
+    SOURCE_LOCK_SIGNED_MESSAGE,
+    SOURCE_LOCK_VERIFICATION_RECEIPT,
+    ArtifactContractDialect,
+    resolve_artifact_contract_dialect,
+)
 from rextio.build.signing import verify_ed25519_signature
 from rextio.source.external import (
     MAX_SOURCE_LOCK_BYTES,
@@ -43,16 +54,21 @@ from rextio.source.wheel_authority import (
 )
 
 
-SOURCE_LOCK_V2_KIND = "rextio.external-source-lock"
-SOURCE_LOCK_V2_SCHEMA_VERSION = 2
-SOURCE_LOCK_V2_DOMAIN = "rextio.external-source-lock.v2"
-SOURCE_LOCK_V2_SIGNATURE_KIND = "rextio.external-source-lock-detached-signature"
-SOURCE_LOCK_V2_SIGNATURE_DOMAIN = "rextio.external-source-lock-signature.v2"
-SOURCE_LOCK_V2_RECEIPT_DOMAIN = "rextio.external-source-lock-verification.v2"
-SOURCE_LOCK_V2_SIGNED_MESSAGE_PREFIX = b"REXTIO-EXTERNAL-SOURCE-LOCK-ED25519-V2\0"
+_CURRENT_MANIFEST = CURRENT.identity(SOURCE_LOCK_MANIFEST)
+_CURRENT_SIGNATURE = CURRENT.identity(SOURCE_LOCK_SIGNATURE)
+SOURCE_LOCK_V2_KIND = _CURRENT_MANIFEST.kind
+SOURCE_LOCK_V2_SCHEMA_VERSION = _CURRENT_MANIFEST.schema_version
+SOURCE_LOCK_V2_DOMAIN = _CURRENT_MANIFEST.domain
+SOURCE_LOCK_V2_SIGNATURE_KIND = _CURRENT_SIGNATURE.kind
+SOURCE_LOCK_V2_SIGNATURE_SCHEMA_VERSION = _CURRENT_SIGNATURE.schema_version
+SOURCE_LOCK_V2_SIGNATURE_DOMAIN = _CURRENT_SIGNATURE.domain
+SOURCE_LOCK_V2_RECEIPT_DOMAIN = CURRENT.string_value(SOURCE_LOCK_VERIFICATION_RECEIPT)
+SOURCE_LOCK_V2_SIGNED_MESSAGE_PREFIX = CURRENT.byte_value(SOURCE_LOCK_SIGNED_MESSAGE)
 MAX_SOURCE_LOCK_V2_SIGNATURE_BYTES = 16 * 1024
 MAX_SOURCE_LOCK_V2_KEY_BYTES = 32
-SOURCE_LOCK_V2_LICENSE_DETECTION = "pending-final-full-c6-detector"
+SOURCE_LOCK_V2_LICENSE_DETECTION = CURRENT.string_value(
+    SOURCE_LOCK_INDEPENDENT_DETECTION
+)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OWNER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@+:/-]{0,254}$")
 _VERIFIED_CONTEXT_KEY = os.urandom(32)
@@ -148,6 +164,12 @@ class SourceLockV2Manifest:
     kind: str = field(default=SOURCE_LOCK_V2_KIND, init=False)
     schema_version: int = field(default=SOURCE_LOCK_V2_SCHEMA_VERSION, init=False)
     domain: str = field(default=SOURCE_LOCK_V2_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
     max_depth: int = field(default=1, init=False)
     authority: str = field(default="prebuild-admission-only", init=False)
 
@@ -211,9 +233,9 @@ class SourceLockV2Manifest:
     def to_dict(self) -> dict[str, object]:
         """Return the closed SourceLock v2 document."""
         return {
-            "kind": SOURCE_LOCK_V2_KIND,
-            "schema_version": SOURCE_LOCK_V2_SCHEMA_VERSION,
-            "domain": SOURCE_LOCK_V2_DOMAIN,
+            "kind": self.kind,
+            "schema_version": self.schema_version,
+            "domain": self.domain,
             "authority": "prebuild-admission-only",
             "package": self.package,
             "distribution": self.distribution,
@@ -227,7 +249,9 @@ class SourceLockV2Manifest:
             "license": {
                 "declared": self.declared_license,
                 "observed": self.observed_license,
-                "independent_detection": SOURCE_LOCK_V2_LICENSE_DETECTION,
+                "independent_detection": _source_lock_dialect(self).string_value(
+                    SOURCE_LOCK_INDEPENDENT_DETECTION
+                ),
                 "material_sha256": self.license_material_sha256,
                 "evidence_sha256": self.license_evidence_sha256,
             },
@@ -250,6 +274,18 @@ class SourceLockV2Signature:
     public_key_sha256: str
     manifest_sha256: str
     signature: str
+    kind: str = field(default=SOURCE_LOCK_V2_SIGNATURE_KIND, init=False)
+    schema_version: int = field(
+        default=SOURCE_LOCK_V2_SIGNATURE_SCHEMA_VERSION,
+        init=False,
+    )
+    domain: str = field(default=SOURCE_LOCK_V2_SIGNATURE_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         _require_sha256(self.public_key_sha256, "signature public key")
@@ -286,10 +322,10 @@ class SourceLockV2Signature:
     def to_dict(self) -> dict[str, object]:
         """Return the closed detached-envelope document."""
         return {
-            "kind": SOURCE_LOCK_V2_SIGNATURE_KIND,
-            "schema_version": 1,
+            "kind": self.kind,
+            "schema_version": self.schema_version,
             "algorithm": "ed25519",
-            "domain": SOURCE_LOCK_V2_SIGNATURE_DOMAIN,
+            "domain": self.domain,
             "public_key_sha256": self.public_key_sha256,
             "manifest_sha256": self.manifest_sha256,
             "signature": self.signature,
@@ -311,7 +347,10 @@ class SourceLockV2Admission:
     authorizes_distribution: bool = False
 
     def __post_init__(self) -> None:
-        if self.domain != SOURCE_LOCK_V2_RECEIPT_DOMAIN:
+        if self.domain not in {
+            CURRENT.string_value(SOURCE_LOCK_VERIFICATION_RECEIPT),
+            LEGACY_0_1_7.string_value(SOURCE_LOCK_VERIFICATION_RECEIPT),
+        }:
             raise ValueError("SourceLock v2 admission domain is invalid")
         if self.status not in {"admitted", "rejected"}:
             raise ValueError("SourceLock v2 admission status is invalid")
@@ -330,7 +369,7 @@ class SourceLockV2Admission:
     def to_dict(self) -> dict[str, object]:
         """Return the sanitized total admission result."""
         return {
-            "domain": SOURCE_LOCK_V2_RECEIPT_DOMAIN,
+            "domain": self.domain,
             "status": self.status,
             "reason": self.reason,
             "manifest_sha256": self.manifest_sha256,
@@ -426,6 +465,9 @@ class SourceLockV2VerifiedContext:
             redistribute=self.manifest.redistribute,
             transform=self.manifest.transform,
         )
+        manifest_dialect = _source_lock_dialect(self.manifest)
+        if manifest_dialect is not CURRENT:
+            _apply_source_lock_dialect(expected, manifest_dialect)
         if (
             expected != self.manifest
             or self.admission.manifest_sha256 != self.manifest.manifest_sha256
@@ -880,6 +922,12 @@ def verify_source_lock_v2_with_context(
             raise SourceLockV2Error("public key hash mismatch")
         manifest = parse_source_lock_v2_manifest(lock_bytes)
         envelope = parse_source_lock_v2_signature(signature_bytes)
+        manifest_dialect = _source_lock_dialect(manifest)
+        signature_dialect = _source_lock_signature_dialect(envelope)
+        if manifest_dialect is not signature_dialect:
+            raise SourceLockV2Error(
+                "SourceLock manifest and signature use different contract dialects"
+            )
         expected = build_source_lock_v2_manifest(
             plan=trusted_plan,
             wheel=wheel,
@@ -890,6 +938,8 @@ def verify_source_lock_v2_with_context(
             redistribute=manifest.redistribute,
             transform=manifest.transform,
         )
+        if manifest_dialect is not CURRENT:
+            _apply_source_lock_dialect(expected, manifest_dialect)
         if manifest != expected:
             raise SourceLockV2Error("SourceLock v2 is stale")
         if (
@@ -898,7 +948,10 @@ def verify_source_lock_v2_with_context(
         ):
             raise SourceLockV2Error("SourceLock v2 signature binding is stale")
         raw_signature = envelope.signature_bytes
-        message = SOURCE_LOCK_V2_SIGNED_MESSAGE_PREFIX + manifest.canonical_json_bytes
+        message = (
+            manifest_dialect.byte_value(SOURCE_LOCK_SIGNED_MESSAGE)
+            + manifest.canonical_json_bytes
+        )
         if not verify_ed25519_signature(public_key, message, raw_signature):
             raise SourceLockV2Error("SourceLock v2 signature verification failed")
         final_wheel = verify_source_wheel(
@@ -914,6 +967,9 @@ def verify_source_lock_v2_with_context(
             manifest_sha256=manifest.manifest_sha256,
             public_key_sha256=public_key_sha256,
             signature_sha256=hashlib.sha256(raw_signature).hexdigest(),
+            domain=manifest_dialect.string_value(
+                SOURCE_LOCK_VERIFICATION_RECEIPT
+            ),
             prebuild_admitted=True,
         )
         context = _create_source_lock_v2_verified_context(
@@ -956,7 +1012,7 @@ def verify_source_lock_v2(
 
 
 def parse_source_lock_v2_manifest(value: bytes) -> SourceLockV2Manifest:
-    """Parse only the closed canonical SourceLock v2 JSON representation."""
+    """Parse an exact current or legacy closed canonical SourceLock document."""
     document = _parse_canonical_document(value, MAX_SOURCE_LOCK_BYTES)
     expected_fields = {
         "kind",
@@ -978,11 +1034,19 @@ def parse_source_lock_v2_manifest(value: bytes) -> SourceLockV2Manifest:
         "authorizes_build",
         "authorizes_distribution",
     }
-    if set(document) != expected_fields or (
-        document.get("kind") != SOURCE_LOCK_V2_KIND
-        or document.get("schema_version") != SOURCE_LOCK_V2_SCHEMA_VERSION
-        or document.get("domain") != SOURCE_LOCK_V2_DOMAIN
-        or document.get("authority") != "prebuild-admission-only"
+    if set(document) != expected_fields:
+        raise SourceLockV2Error("SourceLock v2 schema is invalid")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            SOURCE_LOCK_MANIFEST,
+            kind=document["kind"],
+            schema_version=document["schema_version"],
+            domain=document["domain"],
+        )
+    except ValueError as exc:
+        raise SourceLockV2Error("SourceLock v2 schema is invalid") from exc
+    if (
+        document.get("authority") != "prebuild-admission-only"
         or document.get("max_depth") != 1
         or document.get("authorizes_build") is not False
         or document.get("authorizes_distribution") is not False
@@ -1001,7 +1065,9 @@ def parse_source_lock_v2_manifest(value: bytes) -> SourceLockV2Manifest:
             "evidence_sha256",
         },
     )
-    if license_doc["independent_detection"] != SOURCE_LOCK_V2_LICENSE_DETECTION:
+    if license_doc["independent_detection"] != dialect.string_value(
+        SOURCE_LOCK_INDEPENDENT_DETECTION
+    ):
         raise SourceLockV2Error("SourceLock v2 license detection state is invalid")
     decision_doc = _exact_dict(
         document["owner_decision"], {"owner", "allow", "redistribute", "transform"}
@@ -1072,13 +1138,14 @@ def parse_source_lock_v2_manifest(value: bytes) -> SourceLockV2Manifest:
         )
     except (TypeError, ValueError) as exc:
         raise SourceLockV2Error("SourceLock v2 values are invalid") from exc
+    _apply_source_lock_dialect(manifest, dialect)
     if not hmac.compare_digest(value, manifest.canonical_json_bytes):
         raise SourceLockV2Error("SourceLock v2 JSON is not canonical")
     return manifest
 
 
 def parse_source_lock_v2_signature(value: bytes) -> SourceLockV2Signature:
-    """Parse only the closed canonical detached signature envelope."""
+    """Parse an exact current or legacy canonical detached signature envelope."""
     document = _parse_canonical_document(value, MAX_SOURCE_LOCK_V2_SIGNATURE_BYTES)
     fields = {
         "kind",
@@ -1089,14 +1156,15 @@ def parse_source_lock_v2_signature(value: bytes) -> SourceLockV2Signature:
         "manifest_sha256",
         "signature",
     }
-    if set(document) != fields or (
-        document.get("kind") != SOURCE_LOCK_V2_SIGNATURE_KIND
-        or document.get("schema_version") != 1
-        or document.get("algorithm") != "ed25519"
-        or document.get("domain") != SOURCE_LOCK_V2_SIGNATURE_DOMAIN
-    ):
+    if set(document) != fields or document.get("algorithm") != "ed25519":
         raise SourceLockV2Error("SourceLock v2 signature schema is invalid")
     try:
+        dialect = resolve_artifact_contract_dialect(
+            SOURCE_LOCK_SIGNATURE,
+            kind=document["kind"],
+            schema_version=document["schema_version"],
+            domain=document["domain"],
+        )
         envelope = SourceLockV2Signature(
             public_key_sha256=_string(document["public_key_sha256"]),
             manifest_sha256=_string(document["manifest_sha256"]),
@@ -1104,9 +1172,60 @@ def parse_source_lock_v2_signature(value: bytes) -> SourceLockV2Signature:
         )
     except (TypeError, ValueError) as exc:
         raise SourceLockV2Error("SourceLock v2 signature values are invalid") from exc
+    _apply_source_lock_signature_dialect(envelope, dialect)
     if not hmac.compare_digest(value, envelope.canonical_json_bytes):
         raise SourceLockV2Error("SourceLock v2 signature JSON is not canonical")
     return envelope
+
+
+def _source_lock_dialect(
+    value: SourceLockV2Manifest,
+) -> ArtifactContractDialect:
+    dialect = resolve_artifact_contract_dialect(
+        SOURCE_LOCK_MANIFEST,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("SourceLock manifest dialect marker is inconsistent")
+    return dialect
+
+
+def _source_lock_signature_dialect(
+    value: SourceLockV2Signature,
+) -> ArtifactContractDialect:
+    dialect = resolve_artifact_contract_dialect(
+        SOURCE_LOCK_SIGNATURE,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("SourceLock signature dialect marker is inconsistent")
+    return dialect
+
+
+def _apply_source_lock_dialect(
+    value: SourceLockV2Manifest,
+    dialect: ArtifactContractDialect,
+) -> None:
+    identity = dialect.identity(SOURCE_LOCK_MANIFEST)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
+
+
+def _apply_source_lock_signature_dialect(
+    value: SourceLockV2Signature,
+    dialect: ArtifactContractDialect,
+) -> None:
+    identity = dialect.identity(SOURCE_LOCK_SIGNATURE)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
 
 
 def _read_pinned_regular(path: Path, limit: int) -> bytes:
@@ -1237,6 +1356,7 @@ __all__ = [
     "SOURCE_LOCK_V2_DOMAIN",
     "SOURCE_LOCK_V2_LICENSE_DETECTION",
     "SOURCE_LOCK_V2_SIGNATURE_DOMAIN",
+    "SOURCE_LOCK_V2_SIGNATURE_SCHEMA_VERSION",
     "SOURCE_LOCK_V2_SIGNED_MESSAGE_PREFIX",
     "SourceLockV2Admission",
     "SourceLockV2AnalysisIdentity",

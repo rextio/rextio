@@ -13,7 +13,7 @@ or observed race fails closed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
@@ -24,6 +24,14 @@ import stat
 from typing import Literal
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    POLICY_BOOTSTRAP,
+    POLICY_BOOTSTRAP_FILENAME,
+    POLICY_TEMPLATE,
+    ArtifactContractDialect,
+    resolve_artifact_contract_dialect,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
     artifact_policy_coverage_inventory_digest,
@@ -43,10 +51,13 @@ from rextio.build.full_c6_policy_template import (
 from rextio.config.schema import RextioConfig
 
 
-FULL_C6_POLICY_BOOTSTRAP_FILENAME = "rextio.full-c6-policy.bootstrap.json"
-FULL_C6_POLICY_BOOTSTRAP_KIND = "full-c6-owner-policy-completion-request"
-FULL_C6_POLICY_BOOTSTRAP_DOMAIN = "rextio.full-c6-owner-policy-bootstrap.v2"
-FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = 2
+_CURRENT_BOOTSTRAP_IDENTITY = CURRENT.identity(POLICY_BOOTSTRAP)
+FULL_C6_POLICY_BOOTSTRAP_FILENAME = CURRENT.filename(POLICY_BOOTSTRAP_FILENAME)
+FULL_C6_POLICY_BOOTSTRAP_KIND = _CURRENT_BOOTSTRAP_IDENTITY.kind
+FULL_C6_POLICY_BOOTSTRAP_DOMAIN = _CURRENT_BOOTSTRAP_IDENTITY.domain
+FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = (
+    _CURRENT_BOOTSTRAP_IDENTITY.schema_version
+)
 
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
@@ -278,6 +289,18 @@ class FullC6PolicyBootstrapRequest:
     inputs: FullC6PolicyBootstrapInputs
     trusted_owner_public_key_sha256: str
     technical_template: FullC6TechnicalPolicyTemplate
+    kind: str = field(default=FULL_C6_POLICY_BOOTSTRAP_KIND, init=False)
+    schema_version: int = field(
+        default=FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION,
+        init=False,
+    )
+    domain: str = field(default=FULL_C6_POLICY_BOOTSTRAP_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.inputs) is not FullC6PolicyBootstrapInputs:
@@ -368,7 +391,7 @@ class FullC6PolicyBootstrapRequest:
                 "complete_for_scope_required": True,
             },
             "distribution_authorized": False,
-            "domain": FULL_C6_POLICY_BOOTSTRAP_DOMAIN,
+            "domain": self.domain,
             "input_aggregate_set_sha256": _digest(
                 {
                     "domain": "rextio.full-c6-policy-bootstrap-input-set.v1",
@@ -376,9 +399,9 @@ class FullC6PolicyBootstrapRequest:
                 }
             ),
             "input_aggregates": input_aggregates,
-            "kind": FULL_C6_POLICY_BOOTSTRAP_KIND,
+            "kind": self.kind,
             "owner_completion_required": True,
-            "schema_version": FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "target": {
                 "build_profile": inputs.build_profile,
                 "target_triple": inputs.target_triple,
@@ -438,12 +461,19 @@ def parse_full_c6_policy_bootstrap_request(
     }
     if set(document) != fields:
         raise FullC6PolicyBootstrapError("Full C6 policy bootstrap schema is invalid")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            POLICY_BOOTSTRAP,
+            kind=document["kind"],
+            schema_version=document["schema_version"],
+            domain=document["domain"],
+        )
+    except ValueError as exc:
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy bootstrap claims invalid authority"
+        ) from exc
     if (
-        document["kind"] != FULL_C6_POLICY_BOOTSTRAP_KIND
-        or type(document["schema_version"]) is not int
-        or document["schema_version"] != FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION
-        or document["domain"] != FULL_C6_POLICY_BOOTSTRAP_DOMAIN
-        or document["authority"] != "non-authorizing-observation"
+        document["authority"] != "non-authorizing-observation"
         or document["owner_completion_required"] is not True
         or document["distribution_authorized"] is not False
     ):
@@ -451,6 +481,21 @@ def parse_full_c6_policy_bootstrap_request(
             "Full C6 policy bootstrap claims invalid authority"
         )
     template = parse_full_c6_technical_policy_template(document["technical_template"])
+    try:
+        template_dialect = resolve_artifact_contract_dialect(
+            POLICY_TEMPLATE,
+            kind=template.kind,
+            schema_version=template.schema_version,
+            domain=template.domain,
+        )
+    except ValueError as exc:  # pragma: no cover - template parser already enforces this
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy template metadata is invalid"
+        ) from exc
+    if template_dialect is not dialect:
+        raise FullC6PolicyBootstrapError(
+            "Full C6 policy bootstrap and template dialects differ"
+        )
     aggregates = _bootstrap_dict(
         document["input_aggregates"],
         set(_INPUT_DIGEST_FIELDS),
@@ -494,6 +539,7 @@ def parse_full_c6_policy_bootstrap_request(
         raise FullC6PolicyBootstrapError(
             "Full C6 policy bootstrap values are invalid"
         ) from exc
+    _apply_bootstrap_dialect(request, dialect)
     declared = _require_sha256(document["request_sha256"], "bootstrap request")
     if expected_request_sha256 is not None:
         expected = _require_sha256(expected_request_sha256, "expected bootstrap request")
@@ -508,6 +554,17 @@ def parse_full_c6_policy_bootstrap_request(
     ):
         raise FullC6PolicyBootstrapError("Full C6 policy bootstrap request is stale")
     return request
+
+
+def _apply_bootstrap_dialect(
+    value: FullC6PolicyBootstrapRequest,
+    dialect: ArtifactContractDialect,
+) -> None:
+    identity = dialect.identity(POLICY_BOOTSTRAP)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
 
 
 def _parse_bootstrap_json(value: bytes) -> dict[str, object]:

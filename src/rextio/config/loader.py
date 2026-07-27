@@ -11,6 +11,10 @@ from typing import Any, Mapping
 
 from rextio.__about__ import __version__
 from rextio.artifacts.closure import resolve_executable_fallback
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST_FILENAME,
+    CURRENT,
+)
 from rextio.artifacts.models import FallbackStrategy
 from rextio.limits import MAX_BUILD_TIMEOUT_SECONDS
 from rextio.config.defaults import DEFAULT_CONFIG
@@ -351,11 +355,11 @@ def _validate_config_values(
     if (
         signing_request_output is not None
         and PurePosixPath(signing_request_output).name
-        != "rextio.full-c6-final-authorization-request.json"
+        != CURRENT.filename(AUTHORIZATION_REQUEST_FILENAME)
     ):
         raise ConfigError(
             "[build].artifact_signing_request_output must use the exact basename "
-            "'rextio.full-c6-final-authorization-request.json'"
+            f"'{CURRENT.filename(AUTHORIZATION_REQUEST_FILENAME)}'"
         )
     _require_optional_project_relative_path(
         "build",

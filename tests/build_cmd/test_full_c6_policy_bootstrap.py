@@ -77,7 +77,7 @@ artifact_evidence_policy = "required"
 artifact_distribution_policy = "strict-evidence"
 artifact_source_lock_manifest = "locks/source-lock.v2.json"
 artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
-artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
+artifact_policy_manifest = "locks/rextio.artifact-policy.json"
 {digest}artifact_cargo_vendor = "vendor/cargo"
 artifact_cargo_vendor_sha256 = "{_SHA_A}"
 artifact_cargo_lock = "locks/Cargo.lock"
@@ -86,7 +86,7 @@ artifact_toolchain_support_lock = "locks/toolchain-support.lock.json"
 artifact_toolchain_support_lock_sha256 = "{_SHA_C}"
 artifact_trusted_public_key = "keys/release.pub"
 artifact_trusted_public_key_sha256 = "{_SHA_A}"
-artifact_signing_request_output = "state/rextio.full-c6-final-authorization-request.json"
+artifact_signing_request_output = "state/rextio.artifact-authorization-request.json"
 {signature}artifact_repeat_builds = 2
 
 [imports]
@@ -387,7 +387,7 @@ def test_bootstrap_request_is_deterministic_exact_and_non_authorizing(
     ]
     text = payload.decode("ascii")
     assert str(tmp_path) not in text
-    assert "locks/rextio.full-c6-policy.json" not in text
+    assert "locks/rextio.artifact-policy.json" not in text
     assert "source bytes" not in text
     assert "private" not in text
     assert "signature" not in text

@@ -242,7 +242,7 @@ checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 compute_full_c6_cargo_vendor_tree_sha256(vendor)
             ),
             artifact_signing_request_output=(
-                "state/rextio.full-c6-final-authorization-request.json"
+                "state/rextio.artifact-authorization-request.json"
             ),
         )
     )

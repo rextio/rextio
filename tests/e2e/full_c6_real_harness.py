@@ -538,7 +538,7 @@ def _typed_config(
             artifact_source_lock_signature=(
                 "authority/rextio.external-source.lock.v2.sig.json"
             ),
-            artifact_policy_manifest="policy/rextio.full-c6-policy.json",
+            artifact_policy_manifest="policy/rextio.artifact-policy.json",
             artifact_policy_manifest_sha256=policy_sha256,
             artifact_cargo_vendor="cargo-vendor",
             artifact_cargo_vendor_sha256=cargo_vendor_sha256,
@@ -550,7 +550,7 @@ def _typed_config(
             artifact_trusted_public_key_sha256=key_sha256,
             artifact_final_signature=final_signature,
             artifact_signing_request_output=(
-                ".rextio/full-c6-state/rextio.full-c6-final-authorization-request.json"
+                ".rextio/full-c6-state/rextio.artifact-authorization-request.json"
             ),
             artifact_repeat_builds=2,
             build_timeout_seconds=900,
@@ -3475,7 +3475,7 @@ def _finalize_owner_policy(
     bootstrap_path: Path,
     completion_path: Path,
 ) -> str:
-    policy_path = project / "policy" / "rextio.full-c6-policy.json"
+    policy_path = project / "policy" / "rextio.artifact-policy.json"
     stdout, _stderr, _cargo = _run_fresh_rextio(
         [
             str(_installed_rextio_entrypoint()),
@@ -3546,7 +3546,7 @@ def _write_final_signature(
 
     request_path = (
         project
-        / ".rextio/full-c6-state/rextio.full-c6-final-authorization-request.json"
+        / ".rextio/full-c6-state/rextio.artifact-authorization-request.json"
     )
     raw, document = _read_canonical_document(request_path)
     request = FinalAuthorizationRequest(

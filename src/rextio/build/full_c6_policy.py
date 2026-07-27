@@ -28,6 +28,7 @@ from rextio.artifacts.evidence import (
     canonical_json_bytes,
     sha256_hex,
 )
+from rextio.artifacts.contract_dialects import CURRENT
 from rextio.artifacts.full_authorization import FULL_C6_SCOPE
 
 
@@ -1484,6 +1485,12 @@ class FullC6PolicyReceipt:
     kind: str = field(default=FULL_C6_POLICY_RECEIPT_KIND, init=False)
     domain: str = field(default=FULL_C6_POLICY_RECEIPT_DOMAIN, init=False)
     scope: str = field(default=FULL_C6_SCOPE, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         rows, transformations, artifact_coverage, external_authority = (

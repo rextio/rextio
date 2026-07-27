@@ -724,7 +724,7 @@ def test_inherited_environment_is_reduced_to_two_discovery_values() -> None:
 def _host_config(**build_overrides: object) -> RextioConfig:
     values: dict[str, object] = {
         "artifact_signing_request_output": (
-            "state/rextio.full-c6-final-authorization-request.json"
+            "state/rextio.artifact-authorization-request.json"
         ),
         **build_overrides,
     }

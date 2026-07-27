@@ -79,7 +79,7 @@ def _write_strict_bootstrap_config(
                 (
                     'artifact_signing_request_output = '
                     '".rextio/full-c6-state/'
-                    'rextio.full-c6-final-authorization-request.json"'
+                    'rextio.artifact-authorization-request.json"'
                 ),
                 "artifact_repeat_builds = 2",
                 "",

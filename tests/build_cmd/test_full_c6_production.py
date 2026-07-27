@@ -55,7 +55,7 @@ def _collect_bounded_production_authority(
         tmp_path,
         monkeypatch,
         build_overrides={
-            "artifact_policy_manifest": "locks/rextio.full-c6-policy.json",
+            "artifact_policy_manifest": "locks/rextio.artifact-policy.json",
             "artifact_policy_manifest_sha256": (
                 policy.digest if pinned_policy else None
             ),
@@ -263,7 +263,7 @@ def test_prerequisites_require_the_exact_cargo_source_authority_object(
         inputs.config,
         build=replace(
             inputs.config.build,
-            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+            artifact_policy_manifest="locks/rextio.artifact-policy.json",
         ),
     )
     cloned_sources = replace(inputs.toolchain.cargo_sources)
@@ -312,7 +312,7 @@ def test_production_forwards_exact_support_objects_to_external_execution(
         inputs.config,
         build=replace(
             inputs.config.build,
-            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+            artifact_policy_manifest="locks/rextio.artifact-policy.json",
         ),
     )
     observed = False
@@ -359,7 +359,7 @@ def test_production_source_date_epoch_matches_the_executor_bound(
         inputs.config,
         build=replace(
             inputs.config.build,
-            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+            artifact_policy_manifest="locks/rextio.artifact-policy.json",
         ),
     )
     arguments = {

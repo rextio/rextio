@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 
 import pytest
 
@@ -272,7 +273,7 @@ def test_envelope_parser_requires_closed_canonical_strict_json() -> None:
     )
     with pytest.raises(SignatureVerificationError, match="base64"):
         parse_detached_signature_envelope(invalid_base64)
-    boolean_schema = encoded.replace(b'"schema_version":1', b'"schema_version":true')
+    boolean_schema = encoded.replace(b'"schema_version":2', b'"schema_version":true')
     with pytest.raises(SignatureVerificationError, match="metadata"):
         parse_detached_signature_envelope(boolean_schema)
 
@@ -292,3 +293,147 @@ def test_authorization_request_rejects_expanded_scope_or_invalid_digest() -> Non
         )
     with pytest.raises(ValueError, match="artifact"):
         _request(artifact_sha256="NOT-A-DIGEST")
+
+
+def test_current_authorization_emission_uses_semantic_identity() -> None:
+    from rextio.build.signing import (
+        DETACHED_SIGNATURE_DOMAIN,
+        DETACHED_SIGNATURE_KIND,
+        DETACHED_SIGNATURE_SCHEMA,
+        FINAL_AUTHORIZATION_DOMAIN,
+        FINAL_AUTHORIZATION_REQUEST_KIND,
+        FINAL_AUTHORIZATION_REQUEST_SCHEMA,
+        SIGNED_MESSAGE_PREFIX,
+        DetachedSignatureEnvelope,
+    )
+
+    request = _request()
+    envelope = DetachedSignatureEnvelope.from_signature(
+        public_key_sha256="11" * 32,
+        manifest_sha256=request.manifest_sha256,
+        signature=bytes(range(64)),
+    )
+    assert (
+        request.kind,
+        request.schema_version,
+        request.domain,
+    ) == (
+        FINAL_AUTHORIZATION_REQUEST_KIND,
+        FINAL_AUTHORIZATION_REQUEST_SCHEMA,
+        FINAL_AUTHORIZATION_DOMAIN,
+    ) == (
+        "artifact-authorization-request",
+        2,
+        "rextio.artifact-authorization-request.v2",
+    )
+    assert (
+        envelope.kind,
+        envelope.schema_version,
+        envelope.domain,
+    ) == (
+        DETACHED_SIGNATURE_KIND,
+        DETACHED_SIGNATURE_SCHEMA,
+        DETACHED_SIGNATURE_DOMAIN,
+    ) == (
+        "artifact-authorization-detached-signature",
+        2,
+        "rextio.artifact-authorization-detached-signature.v2",
+    )
+    assert SIGNED_MESSAGE_PREFIX == b"REXTIO-ARTIFACT-AUTHORIZATION-ED25519-V2\0"
+
+
+def test_exact_legacy_authorization_verifies_but_cannot_cross_prefix_or_reauthorize() -> None:
+    from rextio.artifacts.contract_dialects import (
+        AUTHORIZATION_REQUEST,
+        AUTHORIZATION_SIGNATURE,
+        AUTHORIZATION_SIGNED_MESSAGE,
+        AUTHORIZATION_VERIFICATION_RECEIPT,
+        CURRENT,
+        LEGACY_0_1_7,
+        require_current_dialect,
+    )
+    from rextio.build.signing import (
+        SignatureVerificationError,
+        parse_detached_signature_envelope,
+        parse_final_authorization_request,
+        verify_detached_authorization_signature,
+    )
+
+    request_document = _request().to_dict()
+    legacy_request_identity = LEGACY_0_1_7.identity(AUTHORIZATION_REQUEST)
+    request_document.update(
+        {
+            "kind": legacy_request_identity.kind,
+            "schema_version": legacy_request_identity.schema_version,
+            "domain": legacy_request_identity.domain,
+        }
+    )
+    request_bytes = json.dumps(
+        request_document,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    request = parse_final_authorization_request(request_bytes)
+    assert request.canonical_manifest_bytes == request_bytes
+
+    seed = bytes(range(32))
+    public_key, signature = _test_only_sign(
+        seed,
+        LEGACY_0_1_7.byte_value(AUTHORIZATION_SIGNED_MESSAGE) + request_bytes,
+    )
+    key_hash = hashlib.sha256(public_key).hexdigest()
+    legacy_signature_identity = LEGACY_0_1_7.identity(AUTHORIZATION_SIGNATURE)
+    envelope_document = {
+        "kind": legacy_signature_identity.kind,
+        "schema_version": legacy_signature_identity.schema_version,
+        "algorithm": "ed25519",
+        "domain": legacy_signature_identity.domain,
+        "public_key_sha256": key_hash,
+        "manifest_sha256": request.manifest_sha256,
+        "signature": base64.b64encode(signature).decode(),
+    }
+    envelope_bytes = json.dumps(
+        envelope_document,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    envelope = parse_detached_signature_envelope(envelope_bytes)
+    assert envelope.canonical_json_bytes == envelope_bytes
+    receipt = verify_detached_authorization_signature(
+        request=request,
+        envelope=envelope,
+        public_key=public_key,
+        expected_public_key_sha256=key_hash,
+    )
+    assert receipt.domain == LEGACY_0_1_7.string_value(
+        AUTHORIZATION_VERIFICATION_RECEIPT
+    )
+    with pytest.raises(ValueError, match="read/verify-only"):
+        require_current_dialect(LEGACY_0_1_7)
+
+    _, wrong_signature = _test_only_sign(
+        seed,
+        CURRENT.byte_value(AUTHORIZATION_SIGNED_MESSAGE) + request_bytes,
+    )
+    envelope_document["signature"] = base64.b64encode(wrong_signature).decode()
+    wrong_envelope = parse_detached_signature_envelope(
+        json.dumps(
+            envelope_document,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    with pytest.raises(SignatureVerificationError, match="verification failed"):
+        verify_detached_authorization_signature(
+            request=request,
+            envelope=wrong_envelope,
+            public_key=public_key,
+            expected_public_key_sha256=key_hash,
+        )
+
+    hybrid = dict(request_document)
+    hybrid["domain"] = CURRENT.identity(AUTHORIZATION_REQUEST).domain
+    with pytest.raises(SignatureVerificationError):
+        parse_final_authorization_request(
+            json.dumps(hybrid, sort_keys=True, separators=(",", ":")).encode()
+        )

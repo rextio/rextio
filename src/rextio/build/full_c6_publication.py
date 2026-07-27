@@ -23,6 +23,10 @@ import sys
 import unicodedata
 from typing import Final
 
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST_FILENAME,
+    CURRENT,
+)
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import (
     FULL_C6_AUTHORIZATION_CHECK_IDS,
@@ -53,7 +57,9 @@ from rextio.build.signing import (
 FULL_C6_PUBLICATION_DOMAIN: Final = "rextio.full-c6-atomic-publication.v1"
 FULL_C6_PUBLICATION_MANIFEST_KIND: Final = "full-c6-publication-manifest"
 FULL_C6_PUBLICATION_SCHEMA_VERSION: Final = 1
-FULL_C6_SIGNING_REQUEST_FILENAME: Final = "rextio.full-c6-final-authorization-request.json"
+FULL_C6_SIGNING_REQUEST_FILENAME: Final = CURRENT.filename(
+    AUTHORIZATION_REQUEST_FILENAME
+)
 FULL_C6_PUBLICATION_MANIFEST_FILENAME: Final = "rextio.full-c6-manifest.json"
 
 ROLE_WHEEL: Final = "wheel"

@@ -18,6 +18,14 @@ from pathlib import Path
 import re
 from typing import cast
 
+from rextio.artifacts.contract_dialects import (
+    ARTIFACT_CONTRACT_DIALECTS,
+    CURRENT,
+    POLICY_MANIFEST,
+    POLICY_MANIFEST_FILENAME,
+    ArtifactContractDialect,
+    resolve_artifact_contract_dialect,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
     ArtifactPolicyCoverageClass,
@@ -44,10 +52,11 @@ from rextio.build.full_c6_policy import (
 from rextio.build.owner_policy_lock import read_strict_owner_policy_lock
 
 
-FULL_C6_POLICY_MANIFEST_KIND = "full-c6-owner-policy-manifest"
-FULL_C6_POLICY_MANIFEST_DOMAIN = "rextio.full-c6-owner-policy-manifest.v2"
-FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION = 2
-FULL_C6_POLICY_MANIFEST_FILENAME = "rextio.full-c6-policy.json"
+_CURRENT_MANIFEST_IDENTITY = CURRENT.identity(POLICY_MANIFEST)
+FULL_C6_POLICY_MANIFEST_KIND = _CURRENT_MANIFEST_IDENTITY.kind
+FULL_C6_POLICY_MANIFEST_DOMAIN = _CURRENT_MANIFEST_IDENTITY.domain
+FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION = _CURRENT_MANIFEST_IDENTITY.schema_version
+FULL_C6_POLICY_MANIFEST_FILENAME = CURRENT.filename(POLICY_MANIFEST_FILENAME)
 
 # A valid policy receipt is already bounded to four MiB.  The manifest repeats
 # the small exact coverage partitions so they can be reconstructed rather than
@@ -180,10 +189,12 @@ def full_c6_policy_manifest_document(
         raise FullC6PolicyManifestError(
             "Full C6 policy manifest requires bootstrap request lineage"
         )
+    dialect = full_c6_policy_manifest_dialect(trusted)
+    identity = dialect.identity(POLICY_MANIFEST)
     return {
-        "kind": FULL_C6_POLICY_MANIFEST_KIND,
-        "schema_version": FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION,
-        "domain": FULL_C6_POLICY_MANIFEST_DOMAIN,
+        "kind": identity.kind,
+        "schema_version": identity.schema_version,
+        "domain": identity.domain,
         "artifact_coverage": trusted.artifact_coverage.to_dict(),
         "external_authority": trusted.external_authority.to_dict(),
         "rows": [item.to_dict() for item in trusted.rows],
@@ -228,13 +239,17 @@ def parse_full_c6_policy_manifest(
         raise FullC6PolicyManifestError("Full C6 policy manifest is not canonical JSON")
 
     root = _exact_dict(document, _TOP_LEVEL_FIELDS, "manifest")
-    if (
-        root["kind"] != FULL_C6_POLICY_MANIFEST_KIND
-        or _integer(root["schema_version"], "manifest schema version")
-        != FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION
-        or root["domain"] != FULL_C6_POLICY_MANIFEST_DOMAIN
-    ):
-        raise FullC6PolicyManifestError("Full C6 policy manifest identity is invalid")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            POLICY_MANIFEST,
+            kind=root["kind"],
+            schema_version=_integer(root["schema_version"], "manifest schema version"),
+            domain=root["domain"],
+        )
+    except ValueError as exc:
+        raise FullC6PolicyManifestError(
+            "Full C6 policy manifest identity is invalid"
+        ) from exc
     declared_policy_digest = _sha256(root["policy_sha256"], "policy SHA-256")
     declared_receipt_digest = _sha256(root["receipt_digest"], "receipt digest")
 
@@ -254,6 +269,7 @@ def parse_full_c6_policy_manifest(
         raise
     except (TypeError, ValueError) as exc:
         raise FullC6PolicyManifestError("Full C6 policy manifest values are invalid") from exc
+    object.__setattr__(receipt, "_artifact_contract_dialect", dialect.name)
 
     if not hmac.compare_digest(receipt.policy_sha256, declared_policy_digest):
         raise FullC6PolicyManifestError("Full C6 policy manifest policy digest is stale")
@@ -264,6 +280,21 @@ def parse_full_c6_policy_manifest(
     if full_c6_policy_manifest_document(receipt) != root:
         raise FullC6PolicyManifestError("Full C6 policy manifest content is not canonical")
     return receipt
+
+
+def full_c6_policy_manifest_dialect(
+    receipt: FullC6PolicyReceipt,
+) -> ArtifactContractDialect:
+    """Return the exact manifest dialect retained by a parsed receipt."""
+    if type(receipt) is not FullC6PolicyReceipt:
+        raise TypeError("Full C6 policy receipt has an invalid type")
+    try:
+        dialect = ARTIFACT_CONTRACT_DIALECTS[receipt._artifact_contract_dialect]
+    except KeyError as exc:
+        raise FullC6PolicyManifestError(
+            "Full C6 policy receipt dialect is invalid"
+        ) from exc
+    return dialect
 
 
 def load_full_c6_policy_manifest(
@@ -676,7 +707,7 @@ def _reconstruct_receipt(receipt: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
     if type(receipt) is not FullC6PolicyReceipt:
         raise TypeError("Full C6 policy receipt has an invalid type")
     try:
-        return FullC6PolicyReceipt(
+        rebuilt = FullC6PolicyReceipt(
             rows=tuple(receipt.rows),
             transformations=tuple(receipt.transformations),
             owner_declaration=receipt.owner_declaration,
@@ -684,6 +715,12 @@ def _reconstruct_receipt(receipt: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
             external_authority=receipt.external_authority,
             bootstrap_request_sha256=receipt.bootstrap_request_sha256,
         )
+        object.__setattr__(
+            rebuilt,
+            "_artifact_contract_dialect",
+            receipt._artifact_contract_dialect,
+        )
+        return rebuilt
     except (TypeError, ValueError) as exc:
         raise FullC6PolicyManifestError("Full C6 policy receipt cannot be reconstructed") from exc
 
@@ -696,6 +733,7 @@ __all__ = [
     "FullC6PolicyManifestError",
     "MAX_FULL_C6_POLICY_MANIFEST_BYTES",
     "full_c6_policy_manifest_bytes",
+    "full_c6_policy_manifest_dialect",
     "full_c6_policy_manifest_document",
     "load_full_c6_policy_manifest",
     "parse_full_c6_policy_manifest",
