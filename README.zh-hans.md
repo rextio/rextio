@@ -12,6 +12,32 @@ Rextio **0.1.7** 是本分支的 Core 候选（plugin API **1.7**、tooling cont
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
 全部继续通过生成的 Python fallback 代码运行 — import 路径与行为保持不变。
 
+<!-- rextio-benchmark:start -->
+## 已验证的 CPU 基准快照
+
+相同的 Python 源码和确定性输入; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
+版本: rextio 0.1.7 candidate@b8b8ed11f6b7, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@cf461e677578, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@1fdb2e1cd91d, rextio-torch 0.1.3 candidate@1e92b24b154c.
+选择：恰好三份合格 publish 报告中按时间顺序第一份（index 0）；绝不按加速比选择。
+稳定性：六个固定 headline 行全部通过了 10% 稳定性 veto。 三次运行中位数: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
+
+| 领域 | Python 源码 | Rextio native | 加速比 (source ÷ native) |
+| --- | ---: | ---: | ---: |
+| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
+| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
+| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
+| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
+| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
+| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
+
+这些数值仅代表对应 workload，并非对整个库的性能声明。这些 steady-state 行不含构建、import、首次调用和 worker 进程启动。Core 可执行文件因包含进程启动而单独报告。NumPy `dot` 保留为 BLAS negative control；手工向量化的 pandas/NumPy 重写可能更快。低于 1× 表示 Rextio 更慢；接近 1× 表示性能相当，而非实质性加速。
+结果不声称 BLAS、libtorch、TensorFlow kernel 或 CUDA 内核本身得到加速。
+
+标为 candidate 的包（包括 Core 0.1.7 和 rextio-torch 0.1.3）是未发布的 exact Git 提交固定，不是 PyPI 发行版；rextio-numpy 0.1.3 和 rextio-tensorflow 0.1.3 也同样如此。
+`candidate@` 只显示前 12 个十六进制字符；每个 candidate 都按完整 40 字符 Git 提交验证并固定。
+
+[正式报告](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [测量提交](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [证据提交](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
+<!-- rextio-benchmark:end -->
+
 ```text
 带类型的 Python 项目
   -> 分析受支持的 native 候选

@@ -12,6 +12,32 @@ tooling contract **2.27.0**、readiness policy **11**）であり 0.1.5 を置�
 （ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
 
+<!-- rextio-benchmark:start -->
+## 検証済み CPU ベンチマーク
+
+同一の Python ソースと決定論的な入力; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
+バージョン: rextio 0.1.7 candidate@b8b8ed11f6b7, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@cf461e677578, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@1fdb2e1cd91d, rextio-torch 0.1.3 candidate@1e92b24b154c.
+選択: 正確に 3 件の適格な publish レポートのうち時系列で最初のレポート（index 0）を使い、速度比では選択しません。
+安定性: 固定された 6 つの headline 行はすべて 10% の安定性 veto を通過しました。 3 回実行の中央値: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
+
+| 領域 | Python ソース | Rextio native | 高速化 (source ÷ native) |
+| --- | ---: | ---: | ---: |
+| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
+| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
+| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
+| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
+| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
+| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
+
+各数値は個別 workload の結果であり、ライブラリ全体の性能を示すものではありません。build、import、初回呼び出し、worker 起動時間は steady-state 行から除外します。Core 実行ファイルはプロセス起動を含むため別掲です。NumPy `dot` は BLAS negative control で、手動ベクトル化 pandas/NumPy 書き換えの方が速い場合があります。1× 未満は Rextio の方が遅く、1× 付近は実質的な高速化ではなく同等性能を示します。
+BLAS、libtorch、TensorFlow kernel、CUDA 自体の高速化を主張する結果ではありません。
+
+candidate と記したパッケージは Core 0.1.7 と rextio-torch 0.1.3 を含む未公開の exact Git コミット固定であり、PyPI リリースではありません。rextio-numpy 0.1.3 と rextio-tensorflow 0.1.3 も同様です。
+`candidate@` は先頭 12 桁の 16 進表示のみで、各 candidate は完全な 40 桁 Git コミットで検証・固定されます。
+
+[正規レポート](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [測定コミット](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [証拠コミット](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
+<!-- rextio-benchmark:end -->
+
 ```text
 型付き Python プロジェクト
   -> サポートされる native 候補を分析
