@@ -1,9 +1,9 @@
 # Unsupported Features in 0.1.x
 
-Rextio is a focused, alpha-stage hybrid build tool. Core **0.1.8** is under
-development with tooling contract **3.0.0** and plugin API **1.7**. The current
-published package version is **0.1.7** (published to PyPI on 2026-07-27;
-plugin API **1.7**; tooling contract **2.28.0**), superseding 0.1.6. The
+Rextio is a focused, alpha-stage hybrid build tool. The current published
+package version is **0.1.8** (published to PyPI on 2026-07-27; plugin API
+**1.7**; tooling contract **3.0.0**), superseding **0.1.7** (plugin API
+**1.7**; tooling contract **2.28.0**). The
 direct-Rust subset and boundary rules below still rest
 on the original **0.1.0** design; historical “0.1.0” wording in later sections
 is preserved as design scope, not as a claim that 0.1.0 is the only shipped

@@ -6,7 +6,7 @@ surface larger than an ordinary library, so this document states the threat
 model and the protections in place.
 
 This document applies to the Core **0.1.x** line. The current package version is
-**0.1.7** (published to PyPI on 2026-07-27, superseding **0.1.6**).
+**0.1.8** (published to PyPI on 2026-07-27, superseding **0.1.7**).
 
 ## Trust boundary
 
@@ -71,7 +71,7 @@ external toolchain on your machine.
 
 ## Reporting
 
-This is the alpha-stage **0.1.x** line (published Core **0.1.7** on
+This is the alpha-stage **0.1.x** line (published Core **0.1.8** on
 2026-07-27). Report sensitive vulnerabilities
 privately through GitHub's private vulnerability reporting
 (<https://github.com/rextio/rextio/security/advisories/new>) - do not file

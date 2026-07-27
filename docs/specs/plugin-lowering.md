@@ -4,10 +4,10 @@ Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 →
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** core **0.1.8** is under development with plugin API
-**1.7** and tooling contract **3.0.0**; the contract-major bump renames
-artifact lifecycle surfaces and does not widen the plugin API. Published core
-**0.1.7** implements plugin API **1.7** and tooling contract **2.28.0**.
+**Release framing:** published core **0.1.8** implements plugin API **1.7**
+and tooling contract **3.0.0**; the contract-major bump renames artifact
+lifecycle surfaces and does not widen the plugin API. Core **0.1.7**
+implements plugin API **1.7** and tooling contract **2.28.0**.
 Published core **0.1.6** ships plugin API **1.6**,
 tooling contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
 1.4 and tooling contract 2.24.0. The standalone artifact

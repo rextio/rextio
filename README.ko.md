@@ -259,7 +259,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.7에서 구현된 native target은 Rust뿐입니다.
+0.1.8에서 구현된 native target은 Rust뿐입니다.
 
 Rextio 플러그인은 `pip`이나 `uv` 같은 도구로 설치하는 평범한 Python
 패키지입니다. 플러그인 패키지는 자신이 다루는 Python 패키지 이름을 포함한
@@ -311,6 +311,9 @@ Core **0.1.6**은 plugin API **1.6**, tooling contract **2.27.0**으로
 Core 자체가 CUDA framework 지원이나 가속기 실행 인증을 주장하지는 않습니다.
 Core **0.1.7**은 plugin API **1.7**, tooling contract **2.28.0**으로
 2026-07-27 게시되며, 선택적 plugin function-scope RAII 가드를 추가합니다.
+Core **0.1.8**은 plugin API **1.7**, tooling contract **3.0.0**으로
+2026-07-27 게시되었으며, public artifact lifecycle identity를 semantic
+`artifact-*` 이름으로 바꿨습니다.
 일반 의존성 lowering은 번들되지 않습니다. `try-native`는 명시적 계획
 정책이며, 안전한 direct lowering이 없으면 여전히 fallback합니다.
 
@@ -394,7 +397,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## 지원하는 direct Rust subset
 
-Rextio 0.1.7은 의도적으로 작은 subset을 지원합니다. 이 subset이
+Rextio 0.1.8은 의도적으로 작은 subset을 지원합니다. 이 subset이
 native Rust로 실행되는 코드입니다.
 
 지원 타입:

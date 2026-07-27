@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.1.8 — Unreleased
+## 0.1.8 — 2026-07-27
+
+**Published release.** Package version `0.1.8` is tagged and published to PyPI
+with plugin API **1.7** and tooling contract **3.0.0**, superseding 0.1.7.
 
 ### Semantic artifact-contract terminology
 

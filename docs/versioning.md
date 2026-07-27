@@ -2,11 +2,10 @@
 
 Rextio follows [Semantic Versioning 2.0.0](https://semver.org/), with the
 explicit pre-1.0 caveats below. The current **published** package version is
-**0.1.7** (2026-07-27; plugin API **1.7**; tooling contract **2.28.0**),
-superseding **0.1.6** (2026-07-26; plugin API **1.6**; tooling contract
-**2.27.0**; readiness policy **11**). Core **0.1.8** is under development with
-tooling contract **3.0.0** and the same plugin API **1.7**; its consumer-first
-release gate requires rextio-lsp 0.1.4 before core 0.1.8. The related-package
+**0.1.8** (2026-07-27; plugin API **1.7**; tooling contract **3.0.0**),
+superseding **0.1.7** (2026-07-27; plugin API **1.7**; tooling contract
+**2.28.0**), which superseded **0.1.6** (2026-07-26; plugin API **1.6**;
+tooling contract **2.27.0**; readiness policy **11**). The related-package
 releases for the 0.1.2 line were integrated in strict order (not simultaneously): rextio-lsp
 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 — see
 [tooling-contract.md](specs/tooling-contract.md). Release Train B likewise

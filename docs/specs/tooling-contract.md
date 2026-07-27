@@ -1,9 +1,9 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (experimental tier). The current development producer is core
-**0.1.8** with `contract_version` **`3.0.0`** and plugin API **1.7**.
-The current published producer remains core **0.1.7** (2026-07-27) with
-`contract_version` **`2.28.0`**, superseding core **0.1.6** (2026-07-26; `contract_version`
+Status: **draft** (experimental tier). The current published producer is core
+**0.1.8** (2026-07-27) with `contract_version` **`3.0.0`** and plugin API
+**1.7**. Core **0.1.7** emitted `contract_version` **`2.28.0`**, superseding
+core **0.1.6** (2026-07-26; `contract_version`
 **`2.27.0`**, plugin API **1.6**, readiness policy **11**), which superseded
 core 0.1.5 / contract 2.24.0. The Train C surfaces retained from 0.1.5 and the
 plugin/device contracts added in 0.1.6–0.1.7 remain Experimental/Alpha.
@@ -24,7 +24,7 @@ consume instead:
 
 ## Contract versioning
 
-Both JSON surfaces carry a top-level field. The 0.1.8 development producer emits:
+Both JSON surfaces carry a top-level field. The published 0.1.8 producer emits:
 
 ```json
 { "contract_version": "3.0.0" }
@@ -68,7 +68,7 @@ to generic guidance when the major is outside what they support.
 | `2.26.0` | **Unreleased additive selected Device Provider shape** (0.1.6 intermediate). Advanced `[target]` config may explicitly name one provider/capability and a bounded string option map. `capabilities` reports only the public configured selection, without provider discovery/import, preflight, or option disclosure; its unselected object retains the prior exact shape. `generate.json` / `build.json` conditionally add `device_provider_plans` only after selected-only entry-point loading and successful preflight. Each plan binds the entry-point group/name/module target, installed distribution name/version, manifest, exact artifact profile, validated contribution, redacted option keys/digest, deterministic lock, and non-authorizing report. Bounded host-extension generation may add `build.rs` plus `device-provider.lock.json`; both become captured artifact-evidence/SBOM/provenance inputs. Non-empty Cargo-feature, package-reference, helper, or runtime-check contributions remain unmaterialized and fail closed. No selection preserves the prior generate/build report shape and never imports installed providers. Accelerator selection additionally requires a matching typed non-CPU `DeviceRequirement`; every unselected artifact profile is checked for one. This contract alone is not CUDA framework support. |
 | `2.27.0` | **Published additive static device-domain authorization shape** (core 0.1.6; Experimental/Alpha). Plugin API 1.6 permits a `PluginType` to serialize validated static `device_value_metadata` (device/backend, dtype/rank/layout, domain runtime/reuse, feature/memory-space facts, and exact typed runtime pins). Only type keys used by accepted native signatures/claims contribute to deterministic `ArtifactProfile` requirements; CPU-only and fallback-only types preserve the legacy profile. Mixed/conflicting domains and non-zero accelerator ordinals fail before codegen. A matching explicitly selected provider plan must preflight the exact accelerator profile. Its plan/report adds a redacted immutable `lowering_authorization`, exactly binding device/backend, runtime/reuse, features, optional layout projection, and memory spaces; only API-1.6 providers receive that record in `LoweringContext`, and accelerator claims fail closed when it is absent or mismatched. The selected provider lock additionally binds the exact canonical successful preflight with `preflight_sha256`, covering selected-SM/driver/provider-policy observations without exposing private options. Target architecture is composed from explicit build/provider selection rather than inferred from a Python type and is intentionally excluded from metadata authorization matching. Package references, generated helper ids, and runtime-check ids remain unmaterialized and rejected. |
 | `2.28.0` | **Published additive plugin function-scope RAII guard shape** (core 0.1.7; Experimental). Plugin API 1.7 adds optional `function_scope_guard(ctx)` for used plugins (Core-owned ordinal zero-argument path-call RAII expressions let-bound after materialized input conversion, spanning the native body, and explicitly unwound before normal plugin output materialization; early/error exits use automatic Drop). Capabilities/plugin manifest include `function_scope_guard_declared: true` only when a concrete hook is present and omit the key when false, preserving pre-1.7 serialized shapes; the hook is never executed for introspection. Route, native-status, rejection, and promotion semantics are unchanged; pre-1.7 and absent-hook providers keep prior generated-output behavior. |
-| `3.0.0` | **Breaking semantic artifact-contract vocabulary** (core 0.1.8 development). Replaces the public `full_c6` report key, lifecycle statuses, milestone-derived external-source gate/status names, persisted root dialects, signing domain, lifecycle filenames, publication bundle names, and host-validation environment/path names with semantic `artifact-*` identities. Exact 0.1.7 root triples and signing prefixes are accepted only for legacy read/verification; 0.1.8 never emits, finalizes, authorizes, or publishes legacy or mixed-dialect artifacts. Diagnostic position semantics and the ordinary route/native-status/promotion fields remain unchanged from contract major 2. |
+| `3.0.0` | **Breaking semantic artifact-contract vocabulary** (published in core 0.1.8). Replaces the public `full_c6` report key, lifecycle statuses, milestone-derived external-source gate/status names, persisted root dialects, signing domain, lifecycle filenames, publication bundle names, and host-validation environment/path names with semantic `artifact-*` identities. Exact 0.1.7 root triples and signing prefixes are accepted only for legacy read/verification; 0.1.8 never emits, finalizes, authorizes, or publishes legacy or mixed-dialect artifacts. Diagnostic position semantics and the ordinary route/native-status/promotion fields remain unchanged from contract major 2. |
 
 Contracts 2.3.0-2.23.0 and 2.25.0-2.26.0 above are labeled unreleased because
 they were unpublished internal intermediates, not because their final
@@ -141,9 +141,9 @@ Release Train B reused the consumer-first gate for the additive 2.2 shape:
 **rextio-lsp 0.1.2 → core 0.1.4**. That required sequence completed on
 2026-07-18; the LSP consumer was available before the 2.2 producer.
 
-Core 0.1.8 must reuse the consumer-first gate for contract 3:
-**rextio-lsp 0.1.4 → core 0.1.8**. The LSP must recognize major 3 and consume
-the semantic artifact keys before the 3.0.0 producer is released.
+Core 0.1.8 reused the consumer-first gate for contract 3:
+**rextio-lsp 0.1.4 → core 0.1.8**. The LSP recognizes major 3 and consumes
+the semantic artifact keys before the 3.0.0 producer.
 
 ## Route taxonomy
 

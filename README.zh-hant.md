@@ -250,7 +250,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.7 中唯一實作的 native 目標是 Rust。
+0.1.8 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -297,6 +297,9 @@ contract **2.27.0**。它加入有限的外掛比較運算式、Device Provider 
 並不聲稱 CUDA framework 支援或加速器執行認證。
 Core **0.1.7** 於 2026-07-27 發佈，使用 plugin API **1.7** 和 tooling
 contract **2.28.0**，加入可選的 plugin function-scope RAII 守衛。
+Core **0.1.8** 於 2026-07-27 發佈，使用 plugin API **1.7** 和 tooling
+contract **3.0.0**，將 public artifact lifecycle identity 改為 semantic
+`artifact-*` 名稱。
 一般依賴下沉不隨發行版捆綁；`try-native` 是顯式的規劃策略，沒有安全的
 direct 下沉時仍會 fallback。
 
@@ -377,7 +380,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.7 刻意支援一個小的 subset。這個 subset 就是以 native
+Rextio 0.1.8 刻意支援一個小的 subset。這個 subset 就是以 native
 Rust 執行的程式碼。
 
 支援的型別:

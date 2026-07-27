@@ -10,7 +10,7 @@ An index of the project's documentation. See the top-level
 - [Versioning policy](versioning.md) — SemVer with the pre-1.0 caveats and the
   definition of the public contract.
 - [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.x
-  supported subset (published package: **0.1.7** / plugin API 1.7).
+  supported subset (published package: **0.1.8** / plugin API 1.7).
 - [Host source-AOT and native executables](source-aot-and-executables.md) —
   **0.1.5 Experimental Release Train C** source graph, `ModuleInitIR`, artifact
   profile,
@@ -28,8 +28,8 @@ An index of the project's documentation. See the top-level
 ## Specs
 
 - [Machine-readable tooling contract](specs/tooling-contract.md) — draft
-  (current development producer `contract_version` `3.0.0` on core 0.1.8;
-  current published producer `2.28.0` on core 0.1.7; core 0.1.6
+  (current published producer `contract_version` `3.0.0` on core 0.1.8;
+  core 0.1.7 emitted `2.28.0`; core 0.1.6
   emitted `2.27.0`; core 0.1.5
   emitted `2.24.0`; core 0.1.4
   emitted `2.2.0`; core 0.1.3
@@ -69,11 +69,10 @@ An index of the project's documentation. See the top-level
   function-scope RAII guards for used plugins on accepted generated native
   functions. Pre-1.7 providers keep load and generated-output behavior.
 
-  Core 0.1.8 develops contract `3.0.0`: milestone-derived artifact report,
+  Core 0.1.8 publishes contract `3.0.0`: milestone-derived artifact report,
   lifecycle, persisted-file, and signing names become semantic
   `artifact-*` identities. Exact 0.1.7 persisted roots remain legacy
   read/verify-only; mixed or newly emitted legacy dialects fail closed.
-  Release order is consumer-first: rextio-lsp 0.1.4 before core 0.1.8.
 
 Train C shipped in core 0.1.5 as Experimental/Alpha. Its evidence and local
 artifact-publication authority remain bounded and do not imply general package
