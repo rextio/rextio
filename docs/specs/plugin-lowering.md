@@ -4,28 +4,25 @@ Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 →
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** published core **0.1.7** implements plugin API **1.7** and
-tooling contract **2.28.0**. Published core **0.1.6** ships plugin API **1.6**,
+**Release framing:** core **0.1.8** is under development with plugin API
+**1.7** and tooling contract **3.0.0**; the contract-major bump renames
+artifact lifecycle surfaces and does not widen the plugin API. Published core
+**0.1.7** implements plugin API **1.7** and tooling contract **2.28.0**.
+Published core **0.1.6** ships plugin API **1.6**,
 tooling contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
 1.4 and tooling contract 2.24.0. The standalone artifact
 capability shape below first appeared in unpublished/internal intermediate
 tooling contract **2.4.0**. Core 0.1.5's published producer was **2.24.0**
-because C5.1/C6.1-C6.15 and the strict Full-C6/C5.2 Alpha add unrelated external-source
-inventory, authorization-contract evidence, host-extension wheel artifact
-evidence, its opt-in required gate, and a direct native runtime linkage
-inventory plus an always-blocked distribution-readiness assessment and bounded
-source-transformation observation, reachable-Cargo license-string observation,
-one-hop native path-resolution observation, and a bounded static native-runtime
-graph observation, plus scoped plugin-free source-transformation replay
-verification, scoped Cargo component-license policy verification, and scoped
-project-source license-policy verification, C6.13 scoped analysis-input
-verification, C6.14 compact artifact-policy coverage inventory, and C6.15
-scoped artifact-class policy verification. The 0.1.5 plugin API
-remained **1.4**; C6.4-C6.15 do
-not add runtime-bearing plugin support. These 0.1.5 surfaces remain
-Experimental/Alpha and do not claim broad Full C6 or general package AOT.
+because its unrelated external-source inventory and authorization, bounded
+host-extension evidence, required-evidence gate, native-runtime inventory,
+always-blocked readiness assessment, transformation and license observations,
+path/graph observations, scoped replay and owner-policy receipts, analysis
+inputs, and the strict artifact-contract Alpha all extend the tooling report.
+The 0.1.5 plugin API remained **1.4**; those artifact surfaces do not add
+runtime-bearing plugin support. They remain Experimental/Alpha and do not
+claim general package AOT.
 
-Contracts 2.21.0-2.24.0 do not widen this plugin API. Their strict C5.2 path is
+Contracts 2.21.0-2.24.0 do not widen this plugin API. Their strict source-native path is
 a separate core-owned linkage contract for exactly one SourceLock-authorized,
 digest-pinned depth-1 `py3-none-any` dependency and direct typed scalar leaf
 calls. It emits private
@@ -41,7 +38,7 @@ ancestor, or descendant aliasing with the support-lock output, and its public
 sandbox receipt binds an engine-specific, path-tokenized semantic profile—not
 the raw rendered profile or its private paths. The sandbox regrants executable
 mapping only to core-bound read-execute paths/read-write directories, never by
-plugin claim. The frozen Full-C6 profile
+plugin claim. The frozen strict artifact profile
 requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
@@ -924,7 +921,7 @@ Host-extension builds (PyO3 wheels) keep using the 1.1–1.3 lowering members an
 boundary conversion. Boundary-free standalone artifacts — **`rust-crate`** and
 **`host-executable`** — never infer plugin support from those surfaces.
 
-The strict Full-C6/C5.2 Alpha is not a standalone-plugin profile. It accepts
+The strict artifact-contract Alpha is not a standalone-plugin profile. It accepts
 only a plugin-free, core-owned PyO3 host-extension path and does not call this
 section's hook. Its installed-host input must be cache-free and bounded: no
 `__pycache__`/`.pyc` among the `rextio/` RECORD members or physical package
@@ -940,7 +937,7 @@ installed-wheel lifecycle is certified by the final local real-E2E at
 evidence for the current `HEAD` on macOS arm64 plus Linux x86_64 for the 2.24.0
 support-lock/sandbox changes requires manual host validation and is not
 CI-certified. This result
-does not certify or widen any plugin-bearing Full-C6 profile.
+does not certify or widen any plugin-bearing strict artifact profile.
 
 ### 10.1 Explicit hook (separate extension Protocol)
 

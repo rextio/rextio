@@ -1,8 +1,9 @@
 # Spec: Machine-Readable Tooling Contract
 
-Status: **draft** (experimental tier). The current published producer is core
-**0.1.7** (2026-07-27) with `contract_version` **`2.28.0`** and plugin API
-**1.7**, superseding core **0.1.6** (2026-07-26; `contract_version`
+Status: **draft** (experimental tier). The current development producer is core
+**0.1.8** with `contract_version` **`3.0.0`** and plugin API **1.7**.
+The current published producer remains core **0.1.7** (2026-07-27) with
+`contract_version` **`2.28.0`**, superseding core **0.1.6** (2026-07-26; `contract_version`
 **`2.27.0`**, plugin API **1.6**, readiness policy **11**), which superseded
 core 0.1.5 / contract 2.24.0. The Train C surfaces retained from 0.1.5 and the
 plugin/device contracts added in 0.1.6–0.1.7 remain Experimental/Alpha.
@@ -23,10 +24,10 @@ consume instead:
 
 ## Contract versioning
 
-Both JSON surfaces carry a top-level field. The published 0.1.7 producer emits:
+Both JSON surfaces carry a top-level field. The 0.1.8 development producer emits:
 
 ```json
-{ "contract_version": "2.28.0" }
+{ "contract_version": "3.0.0" }
 ```
 
 SemVer over the *contract* (shape **and** position semantics), independent of
@@ -67,17 +68,18 @@ to generic guidance when the major is outside what they support.
 | `2.26.0` | **Unreleased additive selected Device Provider shape** (0.1.6 intermediate). Advanced `[target]` config may explicitly name one provider/capability and a bounded string option map. `capabilities` reports only the public configured selection, without provider discovery/import, preflight, or option disclosure; its unselected object retains the prior exact shape. `generate.json` / `build.json` conditionally add `device_provider_plans` only after selected-only entry-point loading and successful preflight. Each plan binds the entry-point group/name/module target, installed distribution name/version, manifest, exact artifact profile, validated contribution, redacted option keys/digest, deterministic lock, and non-authorizing report. Bounded host-extension generation may add `build.rs` plus `device-provider.lock.json`; both become captured artifact-evidence/SBOM/provenance inputs. Non-empty Cargo-feature, package-reference, helper, or runtime-check contributions remain unmaterialized and fail closed. No selection preserves the prior generate/build report shape and never imports installed providers. Accelerator selection additionally requires a matching typed non-CPU `DeviceRequirement`; every unselected artifact profile is checked for one. This contract alone is not CUDA framework support. |
 | `2.27.0` | **Published additive static device-domain authorization shape** (core 0.1.6; Experimental/Alpha). Plugin API 1.6 permits a `PluginType` to serialize validated static `device_value_metadata` (device/backend, dtype/rank/layout, domain runtime/reuse, feature/memory-space facts, and exact typed runtime pins). Only type keys used by accepted native signatures/claims contribute to deterministic `ArtifactProfile` requirements; CPU-only and fallback-only types preserve the legacy profile. Mixed/conflicting domains and non-zero accelerator ordinals fail before codegen. A matching explicitly selected provider plan must preflight the exact accelerator profile. Its plan/report adds a redacted immutable `lowering_authorization`, exactly binding device/backend, runtime/reuse, features, optional layout projection, and memory spaces; only API-1.6 providers receive that record in `LoweringContext`, and accelerator claims fail closed when it is absent or mismatched. The selected provider lock additionally binds the exact canonical successful preflight with `preflight_sha256`, covering selected-SM/driver/provider-policy observations without exposing private options. Target architecture is composed from explicit build/provider selection rather than inferred from a Python type and is intentionally excluded from metadata authorization matching. Package references, generated helper ids, and runtime-check ids remain unmaterialized and rejected. |
 | `2.28.0` | **Published additive plugin function-scope RAII guard shape** (core 0.1.7; Experimental). Plugin API 1.7 adds optional `function_scope_guard(ctx)` for used plugins (Core-owned ordinal zero-argument path-call RAII expressions let-bound after materialized input conversion, spanning the native body, and explicitly unwound before normal plugin output materialization; early/error exits use automatic Drop). Capabilities/plugin manifest include `function_scope_guard_declared: true` only when a concrete hook is present and omit the key when false, preserving pre-1.7 serialized shapes; the hook is never executed for introspection. Route, native-status, rejection, and promotion semantics are unchanged; pre-1.7 and absent-hook providers keep prior generated-output behavior. |
+| `3.0.0` | **Breaking semantic artifact-contract vocabulary** (core 0.1.8 development). Replaces the public `full_c6` report key, lifecycle statuses, milestone-derived external-source gate/status names, persisted root dialects, signing domain, lifecycle filenames, publication bundle names, and host-validation environment/path names with semantic `artifact-*` identities. Exact 0.1.7 root triples and signing prefixes are accepted only for legacy read/verification; 0.1.8 never emits, finalizes, authorizes, or publishes legacy or mixed-dialect artifacts. Diagnostic position semantics and the ordinary route/native-status/promotion fields remain unchanged from contract major 2. |
 
 Contracts 2.3.0-2.23.0 and 2.25.0-2.26.0 above are labeled unreleased because
 they were unpublished internal intermediates, not because their final
 2.24.0/2.27.0/2.28.0 surfaces are absent from the published 0.1.5/0.1.6/0.1.7
 packages.
 
-Why a major, not a minor: released consumers (notably rextio-lsp 0.1.0) gate only
-on the contract **major** and applied a special-case RXT000 code-point map.
-A minor bump (`1.1.0`) would be silently accepted and would **misplace**
-RXT000 under the new UTF-8 producer. A major forces major-1-only consumers to
-the unsupported/degraded path instead of a false “supported” mapping.
+Contract 2 used a major bump because the diagnostic column semantics changed.
+Contract 3 uses another major bump because a released report key and multiple
+persisted/lifecycle identities are renamed. A 2.x consumer must reject or
+degrade a 3.x report rather than silently looking for `full_c6` and
+misrepresenting the artifact lifecycle.
 
 `1.0.0` covered the entire pre-release 0.1.1 line: fields added before the first
 tagged release (`plugin_type_keys`, rule records, RXT091/RXT092) did not bump
@@ -91,7 +93,7 @@ incompatible position or field semantics change MUST bump the major**.
 - `line` / `end_line`: **1-based** (Python `ast` line numbers).
 - `column` / `end_column`: **0-based UTF-8 byte offsets** into that line
   (Python `ast.col_offset` / `end_col_offset`), for **every** diagnostic code
-  under contract `2.x`.
+  under contract `2.x` and `3.x`.
 - A missing/null position (CPython can emit `None` for some `SyntaxError`
   locations) serializes as JSON `null`; consumers should coerce to safe
   defaults rather than aborting the whole report.
@@ -111,6 +113,8 @@ versions (rextio / rextio-lsp) ship on their own schedules.
 | contract `1.x` | majors `{1,2}` with dual map | Correct via legacy branch |
 | contract `2.x` (UTF-8 column) | majors `{1,2}` with dual map | Correct via standardized branch |
 | contract `2.x` | major-1-only | **Unsupported major** → degraded guidance; do not treat as supported. Residual risk: pre-dual-map servers may still render a range using the old RXT000 special case |
+| contract `3.x` (UTF-8 column, semantic artifact lifecycle) | majors `{1,2,3}` | Correct via standardized position branch and semantic artifact keys |
+| contract `3.x` | majors `{1,2}` only | **Unsupported major** → degraded guidance; do not infer a legacy artifact lifecycle |
 
 **Release-order gate (required; strict sequence, not simultaneous)**
 
@@ -136,6 +140,10 @@ the old special case).
 Release Train B reused the consumer-first gate for the additive 2.2 shape:
 **rextio-lsp 0.1.2 → core 0.1.4**. That required sequence completed on
 2026-07-18; the LSP consumer was available before the 2.2 producer.
+
+Core 0.1.8 must reuse the consumer-first gate for contract 3:
+**rextio-lsp 0.1.4 → core 0.1.8**. The LSP must recognize major 3 and consume
+the semantic artifact keys before the 3.0.0 producer is released.
 
 ## Route taxonomy
 
@@ -449,12 +457,12 @@ record their disposition, source range, statement indexes, dependency/binding/
 export/deletion sets, namespace uncertainty, and any fallback-barrier reason.
 An unavailable initializer carries no approximate segments.
 
-### External source inventory preview (contract 2.5.0) and C6.1 authorization (2.6.0)
+### External source inventory and SourceLock authorization (contracts 2.5.0-2.6.0)
 
-This section describes the C5.1 inventory/gate slice plus the additive C6.1
+This section describes the bounded inventory/gate slice plus the additive
 SourceLock authorization-contract preview. It is intentionally smaller than
 external-package source AOT and must not be interpreted as build authority or
-full C6 completion.
+general artifact authorization.
 
 A project may opt in through `rextio.toml` for exactly one imported package:
 
@@ -484,7 +492,7 @@ fallback output. A blocked `build.json` includes the plan both through
     "status": "unavailable",
     "execution_authority": "preview-only",
     "distributable": false,
-    "c6_gate": "required",
+    "source_authorization_gate": "required",
     "package": "small_math_pkg",
     "distribution": "small-math-pkg",
     "requested_version": "1.0.0",
@@ -542,7 +550,8 @@ can author a SourceLock from check/generate JSON alone:
   booleans are `license_attestation_verified`, `source_inventory_verified`,
   `provenance_verified` (true only after successful verification)
 
-Absolute install paths and source bodies never serialize. `c6_gate` is
+Absolute install paths and source bodies never serialize.
+`source_authorization_gate` is
 `required` until verification succeeds, then `authorization-verified`.
 
 #### SourceLock schema (project-owned file)
@@ -1146,9 +1155,9 @@ or authorize a native closure.
 
 `rextio build` returns `RXT060` before configured CPython/Nuitka/Cargo probes or
 artifact work. Without a verified SourceLock the status is
-`external-source-c6-blocked` and programmatic hybrid builds raise
+`external-source-authorization-blocked` and programmatic hybrid builds raise
 `ExternalSourceBuildBlockedError`. With a verified SourceLock the distinct
-status is `external-source-c5-not-implemented` and programmatic builds raise
+status is `external-source-native-linkage-not-implemented` and programmatic builds raise
 `ExternalSourceC5NotImplementedError`: remaining call-site linkage, body
 lowerability, Rust codegen, and packaging are not implemented. Neither path
 creates artifact directories or grants redistribution authority. Null/unknown
@@ -1819,7 +1828,7 @@ proof, SPDX validation, license/NOTICE-file verification, obligation or
 compatibility analysis, source ownership proof, generated-output or
 derivative-work rights proof, legal approval, signing, global license-policy
 completion, or distribution authority. Existing readiness blockers remain
-blocked. This is not Full C6.
+blocked. This is not general artifact authorization.
 
 ### C6.13 scoped analysis-input verification (contract 2.18.0)
 
@@ -1950,7 +1959,7 @@ obligations/compatibility, ownership/derivative rights, legal approval,
 technical provenance, `complete`, `signed`, and `distribution_authorized`
 remain false.
 
-### Full C6 and bounded C5.2 hard authority (contracts 2.21.0-2.24.0)
+### Strict artifact-contract authority (contracts 2.21.0-2.24.0; semantic dialect in 3.0.0)
 
 The strict contract is independent from the preview records above. It accepts
 only CPython 3.11/PyO3/Cargo host-extension wheels on
@@ -2033,9 +2042,10 @@ OS-build binding and does not relax any existing native-runtime authority.
 Provider identity probes must leave the final loaded-image snapshot exactly
 unchanged, and every later process-local native-runtime authority validation
 recollects and compares that snapshot. Any image loaded after the accepted
-snapshot taints the process; it cannot mint or retain Full-C6 authority.
+snapshot taints the process; it cannot mint or retain artifact authority.
 
-Full-C6 Cargo-license ingestion recognizes one exact legacy Cargo spelling:
+Strict artifact-contract Cargo-license ingestion recognizes one exact legacy
+Cargo spelling:
 `MIT/Apache-2.0` is canonicalized semantically to `MIT OR Apache-2.0` for the
 license observation and owner-policy template. The captured `Cargo.toml`
 payload, SHA-256, size, and Cargo-workspace receipt still bind the unmodified
@@ -2077,26 +2087,37 @@ initializers of reflective/loader authority such as
 Mutation, value escape, and dynamic call targets are likewise outside the
 bounded C5.2 linkage contract.
 
-Contract 2.23.0 closes the public policy handoff. Canonical bootstrap
-schema/domain v2 (`rextio.full-c6-owner-policy-bootstrap.v2`) embeds one exact
-technical template (`rextio.full-c6-owner-policy-template.v1`): the combined
-C6.14+C5.2 partitions/rows, exact transformation set, fresh project/Cargo
-internal license observations, independently verified external-wheel license
-observation, completion requirements, owner/key identity, and aggregate
-digests. Observations bind declared/detected SPDX values, exact license-file
-logical path/hash/size, and detector payload/receipt identities, but never infer
-legal approval. The bootstrap remains host-path-free and contains no
-source/license payload bytes, owner decision, private key, signature, or
-distribution authority.
+Contract 2.23.0 introduced the public policy handoff. Contract 3.0.0 assigns
+that same bounded workflow a semantic, current-only artifact-policy dialect.
+The canonical bootstrap embeds one exact technical template: the bounded
+artifact/external partitions and rows, exact transformation set, fresh
+project/Cargo internal license observations, independently verified
+external-wheel license observation, completion requirements, owner/key
+identity, and aggregate digests. Observations bind declared/detected SPDX
+values, exact license-file logical path/hash/size, and detector payload/receipt
+identities, but never infer legal approval. The bootstrap remains
+host-path-free and contains no source/license payload bytes, owner decision,
+private key, signature, or distribution authority.
 
 The four public JSON documents are exact-field, canonical-UTF-8 contracts:
 
 | Document | Exact identity and lineage |
 | --- | --- |
-| Bootstrap request | `kind: "full-c6-owner-policy-completion-request"`, `schema_version: 2`, `domain: "rextio.full-c6-owner-policy-bootstrap.v2"`; `request_sha256` binds the complete payload, including `technical_template_sha256`, `input_aggregate_set_sha256`, target/profile, trusted owner-key digest, completion requirements, and the embedded template. |
-| Technical template | `kind: "full-c6-owner-policy-technical-template"`, `schema_version: 1`, `domain: "rextio.full-c6-owner-policy-template.v1"`; `template_sha256` binds both authority partitions, ordered rows, exact transformations/`transformation_set_sha256`, internal/external license observations, and owner-completion requirements. Every `owner_decision` is null and every authority claim is false. |
-| Owner completion | `kind: "full-c6-owner-policy-completion"`, `schema_version: 1`, `domain: "rextio.full-c6-owner-policy-completion.v1"`; `completion_sha256` binds `bootstrap_request_sha256`, the exact `accept-exact-observed-transformation-set` decision/digest, closed owner declaration, and canonical per-row `allow` license decisions with exact observation evidence. Private-key/signature/legal-advice/distribution booleans are false. |
-| Final policy manifest | `kind: "full-c6-owner-policy-manifest"`, `schema_version: 2`, `domain: "rextio.full-c6-owner-policy-manifest.v2"`; `policy_sha256` and `receipt_digest` bind exact artifact/external partitions, completed rows, transformations, owner declaration, and `bootstrap_request_sha256`. It is still unsigned and non-authorizing. |
+| Bootstrap request | File `rextio.artifact-policy.bootstrap.json`; `kind: "artifact-policy-completion-request"`, `schema_version: 3`, `domain: "rextio.artifact-policy-bootstrap.v3"`; `request_sha256` binds the complete payload, including `technical_template_sha256`, `input_aggregate_set_sha256`, target/profile, trusted owner-key digest, completion requirements, and the embedded template. |
+| Technical template | `kind: "artifact-policy-technical-template"`, `schema_version: 2`, `domain: "rextio.artifact-policy-template.v2"`; `template_sha256` binds both authority partitions, ordered rows, exact transformations/`transformation_set_sha256`, internal/external license observations, and owner-completion requirements. Every `owner_decision` is null and every authority claim is false. |
+| Owner completion | `kind: "artifact-policy-owner-completion"`, `schema_version: 2`, `domain: "rextio.artifact-policy-owner-completion.v2"`; `completion_sha256` binds `bootstrap_request_sha256`, the exact `accept-exact-observed-transformation-set` decision/digest, closed owner declaration, and canonical per-row `allow` license decisions with exact observation evidence. Private-key/signature/legal-advice/distribution booleans are false. |
+| Final policy manifest | File `rextio.artifact-policy.json`; `kind: "artifact-policy-manifest"`, `schema_version: 3`, `domain: "rextio.artifact-policy-manifest.v3"`; `policy_sha256` and `receipt_digest` bind exact artifact/external partitions, completed rows, transformations, owner declaration, and `bootstrap_request_sha256`. It is still unsigned and non-authorizing. |
+
+The current signing roots are likewise exact. The request file is
+`rextio.artifact-authorization-request.json` with
+`kind: "artifact-authorization-request"`, `schema_version: 2`, and
+`domain: "rextio.artifact-authorization-request.v2"`. Its detached envelope
+uses `kind: "artifact-authorization-detached-signature"`,
+`schema_version: 2`, and
+`domain: "rextio.artifact-authorization-detached-signature.v2"`.
+The strict source archive uses SourceLock manifest schema/domain 3
+(`rextio.external-source-lock.v3`) and detached-signature schema 2/domain
+`rextio.external-source-lock-signature.v3`.
 
 Parsers reject missing or extra fields, duplicate keys, non-finite JSON,
 boolean-as-integer substitution, noncanonical ordering/encoding, excessive
@@ -2104,19 +2125,19 @@ depth/bytes, stale nested digests, and path/file aliases. Canonical JSON bytes,
 not a semantically similar reserialization, are the file identity.
 
 The owner supplies a distinct canonical completion document
-(`rextio.full-c6-owner-policy-completion.v1`) that explicitly allows every
+(`rextio.artifact-policy-owner-completion.v2`) that explicitly allows every
 license-applicable observed row and accepts the exact transformation-set digest.
 The offline command:
 
 ```text
 rextio policy finalize \
-  --bootstrap state/rextio.full-c6-policy.bootstrap.json \
-  --completion locks/rextio.full-c6-policy.completion.json \
-  --output locks/rextio.full-c6-policy.json
+  --bootstrap state/rextio.artifact-policy.bootstrap.json \
+  --completion locks/rextio.artifact-policy.completion.json \
+  --output locks/rextio.artifact-policy.json
 ```
 
-atomically creates or exactly reuses canonical manifest schema/domain v2
-(`rextio.full-c6-owner-policy-manifest.v2`). The manifest binds
+atomically creates or exactly reuses the canonical manifest schema/domain v3
+(`rextio.artifact-policy-manifest.v3`). The manifest binds
 `bootstrap_request_sha256`; finalization neither builds, signs, gives legal
 advice, nor authorizes distribution. Signing and publication collection rederive
 the entire bootstrap/template from the current graph, reload the manifest, and
@@ -2128,7 +2149,7 @@ these top-level fields (the `output` value is the resolved output path):
 
 ```json
 {
-  "status": "full-c6-policy-finalized",
+  "status": "artifact-policy-finalized",
   "bootstrap_request_sha256": "…",
   "completion_sha256": "…",
   "manifest_sha256": "…",
@@ -2139,6 +2160,18 @@ these top-level fields (the `output` value is the resolved output path):
   "output": "/resolved/output/path"
 }
 ```
+
+#### Legacy 0.1.7 persisted-contract compatibility
+
+Core 0.1.8 recognizes the exact 0.1.7 root triples and signing prefixes only
+when reading or verifying a complete historical artifact. It never selects
+that dialect for a newly emitted bootstrap, completion, manifest,
+authorization request, signature, SourceLock, or publication bundle. A current
+root with legacy nested identities, a legacy root with current nested
+identities, or any other current/legacy mixture fails closed. Consequently,
+owners must finish an in-progress 0.1.7 lifecycle with 0.1.7 or begin a fresh
+0.1.8 artifact-policy lifecycle; Rextio does not silently rewrite reviewed or
+signed bytes.
 
 #### Host support-lock bootstrap and sandbox receipts (2.24.0)
 
@@ -2173,7 +2206,7 @@ target-specific ordered sets and `result` is exactly `created | reused`:
 
 ```json
 {
-  "status": "full-c6-toolchain-support-lock-bootstrapped",
+  "status": "artifact-toolchain-support-lock-bootstrapped",
   "result": "created",
   "target": "aarch64-apple-darwin",
   "manifest_roles": ["…"],
@@ -2237,7 +2270,7 @@ One local macOS arm64 collection observed approximately **104,645** support
 members and **2.67 GB**, with about **45 seconds** per full verification. This
 is a machine-specific observation, not a member/byte/time limit, performance
 claim, or CI guarantee. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
-requires `python scripts/validate-full-c6-host.py` on the target host and is not
+requires `python scripts/validate-artifact-contract-host.py` on the target host and is not
 CI-certified.
 
 The bounded threat model excludes hostile same-UID concurrent replacement,
@@ -2276,7 +2309,7 @@ METADATA and `RECORD`, subject wheel, policy, SBOM/provenance, and both builds.
 The only accepted Ed25519 message is the domain-separated byte string
 
 ```text
-b"REXTIO-FULL-C6-ED25519-V1\0" + canonical_request_bytes
+b"REXTIO-ARTIFACT-AUTHORIZATION-ED25519-V2\0" + canonical_request_bytes
 ```
 
 The public-key file contains exactly 32 raw Ed25519 bytes and is independently
@@ -2284,7 +2317,7 @@ SHA-256-pinned. The signature is exactly 64 raw bytes, encoded as canonical
 Base64 inside this closed seven-field canonical envelope:
 
 ```json
-{"algorithm":"ed25519","domain":"rextio.full-c6-detached-signature.v1","kind":"full-c6-detached-signature","manifest_sha256":"<request-bytes-sha256>","public_key_sha256":"<raw-public-key-sha256>","schema_version":1,"signature":"<base64-raw-64-byte-signature>"}
+{"algorithm":"ed25519","domain":"rextio.artifact-authorization-detached-signature.v2","kind":"artifact-authorization-detached-signature","manifest_sha256":"<request-bytes-sha256>","public_key_sha256":"<raw-public-key-sha256>","schema_version":2,"signature":"<base64-raw-64-byte-signature>"}
 ```
 
 The envelope is compact sorted-key UTF-8 JSON with no trailing newline.
@@ -2296,20 +2329,20 @@ private key.
 The coordinator exposes exactly three lifecycle stages:
 
 1. `bootstrap-required` creates canonical
-   `rextio.full-c6-policy.bootstrap.json` v2 as its only lifecycle artifact.
+   `rextio.artifact-policy.bootstrap.json` v3 as its only lifecycle artifact.
    The strict `check.json` and `build.json` reports are also written. Rextio
    does not turn the bootstrap into owner policy; the owner creates the
    separate completion and runs `rextio policy finalize` before pinning the
    resulting manifest.
 2. `signing-required` is possible only after the owner supplies the complete
    canonical policy and pins its SHA-256. Its only lifecycle artifact is
-   `rextio.full-c6-final-authorization-request.json`; the strict reports are
+   `rextio.artifact-authorization-request.json`; the strict reports are
    also written. This stage has no gate or publication receipt.
 3. `publication-required` requires the externally produced detached signature.
    A new run revalidates the exact request, signature, final output, policy,
    reproducibility, and supply chain before it can mint sealed distribution
    authorization and create the exact atomic bundle under
-   `<project>/dist/<wheel-stem>.full-c6`.
+   `<project>/dist/<wheel-stem>.artifact-bundle`.
 
 The retained state directory is owner-owned with exact mode `0700`. Publication
 contains six payload files in this exact role order:
@@ -2317,13 +2350,13 @@ contains six payload files in this exact role order:
 1. the subject wheel;
 2. `rextio.cyclonedx.json`;
 3. `rextio.slsa-provenance.json`;
-4. `rextio.full-c6-evidence.json`;
-5. `rextio.full-c6-signature.json`; and
-6. `rextio.full-c6-authorization.json`.
+4. `rextio.artifact-evidence.json`;
+5. `rextio.artifact-authorization-signature.json`; and
+6. `rextio.artifact-authorization.json`.
 
-The seventh file, `rextio.full-c6-manifest.json`, is the canonical
-publication manifest. It has `kind: "full-c6-publication-manifest"`, schema 1,
-domain `rextio.full-c6-atomic-publication.v1`, the frozen scope, target triple,
+The seventh file, `rextio.artifact-publication-manifest.json`, is the canonical
+publication manifest. It has `kind: "artifact-publication-manifest"`, schema 2,
+domain `rextio.artifact-atomic-publication.v2`, the frozen scope, target triple,
 subject/evidence/authorization-request digests, `payload_file_count: 6`, and
 six ordered `{role, logical_name, sha256, size}` payload references. The wheel,
 CycloneDX, and SLSA files are each limited to 16 MiB; final evidence and sealed
@@ -2349,18 +2382,18 @@ invalidate the completed transaction receipt, but the changed bytes no longer
 match the receipt or manifest and consumers must treat that mismatching bundle
 as invalid.
 
-#### Strict lifecycle report shapes
+#### Strict artifact-contract lifecycle report shapes
 
 Each successful strict `build.json` has exactly these top-level keys:
 `analysis`, `contract_version`, `distribution_authorized`, `fallback`,
-`full_c6`, `lifecycle`, `next_action`, and `status`. The exact `full_c6` keys
-depend on the lifecycle:
+`artifact_contract`, `lifecycle`, `next_action`, and `status`. The exact
+`artifact_contract` keys depend on the lifecycle:
 
-| Lifecycle | Exact `full_c6` keys |
-| --- | --- |
-| `bootstrap-required` | `policy_bootstrap`, `production_authority` |
-| `signing-required` | `authorization_request`, `production_authority`, `signing_request_receipt` |
-| `publication-required` | `authorization_request`, `production_authority`, `signing_request_receipt`, `publication_receipt` |
+| Lifecycle | Exact `artifact_contract` keys | Top-level `status` |
+| --- | --- | --- |
+| `bootstrap-required` | `policy_bootstrap`, `production_authority` | `artifact-policy-bootstrap-required` |
+| `signing-required` | `authorization_request`, `production_authority`, `signing_request_receipt` | `artifact-signing-required` |
+| `publication-required` | `authorization_request`, `production_authority`, `signing_request_receipt`, `publication_receipt` | `artifact-published` |
 
 In 2.24.0, every `production_authority` projection also binds
 `toolchain_support_plan_sha256`, `toolchain_support_lock_raw_sha256`,
@@ -2410,7 +2443,8 @@ Rextio and configured only for the publication stage.
 
 This contract ships in 0.1.5 as Experimental/Alpha. Its sealed distribution
 authorization applies only to the bounded generated artifact bundle; it is not
-Rextio release automation and does not imply broad Full C6, general package
+Rextio release automation and does not imply general artifact authorization,
+general package
 AOT, general hermeticity, CUDA support, or heavy host-lifecycle CI
 certification.
 
