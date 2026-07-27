@@ -15,40 +15,6 @@ fallback code - same imports, same behavior.
 **0.1.7:** optional plugin function-scope RAII guards (API 1.7 /
 contract 2.28.0) for used plugins on accepted generated native functions.
 
-<!-- rextio-benchmark:start -->
-## Verified CPU benchmark snapshot
-
-Same Python source and deterministic inputs; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-This snapshot used **Rextio Core together with all five first-party plugins**. Packages (PyPI name · version · repository):
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-Selection: the chronologically first report (index 0) of exactly three qualifying publish reports; never selected by speedup.
-Stability: all six frozen headline rows passed the 10% stability veto. Three-run medians: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| Domain | Python source | Rextio native | Speedup (source ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-These are workload-specific results, not library-wide performance claims. Build, import, first-call, and worker-process startup are excluded from these steady-state rows. The Core executable is separate because process startup is included. NumPy `dot` remains a BLAS-owned negative control; a manually vectorized pandas/NumPy rewrite may be faster. Ratios below 1× mean Rextio was slower; values near 1× indicate parity, not a material speedup.
-No result claims intrinsic BLAS, libtorch, TensorFlow-kernel, or CUDA acceleration.
-
-Packages marked **candidate** (Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, and rextio-tensorflow 0.1.3) were measured as pre-release candidate revisions, not later PyPI artifacts of those versions. rextio-networkx 0.1.1 and rextio-pandas 0.1.2 are released packages.
-
-**For full methodology, exact revisions, evidence, diagnostics, and detailed results, use the [rextio-benchmark](https://github.com/rextio/rextio-benchmark) repository.**
-<!-- rextio-benchmark:end -->
-
 **0.1.6 Release Train E foundation:** this published release adds bounded
 plugin comparison expressions, Device Provider API 1 selection/preflight/build
 wiring, and fail-closed static device-domain lowering authorization. An
@@ -424,6 +390,25 @@ observations make only `bounded-static-native-runtime-graph-bound`
 C6.9-only check fails; a C6.8 failure necessarily removes both dependent
 observations. The readiness check
 `native-runtime-transitive-closure-complete` remains blocked.
+
+<!-- rextio-benchmark:start -->
+## Verified CPU benchmark results
+
+Three-run medians on **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
+
+| Workload | 3-run median speedup |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+Results are workload-specific. Values near 1× indicate parity, not a material speedup. CUDA was not measured.
+
+**For full methodology, exact revision provenance, raw evidence, diagnostics, and detailed results, use the [rextio-benchmark](https://github.com/rextio/rextio-benchmark) repository.**
+<!-- rextio-benchmark:end -->
 
 ## Requirements
 

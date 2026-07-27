@@ -10,40 +10,6 @@ plugin API **1.7**、tooling contract **2.28.0** 發佈到 PyPI，取代 0.1.6�
 的帶型別 Python 函式，用 PyO3 提前（ahead-of-time）編譯它們，其餘部分
 全部繼續透過產生的 Python fallback 程式碼運行 — import 路徑與行為保持不變。
 
-<!-- rextio-benchmark:start -->
-## 已驗證的 CPU 基準快照
-
-相同的 Python 原始碼和確定性輸入; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-本快照使用 **Rextio Core 與全部五個一等外掛** 共同測量。套件（PyPI 名稱 · 版本 · 儲存庫）：
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-選擇：恰好三份合格 publish 報告中按時間順序第一份（index 0）；絕不按加速比選擇。
-穩定性：六個固定 headline 行全部通過了 10% 穩定性 veto。 三次執行中位數: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| 領域 | Python 原始碼 | Rextio native | 加速比 (source ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-這些數值僅代表對應 workload，並非對整個函式庫的效能聲明。這些 steady-state 行不含建置、import、首次呼叫和 worker 行程啟動。Core 執行檔因包含行程啟動而單獨報告。NumPy `dot` 保留為 BLAS negative control；手動向量化的 pandas/NumPy 重寫可能更快。低於 1× 表示 Rextio 較慢；接近 1× 表示效能相當，而非實質性加速。
-結果不聲稱 BLAS、libtorch、TensorFlow kernel 或 CUDA 核心本身得到加速。
-
-標為 **candidate** 的套件（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）為測量時的 pre-release 候選修訂，不是之後的 PyPI 產物。rextio-networkx 0.1.1 與 rextio-pandas 0.1.2 為已發佈套件。
-
-**完整方法、確切修訂、證據、診斷與詳細結果，請使用 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 儲存庫。**
-<!-- rextio-benchmark:end -->
-
 ```text
 帶型別的 Python 專案
   -> 分析受支援的 native 候選
@@ -134,6 +100,25 @@ rextio clean path/to/project
 Nuitka、wheel 建置或可執行檔打包。
 
 需要產生原始碼加上編譯/打包產物時用 `rextio build`。
+
+<!-- rextio-benchmark:start -->
+## 已驗證的 CPU 基準結果
+
+在 **Mac16,11 / Apple M4 Pro**、**2026-07-26**、CPython **3.11.9** 上的三次執行中位數。
+
+| 工作負載 | 三次執行中位加速比 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+結果僅針對對應工作負載。接近 1× 表示效能相當（parity），而非實質性加速；未測量 CUDA。
+
+**完整方法、確切版本修訂的來源、原始證據、診斷與詳細結果，請使用 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 儲存庫。**
+<!-- rextio-benchmark:end -->
 
 ## 環境需求
 

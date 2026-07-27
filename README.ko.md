@@ -12,40 +12,6 @@ Rextio **0.1.7**은 alpha 단계 로컬 Python 빌드 도구로, 2026-07-27에 p
 컴파일하고, 나머지는 전부 생성된 Python fallback 코드로 계속 실행합니다 —
 import 경로도, 동작도 그대로입니다.
 
-<!-- rextio-benchmark:start -->
-## 검증된 CPU 벤치마크 스냅샷
-
-동일한 Python 소스와 결정론적 입력; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-이 스냅샷은 **Rextio Core와 1st-party 플러그인 5개 전부**를 함께 사용해 측정했습니다. 패키지(PyPI 이름 · 버전 · 저장소):
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-선택: 정확히 세 개의 적격 publish 보고서 중 시간순 첫 번째 보고서(index 0)를 사용하며, 속도비로 선택하지 않습니다.
-안정성: 고정된 여섯 headline 행은 모두 10% 안정성 veto를 통과했습니다. 3회 실행 중앙값: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| 영역 | Python 소스 | Rextio native | 속도비 (소스 ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-각 수치는 해당 workload의 결과이며 라이브러리 전체 성능을 뜻하지 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
-어떤 결과도 BLAS, libtorch, TensorFlow kernel 또는 CUDA 자체의 가속을 주장하지 않습니다.
-
-**candidate**로 표시된 패키지(Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, rextio-tensorflow 0.1.3)는 측정 시점의 pre-release 후보 리비전이며, 이후 PyPI 아티팩트가 아닙니다. rextio-networkx 0.1.1과 rextio-pandas 0.1.2는 릴리스된 패키지입니다.
-
-**전체 방법론, 정확한 리비전, 증거, 진단, 상세 결과는 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 저장소를 사용하세요.**
-<!-- rextio-benchmark:end -->
-
 ```text
 타입이 지정된 Python 프로젝트
   -> 지원되는 native 후보 분석
@@ -138,6 +104,25 @@ wheel 빌드, 실행파일 패키징은 실행하지 않습니다.
 
 생성 소스에 더해 컴파일/패키징된 산출물까지 원하면 `rextio build`를
 사용하세요.
+
+<!-- rextio-benchmark:start -->
+## 검증된 CPU 벤치마크 결과
+
+**Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**에서 측정한 3회 실행 중앙값입니다.
+
+| 워크로드 | 3회 실행 속도비의 중앙값 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+각 수치는 해당 workload의 결과입니다. 1× 부근은 실질 가속이 아니라 성능 동등(parity)을 뜻하며, CUDA는 측정하지 않았습니다.
+
+**전체 방법론, 정확한 리비전의 출처, 원본 증거 자료, 진단, 상세 결과는 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 저장소를 사용하세요.**
+<!-- rextio-benchmark:end -->
 
 ## 요구 사항
 

@@ -11,40 +11,6 @@ plugin API **1.7**、tooling contract **2.28.0** として PyPI に公開され�
 PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
 
-<!-- rextio-benchmark:start -->
-## 検証済み CPU ベンチマーク
-
-同一の Python ソースと決定論的な入力; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-このスナップショットは **Rextio Core と 1st-party プラグイン 5 つすべて**を組み合わせて測定しました。パッケージ（PyPI 名 · バージョン · リポジトリ）:
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-選択: 正確に 3 件の適格な publish レポートのうち時系列で最初のレポート（index 0）を使い、速度比では選択しません。
-安定性: 固定された 6 つの headline 行はすべて 10% の安定性 veto を通過しました。 3 回実行の中央値: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| 領域 | Python ソース | Rextio native | 高速化 (source ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-各数値は個別 workload の結果であり、ライブラリ全体の性能を示すものではありません。build、import、初回呼び出し、worker 起動時間は steady-state 行から除外します。Core 実行ファイルはプロセス起動を含むため別掲です。NumPy `dot` は BLAS negative control で、手動ベクトル化 pandas/NumPy 書き換えの方が速い場合があります。1× 未満は Rextio の方が遅く、1× 付近は実質的な高速化ではなく同等性能を示します。
-BLAS、libtorch、TensorFlow kernel、CUDA 自体の高速化を主張する結果ではありません。
-
-**candidate** と記したパッケージ（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）は測定時点の pre-release 候補リビジョンであり、後から出た PyPI 成果物ではありません。rextio-networkx 0.1.1 と rextio-pandas 0.1.2 はリリース済みパッケージです。
-
-**方法論の全文、正確なリビジョン、証拠、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
-<!-- rextio-benchmark:end -->
-
 ```text
 型付き Python プロジェクト
   -> サポートされる native 候補を分析
@@ -137,6 +103,25 @@ Nuitka、wheel ビルド、実行ファイルのパッケージングは実行�
 
 生成ソースに加えコンパイル/パッケージ済み成果物まで欲しいときは
 `rextio build` を使います。
+
+<!-- rextio-benchmark:start -->
+## 検証済み CPU ベンチマーク結果
+
+**Mac16,11 / Apple M4 Pro**、**2026-07-26**、CPython **3.11.9** での 3 回の実行における中央値です。
+
+| ワークロード | 3 回実行の高速化率中央値 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+各数値は個別のワークロードの結果です。1× 付近は実質的な高速化ではなく同等性能（parity）を示し、CUDA は測定していません。
+
+**方法論の全文、正確なリビジョンの来歴、未加工の証拠データ、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
+<!-- rextio-benchmark:end -->
 
 ## 要件
 
