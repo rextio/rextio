@@ -4,45 +4,11 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio **0.1.7** 是 alpha 阶段的本地 Python 构建工具，于 2026-07-27 以
-plugin API **1.7**、tooling contract **2.28.0** 发布到 PyPI，取代 0.1.6。
-它找出可以安全下沉到 Rust
+Rextio 是 alpha 阶段的本地 Python 构建工具。它找出可以安全下沉到 Rust
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
 全部继续通过生成的 Python fallback 代码运行 — import 路径与行为保持不变。
 
-<!-- rextio-benchmark:start -->
-## 已验证的 CPU 基准快照
-
-相同的 Python 源码和确定性输入; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-本快照使用 **Rextio Core 与全部五个一等插件** 共同测量。包（PyPI 名称 · 版本 · 仓库）：
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-选择：恰好三份合格 publish 报告中按时间顺序第一份（index 0）；绝不按加速比选择。
-稳定性：六个固定 headline 行全部通过了 10% 稳定性 veto。 三次运行中位数: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| 领域 | Python 源码 | Rextio native | 加速比 (source ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-这些数值仅代表对应 workload，并非对整个库的性能声明。这些 steady-state 行不含构建、import、首次调用和 worker 进程启动。Core 可执行文件因包含进程启动而单独报告。NumPy `dot` 保留为 BLAS negative control；手工向量化的 pandas/NumPy 重写可能更快。低于 1× 表示 Rextio 更慢；接近 1× 表示性能相当，而非实质性加速。
-结果不声称 BLAS、libtorch、TensorFlow kernel 或 CUDA 内核本身得到加速。
-
-标为 **candidate** 的包（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）为测量时的 pre-release 候选修订，不是之后的 PyPI 产物。rextio-networkx 0.1.1 与 rextio-pandas 0.1.2 为已发布包。
-
-**完整方法、确切修订、证据、诊断与详细结果，请使用 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 仓库。**
-<!-- rextio-benchmark:end -->
+各版本变更请见 [CHANGELOG.md](CHANGELOG.md)。
 
 ```text
 带类型的 Python 项目
@@ -62,7 +28,7 @@ Rextio 不是 Python 的替代品，也不是整个项目迁移到 Rust 的工�
 
 ## 快速开始
 
-从普通的 Python 代码开始:
+从带类型注解的普通 Python 代码开始:
 
 ```python
 # src/myapp/math_ops.py
@@ -76,7 +42,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # 不在 direct Rust subset 内
 ```
 
-构建（面向已安装用户；从源码检出请改用
+安装并分析/构建（从源码检出请改用
 `python -m pip install -e .`）:
 
 ```text
@@ -95,45 +61,35 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-主要命令:
-
-| 命令 | 作用 |
-| --- | --- |
-| `rextio init` | 创建 `rextio.toml`、`REXTIO.md` 和 `.rextioignore`。 |
-| `rextio check` | 分析 native 候选并输出诊断（结构化 JSON 用 `--format json`）。 |
-| `rextio capabilities` | 输出机器可读的 capability manifest: 受支持的类型、带指引的提升规则、以及激活的插件（experimental）。 |
-| `rextio generate` | 只写出生成的 Rust/Python 源码，不编译。 |
-| `rextio build` | 生成、编译、打包并写出构建报告。 |
-| `rextio bench` | 比较一个函数的 Python fallback 与 Rust native 耗时。 |
-| `rextio clean` | 删除 `.rextio/build`、`.rextio/generated`、`.rextio/reports`。 |
-
-常用构建变体:
+Native 是优化，不是必需。即使 native 模块缺失、被禁用或加载失败，包仍会
+通过 Python fallback 运行。运行时强制 fallback:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --rust-importable --rust-crate-name=my_native
+REXTIO_NATIVE_MODE=fallback
 ```
 
-常见的完整流程:
+首个项目常用命令: `rextio init`、`rextio check`、
+`rextio generate`（只写出生成源码、不编译）、`rextio build`、
+`rextio bench`、`rextio clean`。
 
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
+<!-- rextio-benchmark:start -->
+## 已验证的 CPU 基准结果
 
-只需要生成源码时用 `rextio generate`。它不会运行 Cargo、maturin、Nuitka、
-wheel 构建或可执行文件打包。
+在 **Mac16,11 / Apple M4 Pro**、**2026-07-26**、CPython **3.11.9** 上的三次运行中位数。
 
-需要生成源码加上编译/打包产物时用 `rextio build`。
+| 工作负载 | 三次运行中位加速比 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+结果仅针对对应工作负载。接近 1× 表示性能相当（parity），而非实质性加速；未测量 CUDA。
+
+**完整方法、确切版本修订的来源、原始证据、诊断与详细结果，请使用 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 仓库。**
+<!-- rextio-benchmark:end -->
 
 ## 环境要求
 
@@ -332,7 +288,7 @@ tooling contract **2.2.0**；在不改变既有 route/status/rejection 含义的
 前提下，加入独立的 promotion assessment、可信 marker 意图及函数/名称范围。
 Core **0.1.5** 于 2026-07-23 发布，使用 plugin API **1.4**、tooling
 contract **2.24.0** 和 readiness policy **11**。Train C 的 host source-AOT、
-可执行文件与有限 Full-C6/C5.2 表面仍属 Experimental/Alpha。
+可执行文件与严格的 artifact-evidence 功能仍属 Experimental/Alpha。
 Core **0.1.6** 于 2026-07-26 发布，使用 plugin API **1.6** 和 tooling
 contract **2.27.0**。它加入有限的插件比较表达式、Device Provider API 1
 选择/preflight/构建接线，以及静态 device-domain lowering 授权；Core 本身

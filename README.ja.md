@@ -5,45 +5,11 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio **0.1.7** は alpha 段階のローカル Python ビルドツールで、2026-07-27 に
-plugin API **1.7**、tooling contract **2.28.0** として PyPI に公開され、0.1.6 を
-置き換えます。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
+Rextio は alpha 段階のローカル Python ビルドツールです。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
 PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
 
-<!-- rextio-benchmark:start -->
-## 検証済み CPU ベンチマーク
-
-同一の Python ソースと決定論的な入力; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-このスナップショットは **Rextio Core と 1st-party プラグイン 5 つすべて**を組み合わせて測定しました。パッケージ（PyPI 名 · バージョン · リポジトリ）:
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-選択: 正確に 3 件の適格な publish レポートのうち時系列で最初のレポート（index 0）を使い、速度比では選択しません。
-安定性: 固定された 6 つの headline 行はすべて 10% の安定性 veto を通過しました。 3 回実行の中央値: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| 領域 | Python ソース | Rextio native | 高速化 (source ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-各数値は個別 workload の結果であり、ライブラリ全体の性能を示すものではありません。build、import、初回呼び出し、worker 起動時間は steady-state 行から除外します。Core 実行ファイルはプロセス起動を含むため別掲です。NumPy `dot` は BLAS negative control で、手動ベクトル化 pandas/NumPy 書き換えの方が速い場合があります。1× 未満は Rextio の方が遅く、1× 付近は実質的な高速化ではなく同等性能を示します。
-BLAS、libtorch、TensorFlow kernel、CUDA 自体の高速化を主張する結果ではありません。
-
-**candidate** と記したパッケージ（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）は測定時点の pre-release 候補リビジョンであり、後から出た PyPI 成果物ではありません。rextio-networkx 0.1.1 と rextio-pandas 0.1.2 はリリース済みパッケージです。
-
-**方法論の全文、正確なリビジョン、証拠、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
-<!-- rextio-benchmark:end -->
+リリースごとの変更点は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 ```text
 型付き Python プロジェクト
@@ -64,7 +30,7 @@ Rextio は Python の代替ではなく、プロジェクト全体を Rust へ�
 
 ## クイックスタート
 
-普通の Python コードから始めます:
+型付きの普通の Python コードから始めます:
 
 ```python
 # src/myapp/math_ops.py
@@ -78,7 +44,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # direct Rust subset の外
 ```
 
-ビルドします（インストール済みユーザー向け。ソースチェックアウトでは
+インストールして分析/ビルドします（ソースチェックアウトでは
 `python -m pip install -e .` を代わりに使用）:
 
 ```text
@@ -97,46 +63,36 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-主なコマンド:
-
-| コマンド | 動作 |
-| --- | --- |
-| `rextio init` | `rextio.toml`、`REXTIO.md`、`.rextioignore` を作成します。 |
-| `rextio check` | native 候補を分析し、診断を出力します（構造化 JSON は `--format json`）。 |
-| `rextio capabilities` | 機械可読な capability manifest を出力します: サポート型、ガイダンス付きの昇格ルール、アクティブなプラグイン（experimental）。 |
-| `rextio generate` | コンパイルせずに Rust/Python 生成ソースを書き出します。 |
-| `rextio build` | 生成・コンパイル・パッケージングし、ビルドレポートを書きます。 |
-| `rextio bench` | 1 つの関数について Python fallback と Rust native の時間を比較します。 |
-| `rextio clean` | `.rextio/build`、`.rextio/generated`、`.rextio/reports` を削除します。 |
-
-よく使うビルドの変形:
+Native は最適化であり必須ではありません。native モジュールが無い、無効、
+またはロードに失敗しても、パッケージは Python fallback で動き続けます。
+実行時に fallback を強制するには:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --rust-importable --rust-crate-name=my_native
+REXTIO_NATIVE_MODE=fallback
 ```
 
-よくある一連の流れ:
+最初のプロジェクトで役立つコマンド: `rextio init`、`rextio check`、
+`rextio generate`（コンパイルせず生成ソースのみ書き出し）、`rextio build`、
+`rextio bench`、`rextio clean`。
 
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
+<!-- rextio-benchmark:start -->
+## 検証済み CPU ベンチマーク結果
 
-生成ソースだけが欲しいときは `rextio generate` を使います。Cargo、maturin、
-Nuitka、wheel ビルド、実行ファイルのパッケージングは実行しません。
+**Mac16,11 / Apple M4 Pro**、**2026-07-26**、CPython **3.11.9** での 3 回の実行における中央値です。
 
-生成ソースに加えコンパイル/パッケージ済み成果物まで欲しいときは
-`rextio build` を使います。
+| ワークロード | 3 回実行の高速化率中央値 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+各数値は個別のワークロードの結果です。1× 付近は実質的な高速化ではなく同等性能（parity）を示し、CUDA は測定していません。
+
+**方法論の全文、正確なリビジョンの来歴、未加工の証拠データ、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
+<!-- rextio-benchmark:end -->
 
 ## 要件
 
@@ -353,7 +309,7 @@ route/status/rejection の意味を変えず、分離された promotion assessm
 信頼済み marker intent、関数／名前 range を追加します。
 Core **0.1.5** は plugin API **1.4**、tooling contract **2.24.0**、readiness
 policy **11** として 2026-07-23 に公開されました。Train C の host source-AOT、
-実行ファイル、限定 Full-C6/C5.2 サーフェスは引き続き Experimental/Alpha です。
+実行ファイル、厳格な artifact-evidence 機能は引き続き Experimental/Alpha です。
 Core **0.1.6** は plugin API **1.6**、tooling contract **2.27.0** として
 2026-07-26 に公開されました。限定的なプラグイン比較式、Device Provider
 API 1 の選択・preflight・ビルド接続、静的 device-domain lowering 認可を

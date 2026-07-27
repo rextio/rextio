@@ -5,46 +5,12 @@
 **적합한 typed Python 함수는 Rust로 컴파일하고, 나머지는 전부 Python
 fallback으로 유지합니다.**
 
-Rextio **0.1.7**은 alpha 단계 로컬 Python 빌드 도구로, 2026-07-27에 plugin API
-**1.7**, tooling contract **2.28.0**으로 PyPI에 게시되어 0.1.6을 대체합니다.
-타입이 지정된 Python
+Rextio는 alpha 단계의 로컬 Python 빌드 도구입니다. 타입이 지정된 Python
 함수 중 안전하게 Rust로 낮출 수 있는 것을 찾아 PyO3로 미리(ahead-of-time)
 컴파일하고, 나머지는 전부 생성된 Python fallback 코드로 계속 실행합니다 —
 import 경로도, 동작도 그대로입니다.
 
-<!-- rextio-benchmark:start -->
-## 검증된 CPU 벤치마크 스냅샷
-
-동일한 Python 소스와 결정론적 입력; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-
-이 스냅샷은 **Rextio Core와 1st-party 플러그인 5개 전부**를 함께 사용해 측정했습니다. 패키지(PyPI 이름 · 버전 · 저장소):
-
-- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
-- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
-- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
-- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
-- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
-- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
-
-선택: 정확히 세 개의 적격 publish 보고서 중 시간순 첫 번째 보고서(index 0)를 사용하며, 속도비로 선택하지 않습니다.
-안정성: 고정된 여섯 headline 행은 모두 10% 안정성 veto를 통과했습니다. 3회 실행 중앙값: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
-
-| 영역 | Python 소스 | Rextio native | 속도비 (소스 ÷ native) |
-| --- | ---: | ---: | ---: |
-| Core hybrid | 7.988211 ms | 0.138802 ms | 57.729× |
-| NumPy mixed fusion | 0.051241 ms | 0.019296 ms | 2.425× |
-| NetworkX Dijkstra | 50.836724 ms | 13.651031 ms | 3.719× |
-| pandas Series.map | 179.817448 ms | 2.700109 ms | 66.143× |
-| PyTorch CPU deep MLP | 0.391130 ms | 0.385014 ms | 1.018× |
-| TensorFlow CPU eager chain | 0.648913 ms | 0.622690 ms | 1.040× |
-
-각 수치는 해당 workload의 결과이며 라이브러리 전체 성능을 뜻하지 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
-어떤 결과도 BLAS, libtorch, TensorFlow kernel 또는 CUDA 자체의 가속을 주장하지 않습니다.
-
-**candidate**로 표시된 패키지(Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, rextio-tensorflow 0.1.3)는 측정 시점의 pre-release 후보 리비전이며, 이후 PyPI 아티팩트가 아닙니다. rextio-networkx 0.1.1과 rextio-pandas 0.1.2는 릴리스된 패키지입니다.
-
-**전체 방법론, 정확한 리비전, 증거, 진단, 상세 결과는 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 저장소를 사용하세요.**
-<!-- rextio-benchmark:end -->
+릴리스별 변경 사항은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
 
 ```text
 타입이 지정된 Python 프로젝트
@@ -65,7 +31,7 @@ Rextio는 Python을 대체하지 않으며 프로젝트 전체를 Rust로 옮기
 
 ## 빠른 시작
 
-일반 Python 코드에서 시작합니다:
+일반 타입 힌트가 있는 Python 코드에서 시작합니다:
 
 ```python
 # src/myapp/math_ops.py
@@ -79,7 +45,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # direct Rust subset 밖
 ```
 
-빌드합니다(설치된 사용자 기준; 소스 체크아웃에서는
+설치 후 분석/빌드합니다(소스 체크아웃에서는
 `python -m pip install -e .`를 대신 사용):
 
 ```text
@@ -98,46 +64,36 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-주요 명령어:
-
-| 명령 | 하는 일 |
-| --- | --- |
-| `rextio init` | `rextio.toml`, `REXTIO.md`, `.rextioignore`를 생성합니다. |
-| `rextio check` | native 후보를 분석하고 진단을 출력합니다(구조화된 JSON은 `--format json`). |
-| `rextio capabilities` | 기계가 읽을 수 있는 capability manifest를 출력합니다: 지원 타입, 가이드가 딸린 승격 규칙, 활성 플러그인 (experimental). |
-| `rextio generate` | 컴파일 없이 Rust/Python 생성 소스를 작성합니다. |
-| `rextio build` | 생성, 컴파일, 패키징 후 빌드 리포트를 작성합니다. |
-| `rextio bench` | 한 함수의 Python fallback과 Rust native 시간을 비교합니다. |
-| `rextio clean` | `.rextio/build`, `.rextio/generated`, `.rextio/reports`를 제거합니다. |
-
-자주 쓰는 빌드 변형:
+Native는 최적화일 뿐 필수는 아닙니다. native 모듈이 없거나, 비활성화되어
+있거나, 로드에 실패해도 패키지는 Python fallback으로 계속 동작합니다.
+런타임에 fallback을 강제하려면:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --rust-importable --rust-crate-name=my_native
+REXTIO_NATIVE_MODE=fallback
 ```
 
-일반적인 전체 흐름:
+처음 프로젝트에 유용한 명령: `rextio init`, `rextio check`,
+`rextio generate`(컴파일 없이 생성 소스만 작성), `rextio build`,
+`rextio bench`, `rextio clean`.
 
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
+<!-- rextio-benchmark:start -->
+## 검증된 CPU 벤치마크 결과
 
-생성 소스만 원하면 `rextio generate`를 사용하세요. Cargo, maturin, Nuitka,
-wheel 빌드, 실행파일 패키징은 실행하지 않습니다.
+**Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**에서 측정한 3회 실행 중앙값입니다.
 
-생성 소스에 더해 컴파일/패키징된 산출물까지 원하면 `rextio build`를
-사용하세요.
+| 워크로드 | 3회 실행 속도비의 중앙값 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas Series.map | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+각 수치는 해당 workload의 결과입니다. 1× 부근은 실질 가속이 아니라 성능 동등(parity)을 뜻하며, CUDA는 측정하지 않았습니다.
+
+**전체 방법론, 정확한 리비전의 출처, 원본 증거 자료, 진단, 상세 결과는 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 저장소를 사용하세요.**
+<!-- rextio-benchmark:end -->
 
 ## 요구 사항
 
@@ -348,7 +304,7 @@ route/status/rejection 의미는 바꾸지 않으면서 분리된 승격 판정,
 marker 의도, 함수/이름 range를 추가합니다.
 Core **0.1.5**는 plugin API **1.4**, tooling contract **2.24.0**, readiness
 policy **11**로 2026-07-23 게시되었습니다. Train C의 host source-AOT,
-실행 파일, 제한된 Full-C6/C5.2 표면은 계속 Experimental/Alpha입니다.
+실행 파일, 엄격한 artifact-evidence 기능은 계속 Experimental/Alpha입니다.
 Core **0.1.6**은 plugin API **1.6**, tooling contract **2.27.0**으로
 2026-07-26 게시되었습니다. 제한된 plugin 비교식, Device Provider API 1
 선택·preflight·빌드 연결, 정적 device-domain lowering 승인을 추가하지만
