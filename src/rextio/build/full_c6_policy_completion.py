@@ -1,4 +1,4 @@
-"""Strict offline owner completion for a Full C6 technical bootstrap."""
+"""Strict offline owner completion for an artifact-policy technical bootstrap."""
 
 from __future__ import annotations
 
@@ -14,8 +14,10 @@ from typing import Literal
 import unicodedata
 
 from rextio.artifacts.contract_dialects import (
+    ARTIFACT_COMPONENT_URN_PREFIX,
+    ARTIFACT_CONTRACT_DIALECTS,
     CURRENT,
-    POLICY_BOOTSTRAP,
+    EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
     POLICY_COMPLETION,
     ArtifactContractDialect,
     require_current_dialect,
@@ -36,6 +38,8 @@ from rextio.build.full_c6_policy import (
 )
 from rextio.build.full_c6_policy_bootstrap import (
     FullC6PolicyBootstrapRequest,
+    _bootstrap_request_dialect,
+    _technical_template_dialect,
     parse_full_c6_policy_bootstrap_request,
 )
 from rextio.build.full_c6_policy_manifest import (
@@ -54,9 +58,7 @@ from rextio.build.owner_policy_lock import read_strict_owner_policy_lock
 _CURRENT_COMPLETION_IDENTITY = CURRENT.identity(POLICY_COMPLETION)
 FULL_C6_POLICY_COMPLETION_KIND = _CURRENT_COMPLETION_IDENTITY.kind
 FULL_C6_POLICY_COMPLETION_DOMAIN = _CURRENT_COMPLETION_IDENTITY.domain
-FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION = (
-    _CURRENT_COMPLETION_IDENTITY.schema_version
-)
+FULL_C6_POLICY_COMPLETION_SCHEMA_VERSION = _CURRENT_COMPLETION_IDENTITY.schema_version
 FULL_C6_TRANSFORMATION_ACCEPTANCE = "accept-exact-observed-transformation-set"
 MAX_FULL_C6_POLICY_COMPLETION_BYTES = MAX_FULL_C6_POLICY_SERIALIZED_BYTES
 _MAX_FINALIZE_INPUT_BYTES = MAX_FULL_C6_POLICY_TEMPLATE_BYTES + 256 * 1024
@@ -84,40 +86,60 @@ class FullC6OwnerLicenseDecision:
         "production-external-observation",
     ]
     decision: str = "allow"
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
+        dialect = _contract_dialect(self._artifact_contract_dialect)
         if type(self.authority_identity) is not str or not self.authority_identity:
-            raise FullC6PolicyCompletionError("Full C6 license authority identity is missing")
+            raise FullC6PolicyCompletionError(
+                "artifact policy license authority identity is missing"
+            )
+        authority_prefixes = (
+            dialect.string_value(ARTIFACT_COMPONENT_URN_PREFIX),
+            f"{dialect.string_value(EXTERNAL_AUTHORITY_IDENTITY_SCHEME)}:",
+        )
+        if not self.authority_identity.startswith(authority_prefixes):
+            raise FullC6PolicyCompletionError(
+                "artifact policy license authority identity uses another contract dialect"
+            )
         if self.decision != "allow":
-            raise FullC6PolicyCompletionError("Full C6 license decision must be explicit allow")
+            raise FullC6PolicyCompletionError(
+                "artifact policy license decision must be explicit allow"
+            )
         if self.evidence_origin not in {
             "owner-project-observation",
             "production-external-observation",
         }:
-            raise FullC6PolicyCompletionError("Full C6 license evidence origin is invalid")
+            raise FullC6PolicyCompletionError("artifact policy license evidence origin is invalid")
         if (
             type(self.declared_spdx) is not str
             or not self.declared_spdx
             or type(self.detected_spdx) is not str
             or not self.detected_spdx
         ):
-            raise FullC6PolicyCompletionError("Full C6 license SPDX values are missing")
+            raise FullC6PolicyCompletionError("artifact policy license SPDX values are missing")
         if not _is_sha256(self.source_detector_receipt_sha256):
-            raise FullC6PolicyCompletionError("Full C6 source detector receipt is invalid")
+            raise FullC6PolicyCompletionError("artifact policy source detector receipt is invalid")
         if (
             type(self.license_files) is not tuple
             or not self.license_files
             or len(self.license_files) > MAX_FULL_C6_LICENSE_FILES_PER_ROW
             or any(type(item) is not FullC6PolicyFileIdentity for item in self.license_files)
         ):
-            raise FullC6PolicyCompletionError("Full C6 license files are invalid")
+            raise FullC6PolicyCompletionError("artifact policy license files are invalid")
         expected = full_c6_license_detector_payload_digest(
             self.detected_spdx,
             self.license_files,
             source_detector_receipt_sha256=self.source_detector_receipt_sha256,
+            _artifact_contract_dialect=self._artifact_contract_dialect,
         )
         if self.detector_payload_sha256 != expected:
-            raise FullC6PolicyCompletionError("Full C6 license detector payload is stale")
+            raise FullC6PolicyCompletionError("artifact policy license detector payload is stale")
 
     def to_dict(self) -> dict[str, object]:
         """Return the canonical explicit per-row owner decision."""
@@ -151,39 +173,49 @@ class FullC6OwnerPolicyCompletion:
     domain: str = field(default=FULL_C6_POLICY_COMPLETION_DOMAIN, init=False)
     _artifact_contract_dialect: str = field(
         default=CURRENT.name,
-        init=False,
         repr=False,
         compare=False,
+        kw_only=True,
     )
 
     def __post_init__(self) -> None:
+        dialect = _contract_dialect(self._artifact_contract_dialect)
+        identity = dialect.identity(POLICY_COMPLETION)
+        object.__setattr__(self, "kind", identity.kind)
+        object.__setattr__(self, "schema_version", identity.schema_version)
+        object.__setattr__(self, "domain", identity.domain)
         if not _is_sha256(self.bootstrap_request_sha256) or not _is_sha256(
             self.transformation_set_sha256
         ):
-            raise FullC6PolicyCompletionError("Full C6 completion pin is invalid")
+            raise FullC6PolicyCompletionError("artifact policy completion pin is invalid")
         if type(self.owner_declaration) is not FullC6OwnerDeclaration:
-            raise FullC6PolicyCompletionError("Full C6 owner declaration is invalid")
+            raise FullC6PolicyCompletionError("artifact policy owner declaration is invalid")
+        if self.owner_declaration._artifact_contract_dialect != dialect.name or any(
+            item._artifact_contract_dialect != dialect.name
+            for item in self.license_decisions
+            if type(item) is FullC6OwnerLicenseDecision
+        ):
+            raise FullC6PolicyCompletionError(
+                "artifact policy completion contains a mixed nested contract dialect"
+            )
         if self.transformation_decision != FULL_C6_TRANSFORMATION_ACCEPTANCE:
             raise FullC6PolicyCompletionError(
-                "Full C6 transformation set was not explicitly accepted"
+                "artifact policy transformation set was not explicitly accepted"
             )
         if (
             type(self.license_decisions) is not tuple
             or not self.license_decisions
             or len(self.license_decisions) > MAX_FULL_C6_POLICY_ROWS
-            or any(
-                type(item) is not FullC6OwnerLicenseDecision
-                for item in self.license_decisions
-            )
+            or any(type(item) is not FullC6OwnerLicenseDecision for item in self.license_decisions)
         ):
-            raise FullC6PolicyCompletionError("Full C6 license decisions are invalid")
+            raise FullC6PolicyCompletionError("artifact policy license decisions are invalid")
         identities = tuple(item.authority_identity for item in self.license_decisions)
         if identities != tuple(sorted(identities)) or len(identities) != len(set(identities)):
             raise FullC6PolicyCompletionError(
-                "Full C6 license decisions are noncanonical or duplicated"
+                "artifact policy license decisions are noncanonical or duplicated"
             )
         if len(self.to_bytes()) > MAX_FULL_C6_POLICY_COMPLETION_BYTES:
-            raise FullC6PolicyCompletionError("Full C6 completion exceeds byte bound")
+            raise FullC6PolicyCompletionError("artifact policy completion exceeds the byte bound")
 
     def _payload(self) -> dict[str, object]:
         return {
@@ -230,7 +262,7 @@ class FullC6PolicyFinalizeResult:
     def to_dict(self) -> dict[str, object]:
         """Return the non-authorizing offline finalization receipt."""
         return {
-            "status": "full-c6-policy-finalized",
+            "status": "artifact-policy-finalized",
             "bootstrap_request_sha256": self.bootstrap_request_sha256,
             "completion_sha256": self.completion_sha256,
             "manifest_sha256": self.manifest_sha256,
@@ -245,7 +277,7 @@ def parse_full_c6_owner_policy_completion(value: bytes) -> FullC6OwnerPolicyComp
     """Parse exact canonical owner-completion bytes with no defaults."""
     document = _strict_json_bytes(value, max_bytes=MAX_FULL_C6_POLICY_COMPLETION_BYTES)
     if canonical_json_bytes(document) != value:
-        raise FullC6PolicyCompletionError("Full C6 completion JSON is not canonical")
+        raise FullC6PolicyCompletionError("artifact policy completion JSON is not canonical")
     data = _exact_dict(document, _COMPLETION_FIELDS, "completion")
     try:
         dialect = resolve_artifact_contract_dialect(
@@ -256,7 +288,7 @@ def parse_full_c6_owner_policy_completion(value: bytes) -> FullC6OwnerPolicyComp
         )
     except ValueError as exc:
         raise FullC6PolicyCompletionError(
-            "Full C6 completion claims invalid authority"
+            "artifact policy completion claims invalid authority"
         ) from exc
     if (
         data["private_key_present"] is not False
@@ -264,7 +296,7 @@ def parse_full_c6_owner_policy_completion(value: bytes) -> FullC6OwnerPolicyComp
         or data["legal_advice_inferred"] is not False
         or data["distribution_authorized"] is not False
     ):
-        raise FullC6PolicyCompletionError("Full C6 completion claims invalid authority")
+        raise FullC6PolicyCompletionError("artifact policy completion claims invalid authority")
     acceptance = _exact_dict(
         data["transformation_acceptance"],
         {"decision", "transformation_set_sha256"},
@@ -273,30 +305,27 @@ def parse_full_c6_owner_policy_completion(value: bytes) -> FullC6OwnerPolicyComp
     decisions = _exact_list(data["license_decisions"], "license decisions")
     try:
         completion = FullC6OwnerPolicyCompletion(
-            bootstrap_request_sha256=_sha256(
-                data["bootstrap_request_sha256"], "bootstrap request"
-            ),
+            bootstrap_request_sha256=_sha256(data["bootstrap_request_sha256"], "bootstrap request"),
             transformation_set_sha256=_sha256(
                 acceptance["transformation_set_sha256"], "transformation set"
             ),
-            transformation_decision=_string(
-                acceptance["decision"], "transformation decision"
-            ),
+            transformation_decision=_string(acceptance["decision"], "transformation decision"),
             owner_declaration=parse_full_c6_owner_declaration_document(
-                data["owner_declaration"]
+                data["owner_declaration"],
+                dialect=dialect,
             ),
-            license_decisions=tuple(_parse_license_decision(item) for item in decisions),
+            license_decisions=tuple(
+                _parse_license_decision(item, dialect=dialect) for item in decisions
+            ),
+            _artifact_contract_dialect=dialect.name,
         )
     except FullC6PolicyCompletionError:
         raise
     except (TypeError, ValueError) as exc:
-        raise FullC6PolicyCompletionError("Full C6 completion values are invalid") from exc
+        raise FullC6PolicyCompletionError("artifact policy completion values are invalid") from exc
     _apply_completion_dialect(completion, dialect)
-    if (
-        data["completion_sha256"] != completion.completion_sha256
-        or completion.to_bytes() != value
-    ):
-        raise FullC6PolicyCompletionError("Full C6 completion is stale or noncanonical")
+    if data["completion_sha256"] != completion.completion_sha256 or completion.to_bytes() != value:
+        raise FullC6PolicyCompletionError("artifact policy completion is stale or noncanonical")
     return completion
 
 
@@ -331,56 +360,54 @@ def finalize_full_c6_policy_manifest(
     completion: FullC6OwnerPolicyCompletion,
 ) -> bytes:
     """Create canonical final manifest bytes from exact technical facts and decisions."""
-    if type(bootstrap) is not FullC6PolicyBootstrapRequest or type(
-        completion
-    ) is not FullC6OwnerPolicyCompletion:
-        raise FullC6PolicyCompletionError("Full C6 finalization requires typed inputs")
+    if (
+        type(bootstrap) is not FullC6PolicyBootstrapRequest
+        or type(completion) is not FullC6OwnerPolicyCompletion
+    ):
+        raise FullC6PolicyCompletionError("artifact policy finalization requires typed inputs")
     try:
-        bootstrap_dialect = resolve_artifact_contract_dialect(
-            POLICY_BOOTSTRAP,
-            kind=bootstrap.kind,
-            schema_version=bootstrap.schema_version,
-            domain=bootstrap.domain,
-        )
+        bootstrap_dialect = _bootstrap_request_dialect(bootstrap)
+        template_dialect = _technical_template_dialect(bootstrap.technical_template)
         completion_dialect = _completion_dialect(completion)
         require_current_dialect(bootstrap_dialect)
+        require_current_dialect(template_dialect)
         require_current_dialect(completion_dialect)
     except ValueError as exc:
+        raise FullC6PolicyCompletionError("legacy policy contracts are read/verify-only") from exc
+    if not (bootstrap_dialect is template_dialect and template_dialect is completion_dialect):
         raise FullC6PolicyCompletionError(
-            "legacy policy contracts are read/verify-only"
-        ) from exc
-    if bootstrap_dialect is not completion_dialect:
-        raise FullC6PolicyCompletionError(
-            "policy bootstrap and completion dialects differ"
+            "policy bootstrap, template, and completion dialects differ"
         )
     template = bootstrap.technical_template
     if not hmac.compare_digest(
         completion.bootstrap_request_sha256,
         bootstrap.request_sha256,
     ):
-        raise FullC6PolicyCompletionError("Full C6 completion targets another bootstrap")
+        raise FullC6PolicyCompletionError("artifact policy completion targets another bootstrap")
     if not hmac.compare_digest(
         completion.transformation_set_sha256,
         template.transformation_set_sha256,
     ):
-        raise FullC6PolicyCompletionError("Full C6 completion accepts another transformation set")
+        raise FullC6PolicyCompletionError(
+            "artifact policy completion accepts another transformation set"
+        )
     owner = completion.owner_declaration
     if owner.owner_identity != template.observed_owner_identity:
-        raise FullC6PolicyCompletionError("Full C6 owner identity differs from SourceLock")
+        raise FullC6PolicyCompletionError("artifact policy owner identity differs from SourceLock")
     if not hmac.compare_digest(
         owner.trusted_public_key_sha256,
         bootstrap.trusted_owner_public_key_sha256,
     ):
-        raise FullC6PolicyCompletionError("Full C6 owner key differs from the bootstrap pin")
+        raise FullC6PolicyCompletionError(
+            "artifact policy owner key differs from the bootstrap pin"
+        )
     applicable = tuple(
-        row
-        for row in template.rows
-        if row.required_license_disposition == "owner-approved-allow"
+        row for row in template.rows if row.required_license_disposition == "owner-approved-allow"
     )
     decisions = {item.authority_identity: item for item in completion.license_decisions}
     if set(decisions) != {item.authority_identity for item in applicable}:
         raise FullC6PolicyCompletionError(
-            "Full C6 completion does not decide every license-applicable row exactly once"
+            "artifact policy completion does not decide every license-applicable row exactly once"
         )
     rows = tuple(
         _completed_row(
@@ -438,10 +465,10 @@ def _completed_row(
     evidence = None
     if row.required_license_disposition == "owner-approved-allow":
         if decision is None or decision.evidence_origin != row.license_evidence_origin:
-            raise FullC6PolicyCompletionError("Full C6 row lacks its explicit license decision")
-        observation: (
-            FullC6ExternalLicenseObservation | FullC6InternalLicenseObservation
-        )
+            raise FullC6PolicyCompletionError(
+                "artifact policy row lacks its explicit license decision"
+            )
+        observation: FullC6ExternalLicenseObservation | FullC6InternalLicenseObservation
         if decision.evidence_origin == "production-external-observation":
             observation = bootstrap.technical_template.external_license_observation
             mismatch = "independent wheel observation"
@@ -453,38 +480,33 @@ def _completed_row(
             )
             if len(matches) != 1:
                 raise FullC6PolicyCompletionError(
-                    "Full C6 row lacks exact internal license materials"
+                    "artifact policy row lacks exact internal license materials"
                 )
             observation = matches[0]
             mismatch = "production license-material observation"
         if (
             decision.declared_spdx != observation.declared_spdx
             or decision.detected_spdx != observation.detected_spdx
-            or decision.source_detector_receipt_sha256
-            != observation.source_detector_receipt_sha256
+            or decision.source_detector_receipt_sha256 != observation.source_detector_receipt_sha256
             or decision.detector_payload_sha256 != observation.detector_payload_sha256
             or decision.license_files != observation.license_files
         ):
-            raise FullC6PolicyCompletionError(
-                f"Full C6 decision differs from {mismatch}"
-            )
+            raise FullC6PolicyCompletionError(f"artifact policy decision differs from {mismatch}")
         evidence = FullC6LicenseEvidence(
             declared_spdx=decision.declared_spdx,
             detected_spdx=decision.detected_spdx,
             subject_authority_identity=row.authority_identity,
             subject_identity_sha256=row.canonical_identity_sha256,
-            authority_partition_sha256=(
-                bootstrap.technical_template.authority_partition_sha256
-            ),
-            source_detector_receipt_sha256=(
-                decision.source_detector_receipt_sha256
-            ),
+            authority_partition_sha256=(bootstrap.technical_template.authority_partition_sha256),
+            source_detector_receipt_sha256=(decision.source_detector_receipt_sha256),
             detector_payload_sha256=decision.detector_payload_sha256,
             license_files=decision.license_files,
             detector_receipt_kind=FULL_C6_LICENSE_DETECTOR_RECEIPT_KIND,
         )
     elif decision is not None:
-        raise FullC6PolicyCompletionError("Full C6 non-applicable row has a license decision")
+        raise FullC6PolicyCompletionError(
+            "artifact policy non-applicable row has a license decision"
+        )
     return FullC6PolicyInputRow(
         class_id=row.class_id,
         canonical_identity=row.canonical_identity,
@@ -498,10 +520,14 @@ def _completed_row(
     )
 
 
-def _parse_license_decision(value: object) -> FullC6OwnerLicenseDecision:
+def _parse_license_decision(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6OwnerLicenseDecision:
     data = _exact_dict(value, _LICENSE_DECISION_FIELDS, "license decision")
     if data["legal_advice_inferred"] is not False:
-        raise FullC6PolicyCompletionError("Full C6 completion cannot infer legal advice")
+        raise FullC6PolicyCompletionError("artifact policy completion cannot infer legal advice")
     files = _exact_list(data["license_files"], "license files")
     return FullC6OwnerLicenseDecision(
         authority_identity=_string(data["authority_identity"], "authority identity"),
@@ -511,11 +537,10 @@ def _parse_license_decision(value: object) -> FullC6OwnerLicenseDecision:
         source_detector_receipt_sha256=_sha256(
             data["source_detector_receipt_sha256"], "source detector receipt"
         ),
-        detector_payload_sha256=_sha256(
-            data["detector_payload_sha256"], "detector payload"
-        ),
+        detector_payload_sha256=_sha256(data["detector_payload_sha256"], "detector payload"),
         license_files=tuple(_parse_policy_file(item) for item in files),
         evidence_origin=_string(data["evidence_origin"], "evidence origin"),  # type: ignore[arg-type]
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -535,7 +560,7 @@ def _parse_policy_file(value: object) -> FullC6PolicyFileIdentity:
 
 def _read_strict_path(path: Path, max_bytes: int) -> bytes:
     if not _is_absolute_lexical_path(path):
-        raise FullC6PolicyCompletionError("Full C6 policy path must be absolute")
+        raise FullC6PolicyCompletionError("artifact policy path must be absolute")
     try:
         locked = read_strict_owner_policy_lock(
             project_root=path.parent,
@@ -543,25 +568,19 @@ def _read_strict_path(path: Path, max_bytes: int) -> bytes:
             max_bytes=max_bytes,
         )
     except (OSError, TypeError, ValueError) as exc:
-        raise FullC6PolicyCompletionError("Full C6 policy input file is unsafe") from exc
+        raise FullC6PolicyCompletionError("artifact policy input file is unsafe") from exc
     return locked.data
 
 
 def _atomic_create_or_exact_reuse(path: Path, payload: bytes) -> bool:
-    if (
-        not _is_absolute_lexical_path(path)
-        or PurePath(path.name).name != path.name
-        or not payload
-    ):
-        raise FullC6PolicyCompletionError("Full C6 policy output path is invalid")
+    if not _is_absolute_lexical_path(path) or PurePath(path.name).name != path.name or not payload:
+        raise FullC6PolicyCompletionError("artifact policy output path is invalid")
     try:
         parent_fd = _open_absolute_directory(path.parent)
     except FullC6PolicyCompletionError:
         raise
     except (OSError, TypeError, ValueError) as exc:
-        raise FullC6PolicyCompletionError(
-            "Full C6 policy output transaction failed"
-        ) from exc
+        raise FullC6PolicyCompletionError("artifact policy output transaction failed") from exc
     temporary = f".{path.name}.rextio-{os.getpid()}-{hashlib.sha256(payload).hexdigest()[:16]}.tmp"
     descriptor = -1
     created_temp = False
@@ -576,16 +595,10 @@ def _atomic_create_or_exact_reuse(path: Path, payload: bytes) -> bool:
             existing = None
         if existing is not None:
             if not hmac.compare_digest(existing.data, payload):
-                raise FullC6PolicyCompletionError(
-                    "existing Full C6 policy output bytes differ"
-                )
+                raise FullC6PolicyCompletionError("existing artifact policy output bytes differ")
             return False
         flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | _require_nofollow()
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | _require_nofollow()
         )
         descriptor = os.open(temporary, flags, _FILE_MODE, dir_fd=parent_fd)
         created_temp = True
@@ -594,7 +607,7 @@ def _atomic_create_or_exact_reuse(path: Path, payload: bytes) -> bool:
         os.fsync(descriptor)
         observed = os.fstat(descriptor)
         if not stat.S_ISREG(observed.st_mode) or observed.st_size != len(payload):
-            raise FullC6PolicyCompletionError("Full C6 policy temporary output is unsafe")
+            raise FullC6PolicyCompletionError("artifact policy temporary output is unsafe")
         os.close(descriptor)
         descriptor = -1
         try:
@@ -613,7 +626,7 @@ def _atomic_create_or_exact_reuse(path: Path, payload: bytes) -> bool:
             )
             if not hmac.compare_digest(existing.data, payload):
                 raise FullC6PolicyCompletionError(
-                    "concurrent Full C6 policy output bytes differ"
+                    "concurrent artifact policy output bytes differ"
                 ) from None
             return False
         os.unlink(temporary, dir_fd=parent_fd)
@@ -625,12 +638,12 @@ def _atomic_create_or_exact_reuse(path: Path, payload: bytes) -> bool:
             max_bytes=MAX_FULL_C6_POLICY_SERIALIZED_BYTES + 64 * 1024,
         )
         if not hmac.compare_digest(final.data, payload):
-            raise FullC6PolicyCompletionError("Full C6 policy final bytes changed")
+            raise FullC6PolicyCompletionError("artifact policy final bytes changed")
         return True
     except FullC6PolicyCompletionError:
         raise
     except (OSError, TypeError, ValueError) as exc:
-        raise FullC6PolicyCompletionError("Full C6 policy output transaction failed") from exc
+        raise FullC6PolicyCompletionError("artifact policy output transaction failed") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -666,7 +679,7 @@ def _open_absolute_directory(path: Path) -> int:
     try:
         for part in absolute.parts[1:]:
             if part in {"", ".", ".."} or "/" in part or "\\" in part:
-                raise FullC6PolicyCompletionError("Full C6 policy output path is unsafe")
+                raise FullC6PolicyCompletionError("artifact policy output path is unsafe")
             child = os.open(part, flags, dir_fd=descriptor)
             opened = os.fstat(child)
             linked = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
@@ -676,7 +689,7 @@ def _open_absolute_directory(path: Path) -> int:
                 or opened.st_ino != linked.st_ino
             ):
                 os.close(child)
-                raise FullC6PolicyCompletionError("Full C6 policy output path changed")
+                raise FullC6PolicyCompletionError("artifact policy output path changed")
             os.close(descriptor)
             descriptor = child
         return descriptor
@@ -690,31 +703,31 @@ def _write_all(descriptor: int, payload: bytes) -> None:
     while offset < len(payload):
         written = os.write(descriptor, payload[offset:])
         if written <= 0:
-            raise FullC6PolicyCompletionError("Full C6 policy output write stalled")
+            raise FullC6PolicyCompletionError("artifact policy output write stalled")
         offset += written
 
 
 def _require_nofollow() -> int:
     value = getattr(os, "O_NOFOLLOW", None)
     if type(value) is not int or value == 0:
-        raise FullC6PolicyCompletionError("Full C6 policy finalization requires O_NOFOLLOW")
+        raise FullC6PolicyCompletionError("artifact policy finalization requires O_NOFOLLOW")
     return value
 
 
 def _strict_json_bytes(value: bytes, *, max_bytes: int) -> dict[str, object]:
     if type(value) is not bytes or not value or len(value) > max_bytes:
-        raise FullC6PolicyCompletionError("Full C6 completion bytes are invalid")
+        raise FullC6PolicyCompletionError("artifact policy completion bytes are invalid")
 
     def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, item in pairs:
             if key in result:
-                raise FullC6PolicyCompletionError("Full C6 completion has duplicate keys")
+                raise FullC6PolicyCompletionError("artifact policy completion has duplicate keys")
             result[key] = item
         return result
 
     def reject_constant(_value: str) -> object:
-        raise FullC6PolicyCompletionError("Full C6 completion has non-finite JSON")
+        raise FullC6PolicyCompletionError("artifact policy completion has non-finite JSON")
 
     try:
         document = json.loads(
@@ -725,16 +738,16 @@ def _strict_json_bytes(value: bytes, *, max_bytes: int) -> dict[str, object]:
     except FullC6PolicyCompletionError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise FullC6PolicyCompletionError("Full C6 completion JSON is invalid") from exc
+        raise FullC6PolicyCompletionError("artifact policy completion JSON is invalid") from exc
     if type(document) is not dict:
-        raise FullC6PolicyCompletionError("Full C6 completion root must be an object")
+        raise FullC6PolicyCompletionError("artifact policy completion root must be an object")
     _assert_depth(document, depth=0)
     return document
 
 
 def _assert_depth(value: object, *, depth: int) -> None:
     if depth > _MAX_JSON_DEPTH:
-        raise FullC6PolicyCompletionError("Full C6 completion nesting is too deep")
+        raise FullC6PolicyCompletionError("artifact policy completion nesting is too deep")
     if type(value) is dict:
         for child in value.values():
             _assert_depth(child, depth=depth + 1)
@@ -745,32 +758,32 @@ def _assert_depth(value: object, *, depth: int) -> None:
 
 def _exact_dict(value: object, fields: set[str], label: str) -> dict[str, object]:
     if type(value) is not dict or set(value) != fields:
-        raise FullC6PolicyCompletionError(f"Full C6 {label} schema is invalid")
+        raise FullC6PolicyCompletionError(f"artifact policy {label} schema is invalid")
     return value
 
 
 def _exact_list(value: object, label: str) -> list[object]:
     if type(value) is not list:
-        raise FullC6PolicyCompletionError(f"Full C6 {label} must be an array")
+        raise FullC6PolicyCompletionError(f"artifact policy {label} must be an array")
     return value
 
 
 def _string(value: object, label: str) -> str:
     if type(value) is not str:
-        raise FullC6PolicyCompletionError(f"Full C6 {label} must be a string")
+        raise FullC6PolicyCompletionError(f"artifact policy {label} must be a string")
     return value
 
 
 def _integer(value: object, label: str) -> int:
     if type(value) is not int:
-        raise FullC6PolicyCompletionError(f"Full C6 {label} must be an integer")
+        raise FullC6PolicyCompletionError(f"artifact policy {label} must be an integer")
     return value
 
 
 def _sha256(value: object, label: str) -> str:
     result = _string(value, label)
     if not _is_sha256(result):
-        raise FullC6PolicyCompletionError(f"Full C6 {label} must be SHA-256")
+        raise FullC6PolicyCompletionError(f"artifact policy {label} must be SHA-256")
     return result
 
 
@@ -780,6 +793,13 @@ def _is_sha256(value: object) -> bool:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _contract_dialect(name: str) -> ArtifactContractDialect:
+    try:
+        return ARTIFACT_CONTRACT_DIALECTS[name]
+    except KeyError as exc:
+        raise FullC6PolicyCompletionError("artifact policy completion dialect is invalid") from exc
 
 
 _LICENSE_DECISION_FIELDS = {

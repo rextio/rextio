@@ -14,6 +14,7 @@ import unicodedata
 
 import pytest
 
+from rextio.artifacts.contract_dialects import CURRENT, TOOLCHAIN_SUPPORT_LOCK
 from rextio.build import toolchain_support_lock as support_lock
 from rextio.build.toolchain_support_lock import (
     TOOLCHAIN_SUPPORT_LOCK_DOMAIN,
@@ -90,6 +91,14 @@ def _lock(tmp_path: Path) -> tuple[ToolchainSupportLock, object, object]:
     return lock, manifest_locator, root_locator
 
 
+def test_support_lock_root_identity_comes_from_the_current_semantic_dialect() -> None:
+    identity = CURRENT.identity(TOOLCHAIN_SUPPORT_LOCK)
+
+    assert TOOLCHAIN_SUPPORT_LOCK_KIND == identity.kind
+    assert TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION == identity.schema_version == 5
+    assert TOOLCHAIN_SUPPORT_LOCK_DOMAIN == identity.domain
+
+
 def _macos_projected_inputs(
     tmp_path: Path,
     *,
@@ -158,8 +167,7 @@ def _macos_projected_inputs(
     swift = sdk / "usr" / "lib" / "swift"
     swift.mkdir(parents=True)
     sound_target = (
-        "../../..//System/Library/Frameworks/SoundAnalysis.framework/"
-        "Versions/A/SoundAnalysis.tbd"
+        "../../..//System/Library/Frameworks/SoundAnalysis.framework/Versions/A/SoundAnalysis.tbd"
     )
     if xcode_layout == "modern":
         (swift / "libswiftSoundAnalysis.tbd").symlink_to(sound_target)
@@ -225,9 +233,7 @@ def _linux_cross_root_inputs(
     gcc_root.mkdir(parents=True)
     runtime_root.mkdir(parents=True)
     (runtime_root / "libasan.so.8").write_bytes(b"bound runtime support\n")
-    (gcc_root / "libasan.so").symlink_to(
-        "../../../x86_64-linux-gnu/libasan.so.8"
-    )
+    (gcc_root / "libasan.so").symlink_to("../../../x86_64-linux-gnu/libasan.so.8")
     manifests = [
         create_toolchain_support_locator(
             logical_role="linux-toolchain-manifest",
@@ -257,9 +263,7 @@ _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS = {
     "libclang-cpp.so.17": "../llvm-17/lib/libclang-cpp.so.17",
     "libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.1",
     "libclang-cpp.so.18.1": "../llvm-18/lib/libclang-cpp.so.18.1",
-    "libpython3.12.a": (
-        "../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
-    ),
+    "libpython3.12.a": ("../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"),
 }
 _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS = {
     "libLLVM-18.so": "llvm-18/lib/libLLVM.so.1",
@@ -268,14 +272,10 @@ _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS = {
     "libclang-cpp.so.17": "llvm-17/lib/libclang-cpp.so.17",
     "libclang-cpp.so.18": "llvm-18/lib/libclang-cpp.so.18.1",
     "libclang-cpp.so.18.1": "llvm-18/lib/libclang-cpp.so.18.1",
-    "libpython3.12.a": (
-        "python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
-    ),
+    "libpython3.12.a": ("python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"),
 }
 _LINUX_GCC_LTO_RELATIVE_PATH = "liblto_plugin.so"
-_LINUX_GCC_LTO_RAW_TARGET = (
-    "../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
-)
+_LINUX_GCC_LTO_RAW_TARGET = "../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
 
 
 def _linux_gcc_lto_inputs(
@@ -295,9 +295,7 @@ def _linux_gcc_lto_inputs(
     if include_lto:
         (gcc_root / _LINUX_GCC_LTO_RELATIVE_PATH).symlink_to(raw_target)
     if extra_alias:
-        (gcc_root / "liblto_plugin-13.so").symlink_to(
-            _LINUX_GCC_LTO_RAW_TARGET
-        )
+        (gcc_root / "liblto_plugin-13.so").symlink_to(_LINUX_GCC_LTO_RAW_TARGET)
     policy_key = ("x86_64-unknown-linux-gnu", "linux-gcc-support")
     production_rows = support_lock._FIXED_SYMLINK_DISPOSITIONS[policy_key]
     assert len(production_rows) == 1
@@ -305,29 +303,15 @@ def _linux_gcc_lto_inputs(
     assert production_rows[0].raw_link_target == _LINUX_GCC_LTO_RAW_TARGET
     assert production_rows[0].resolved_path_sha256 == (
         support_lock._locator_path_digest(
-            Path(
-                "/usr/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
-            )
+            Path("/usr/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so")
         )
     )
-    assert support_lock._LINUX_GCC_UNMAPPED_SYMLINK_ROOT == Path(
-        "/usr/lib/gcc/x86_64-linux-gnu/13"
-    )
+    assert support_lock._LINUX_GCC_UNMAPPED_SYMLINK_ROOT == Path("/usr/lib/gcc/x86_64-linux-gnu/13")
     assert (
         support_lock._LINUX_GCC_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256
-        == support_lock._locator_path_digest(
-            Path("/usr/lib/gcc/x86_64-linux-gnu/13")
-        )
+        == support_lock._locator_path_digest(Path("/usr/lib/gcc/x86_64-linux-gnu/13"))
     )
-    resolved = (
-        tmp_path
-        / "usr"
-        / "libexec"
-        / "gcc"
-        / "x86_64-linux-gnu"
-        / "13"
-        / "liblto_plugin.so"
-    )
+    resolved = tmp_path / "usr" / "libexec" / "gcc" / "x86_64-linux-gnu" / "13" / "liblto_plugin.so"
     cloned_rows = tuple(
         replace(
             row,
@@ -369,9 +353,7 @@ def _linux_unmapped_virtual_target_inputs(
     runtime_root = tmp_path / "usr" / "lib" / "x86_64-linux-gnu"
     runtime_root.mkdir(parents=True)
     selected = (
-        frozenset(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
-        if included_paths is None
-        else included_paths
+        frozenset(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS) if included_paths is None else included_paths
     )
     assert selected <= frozenset(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
     for relative_path in sorted(selected):
@@ -393,8 +375,7 @@ def _linux_unmapped_virtual_target_inputs(
         replace(
             row,
             resolved_path_sha256=support_lock._locator_path_digest(
-                runtime_root.parent
-                / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[row.relative_path]
+                runtime_root.parent / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[row.relative_path]
             ),
         )
         for row in production_rows
@@ -447,9 +428,7 @@ def _refresh_unmapped_forgery_merkles(
     for disposition in dispositions:
         assert isinstance(disposition, dict)
         receipt = SimpleNamespace(**disposition)
-        disposition["merkle_sha256"] = support_lock._symlink_disposition_merkle(
-            receipt
-        )
+        disposition["merkle_sha256"] = support_lock._symlink_disposition_merkle(receipt)
 
     descriptor = os.open(runtime_root, os.O_RDONLY)
     try:
@@ -457,9 +436,7 @@ def _refresh_unmapped_forgery_merkles(
             descriptor,
             budget=support_lock._XattrBudget(
                 remaining_count=support_lock.MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS,
-                remaining_bytes=(
-                    support_lock.MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES
-                ),
+                remaining_bytes=(support_lock.MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES),
             ),
         )
         _entries, root_merkle = support_lock._build_tree_merkle(
@@ -469,16 +446,14 @@ def _refresh_unmapped_forgery_merkles(
             root_metadata_sha256=root["root_metadata_sha256"],
             root_xattrs=root_xattrs,
             entries=(),
-            symlink_dispositions=tuple(
-                SimpleNamespace(**item) for item in dispositions
-            ),
+            symlink_dispositions=tuple(SimpleNamespace(**item) for item in dispositions),
         )
     finally:
         os.close(descriptor)
     root["merkle_sha256"] = root_merkle
     document["merkle_sha256"] = support_lock._sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-aggregate.v2",
+            "domain": "rextio.artifact-toolchain-support-aggregate.v2",
             "scope": document["scope"],
             "manifest_count": document["manifest_count"],
             "root_count": document["root_count"],
@@ -530,9 +505,9 @@ def test_generation_is_canonical_path_free_aggregate_and_round_trips(
         "rust_binding": "pyo3",
         "target_triple": "aarch64-apple-darwin",
     }
-    assert document["manifests"][0]["raw_sha256"] == hashlib.sha256(
-        manifest.read_bytes()
-    ).hexdigest()
+    assert (
+        document["manifests"][0]["raw_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    )
     assert document["roots"][0]["member_count"] == 3
     assert document["roots"][0]["file_count"] == 1
     assert document["roots"][0]["directory_count"] == 1
@@ -647,9 +622,7 @@ def test_verification_drift_rejects_noncanonical_tree_field_masks(
 def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(
     tmp_path: Path,
 ) -> None:
-    manifests, roots, python_root, sdk, _sound = _macos_projected_inputs(
-        tmp_path
-    )
+    manifests, roots, python_root, sdk, _sound = _macos_projected_inputs(tmp_path)
     with pytest.raises(ToolchainSupportLockError, match="escapes"):
         capture_toolchain_support_tree(roots[0])
     with pytest.raises(ToolchainSupportLockError, match="noncanonical"):
@@ -665,9 +638,7 @@ def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(
     sdk_dispositions = by_role["xcode-sdk"].symlink_dispositions
     assert len(python_dispositions) == 3
     assert len(sdk_dispositions) == 3
-    assert {
-        item.disposition for item in python_dispositions
-    } == {
+    assert {item.disposition for item in python_dispositions} == {
         "bind-external-manifest",
         "deny-isolated-site-packages",
     }
@@ -678,8 +649,7 @@ def test_macos_fixed_symlink_dispositions_are_closed_and_cross_bound(
         if item.disposition == "bind-external-manifest"
     )
     assert all(
-        item.resolved_relative_path is not None
-        and "//" not in (item.canonical_link_target or "")
+        item.resolved_relative_path is not None and "//" not in (item.canonical_link_target or "")
         for item in sdk_dispositions
     )
     assert str(python_root).encode() not in lock.canonical_bytes
@@ -709,12 +679,8 @@ def test_macos_actions_python_runtime_directory_variant_is_fully_bound(
         manifests=manifests,
         roots=roots,
     )
-    python_receipt = next(
-        item for item in lock.roots if item.logical_role == "python-runtime"
-    )
-    assert {
-        item.relative_path for item in python_receipt.symlink_dispositions
-    } == {
+    python_receipt = next(item for item in lock.roots if item.logical_role == "python-runtime")
+    assert {item.relative_path for item in python_receipt.symlink_dispositions} == {
         "config-3.11-darwin/libpython3.11.a",
         "config-3.11-darwin/libpython3.11.dylib",
     }
@@ -751,12 +717,10 @@ def test_macos_xcode_16_4_regular_sound_analysis_variant_is_fully_bound(
         manifests=manifests,
         roots=roots,
     )
-    sdk_receipt = next(
-        item for item in lock.roots if item.logical_role == "xcode-sdk"
-    )
-    assert {
-        item.relative_path for item in sdk_receipt.symlink_dispositions
-    } == {"System/Library/Frameworks/vecLib.framework"}
+    sdk_receipt = next(item for item in lock.roots if item.logical_role == "xcode-sdk")
+    assert {item.relative_path for item in sdk_receipt.symlink_dispositions} == {
+        "System/Library/Frameworks/vecLib.framework"
+    }
     parsed = parse_toolchain_support_lock(
         lock.canonical_bytes,
         expected_raw_sha256=lock.raw_sha256,
@@ -768,9 +732,7 @@ def test_macos_xcode_16_4_regular_sound_analysis_variant_is_fully_bound(
         roots=roots,
     )
 
-    (sdk / "usr" / "lib" / "swift" / "libswiftSoundAnalysis.tbd").write_bytes(
-        b"changed\n"
-    )
+    (sdk / "usr" / "lib" / "swift" / "libswiftSoundAnalysis.tbd").write_bytes(b"changed\n")
     with pytest.raises(ToolchainSupportLockError, match="differ"):
         verify_toolchain_support_lock(
             parsed,
@@ -842,9 +804,7 @@ def test_macos_fixed_symlink_disposition_drift_fails_closed(
     tmp_path: Path,
     attack: str,
 ) -> None:
-    manifests, roots, python_root, sdk, sound = _macos_projected_inputs(
-        tmp_path
-    )
+    manifests, roots, python_root, sdk, sound = _macos_projected_inputs(tmp_path)
     if attack == "missing":
         (python_root / "site-packages").unlink()
     elif attack == "target":
@@ -876,20 +836,12 @@ def test_linux_target_and_locator_order_are_deterministic(tmp_path: Path) -> Non
     (root_a / "a").write_bytes(b"a")
     (root_b / "b").write_bytes(b"b")
     manifests = [
-        create_toolchain_support_locator(
-            logical_role="manifest-b", path=manifest_b, kind="file"
-        ),
-        create_toolchain_support_locator(
-            logical_role="manifest-a", path=manifest_a, kind="file"
-        ),
+        create_toolchain_support_locator(logical_role="manifest-b", path=manifest_b, kind="file"),
+        create_toolchain_support_locator(logical_role="manifest-a", path=manifest_a, kind="file"),
     ]
     roots = [
-        create_toolchain_support_locator(
-            logical_role="root-b", path=root_b, kind="tree"
-        ),
-        create_toolchain_support_locator(
-            logical_role="root-a", path=root_a, kind="tree"
-        ),
+        create_toolchain_support_locator(logical_role="root-b", path=root_b, kind="tree"),
+        create_toolchain_support_locator(logical_role="root-a", path=root_a, kind="tree"),
     ]
 
     first = generate_toolchain_support_lock(
@@ -936,16 +888,11 @@ def test_linux_github_runner_unmapped_symlinks_are_denied_and_bound(
             key=lambda item: (item.relative_path.casefold(), item.relative_path),
         )
     )
-    receipts = {
-        item.relative_path: item for item in runtime.symlink_dispositions
-    }
+    receipts = {item.relative_path: item for item in runtime.symlink_dispositions}
     assert set(receipts) == set(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
     for relative_path, receipt in receipts.items():
         assert receipt.disposition == "deny-unmapped-virtual-target"
-        assert (
-            receipt.raw_link_target
-            == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path]
-        )
+        assert receipt.raw_link_target == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path]
         assert receipt.canonical_link_target is None
         assert receipt.external_manifest_role is None
         assert receipt.external_manifest_merkle_sha256 is None
@@ -953,8 +900,7 @@ def test_linux_github_runner_unmapped_symlinks_are_denied_and_bound(
         assert receipt.external_support_root_merkle_sha256 is None
         assert receipt.resolved_relative_path is None
         assert receipt.resolved_path_sha256 == support_lock._locator_path_digest(
-            runtime_root.parent
-            / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[relative_path]
+            runtime_root.parent / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[relative_path]
         )
 
     parsed = parse_toolchain_support_lock(
@@ -977,15 +923,11 @@ def test_linux_unmapped_symlink_policy_has_exact_production_targets() -> None:
     assert set(by_path) == set(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)
     for relative_path, row in by_path.items():
         assert row.disposition == "deny-unmapped-virtual-target"
-        assert (
-            row.raw_link_target
-            == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path]
-        )
+        assert row.raw_link_target == _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS[relative_path]
         assert row.canonical_link_target is None
         assert row.external_manifest_role is None
         assert row.resolved_path_sha256 == support_lock._locator_path_digest(
-            Path("/usr/lib")
-            / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[relative_path]
+            Path("/usr/lib") / _LINUX_UNMAPPED_SYMLINK_FINAL_TARGETS[relative_path]
         )
 
 
@@ -1025,9 +967,7 @@ def test_linux_unmapped_symlink_partial_topologies_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
     included_count: int,
 ) -> None:
-    included = frozenset(
-        sorted(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)[:included_count]
-    )
+    included = frozenset(sorted(_LINUX_UNMAPPED_SYMLINK_RAW_TARGETS)[:included_count])
     manifests, roots, runtime_root = _linux_unmapped_virtual_target_inputs(
         tmp_path,
         monkeypatch,
@@ -1070,9 +1010,7 @@ def test_linux_unmapped_symlink_raw_target_drift_fails_closed(
     manifests, roots, _runtime_root = _linux_unmapped_virtual_target_inputs(
         tmp_path,
         monkeypatch,
-        raw_overrides={
-            "libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.2"
-        },
+        raw_overrides={"libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.2"},
     )
 
     with pytest.raises(ToolchainSupportLockError):
@@ -1108,9 +1046,7 @@ def test_linux_unmapped_symlinks_require_exact_profile_and_root(
     else:
         other_root = runtime_root.parent / "other-x86_64-linux-gnu"
         other_root.mkdir()
-        for relative_path, raw_target in (
-            _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS.items()
-        ):
+        for relative_path, raw_target in _LINUX_UNMAPPED_SYMLINK_RAW_TARGETS.items():
             (other_root / relative_path).symlink_to(raw_target)
         candidate_roots = [
             create_toolchain_support_locator(
@@ -1217,10 +1153,7 @@ def test_parser_rejects_unmapped_name_and_shape_forgery_with_fresh_merkles(
             forged,
             runtime_root=runtime_root,
         )
-        assert (
-            forged["roots"][0]["merkle_sha256"]
-            != lock.roots[0].merkle_sha256
-        )
+        assert forged["roots"][0]["merkle_sha256"] != lock.roots[0].merkle_sha256
         assert forged["merkle_sha256"] != lock.merkle_sha256
 
         with pytest.raises(ToolchainSupportLockError):
@@ -1256,24 +1189,22 @@ def test_linux_gcc_cross_root_symlink_is_bound_and_input_order_invariant(
     disposition = gcc_receipt.symlink_dispositions[0]
     assert disposition.disposition == "bind-external-support-root"
     assert disposition.relative_path == "libasan.so"
-    assert disposition.raw_link_target == (
-        "../../../x86_64-linux-gnu/libasan.so.8"
-    )
+    assert disposition.raw_link_target == ("../../../x86_64-linux-gnu/libasan.so.8")
     assert disposition.canonical_link_target is None
     assert disposition.external_manifest_role is None
     assert disposition.external_manifest_merkle_sha256 is None
     assert disposition.external_support_root_role == "linux-runtime-support"
-    assert (
-        disposition.external_support_root_merkle_sha256
-        == runtime_receipt.merkle_sha256
-    )
+    assert disposition.external_support_root_merkle_sha256 == runtime_receipt.merkle_sha256
     assert disposition.resolved_relative_path == "libasan.so.8"
     assert str(gcc_root).encode() not in first.canonical_bytes
     assert str(runtime_root).encode() not in first.canonical_bytes
-    assert parse_toolchain_support_lock(
-        first.canonical_bytes,
-        expected_raw_sha256=first.raw_sha256,
-    ) == first
+    assert (
+        parse_toolchain_support_lock(
+            first.canonical_bytes,
+            expected_raw_sha256=first.raw_sha256,
+        )
+        == first
+    )
     assert verify_toolchain_support_lock(
         first,
         manifests=manifests,
@@ -1294,12 +1225,8 @@ def test_linux_gcc13_lto_unmapped_alias_coexists_with_runtime_binding(
         manifests=manifests,
         roots=roots,
     )
-    gcc_receipt = next(
-        item for item in lock.roots if item.logical_role == "linux-gcc-support"
-    )
-    receipts = {
-        item.relative_path: item for item in gcc_receipt.symlink_dispositions
-    }
+    gcc_receipt = next(item for item in lock.roots if item.logical_role == "linux-gcc-support")
+    receipts = {item.relative_path: item for item in gcc_receipt.symlink_dispositions}
     assert gcc_receipt.symlink_count == 2
     assert gcc_receipt.symlink_disposition_count == 2
     assert receipts["libasan.so"].disposition == "bind-external-support-root"
@@ -1313,12 +1240,7 @@ def test_linux_gcc13_lto_unmapped_alias_coexists_with_runtime_binding(
     assert lto.external_support_root_merkle_sha256 is None
     assert lto.resolved_relative_path is None
     assert lto.resolved_path_sha256 == support_lock._locator_path_digest(
-        gcc_root.parents[3]
-        / "libexec"
-        / "gcc"
-        / "x86_64-linux-gnu"
-        / "13"
-        / "liblto_plugin.so"
+        gcc_root.parents[3] / "libexec" / "gcc" / "x86_64-linux-gnu" / "13" / "liblto_plugin.so"
     )
     parsed = parse_toolchain_support_lock(
         lock.canonical_bytes,
@@ -1346,12 +1268,8 @@ def test_linux_gcc13_minimal_variant_omits_lto_disposition(
         manifests=manifests,
         roots=roots,
     )
-    gcc_receipt = next(
-        item for item in lock.roots if item.logical_role == "linux-gcc-support"
-    )
-    assert tuple(
-        item.relative_path for item in gcc_receipt.symlink_dispositions
-    ) == ("libasan.so",)
+    gcc_receipt = next(item for item in lock.roots if item.logical_role == "linux-gcc-support")
+    assert tuple(item.relative_path for item in gcc_receipt.symlink_dispositions) == ("libasan.so",)
 
 
 @pytest.mark.parametrize("mutation", ("extra", "drift"))
@@ -1410,9 +1328,7 @@ def test_linux_runtime_exact_casefold_topology_is_bound_without_double_count(
                 support_lock._RawCasefoldGroup(
                     group_sha256=support_lock._sha256(
                         {
-                            "domain": (
-                                "rextio.full-c6-linux-folded-name-group.v1"
-                            ),
+                            "domain": ("rextio.artifact-linux-folded-name-group.v1"),
                             "directory_relative_path": directory.name,
                             "folded_key": "synthetic-collision",
                             "member_names": [left, right],
@@ -1465,9 +1381,7 @@ def test_linux_runtime_exact_casefold_topology_is_bound_without_double_count(
         manifests=manifests,
         roots=roots,
     )
-    runtime = next(
-        item for item in lock.roots if item.logical_role == "linux-runtime-support"
-    )
+    runtime = next(item for item in lock.roots if item.logical_role == "linux-runtime-support")
     assert runtime.member_count == 31
     assert runtime.file_count == 21
     assert runtime.directory_count == 10
@@ -1475,10 +1389,7 @@ def test_linux_runtime_exact_casefold_topology_is_bound_without_double_count(
     receipt = runtime.casefold_dispositions[0]
     assert receipt.group_count == 10
     assert receipt.member_count == 20
-    assert (
-        receipt.topology_sha256
-        == support_lock._LINUX_CASEFOLD_TOPOLOGY_SHA256
-    )
+    assert receipt.topology_sha256 == support_lock._LINUX_CASEFOLD_TOPOLOGY_SHA256
     assert left.encode() not in lock.canonical_bytes
     assert right.encode() not in lock.canonical_bytes
     parsed = parse_toolchain_support_lock(
@@ -1702,15 +1613,9 @@ def test_large_tree_serializes_only_one_bounded_aggregate(tmp_path: Path) -> Non
     lock = generate_toolchain_support_lock(
         target_triple="aarch64-apple-darwin",
         manifests=[
-            create_toolchain_support_locator(
-                logical_role="manifest", path=manifest, kind="file"
-            )
+            create_toolchain_support_locator(logical_role="manifest", path=manifest, kind="file")
         ],
-        roots=[
-            create_toolchain_support_locator(
-                logical_role="sdk-root", path=root, kind="tree"
-            )
-        ],
+        roots=[create_toolchain_support_locator(logical_role="sdk-root", path=root, kind="tree")],
     )
 
     assert lock.roots[0].member_count == 128
@@ -1757,27 +1662,21 @@ def test_merkle_builder_handles_thousands_of_directories_without_pairwise_scans(
 def test_locator_paths_are_private_absolute_and_not_serializable(tmp_path: Path) -> None:
     file_path = tmp_path / "manifest"
     file_path.write_bytes(b"manifest")
-    locator = create_toolchain_support_locator(
-        logical_role="manifest", path=file_path, kind="file"
-    )
+    locator = create_toolchain_support_locator(logical_role="manifest", path=file_path, kind="file")
 
     assert str(file_path) not in repr(locator)
     assert "path=<private>" in repr(locator)
     with pytest.raises(TypeError, match="cannot be serialized"):
         pickle.dumps(locator)
     with pytest.raises(ToolchainSupportLockError, match="absolute"):
-        create_toolchain_support_locator(
-            logical_role="manifest", path="relative/file", kind="file"
-        )
+        create_toolchain_support_locator(logical_role="manifest", path="relative/file", kind="file")
     with pytest.raises(ToolchainSupportLockError, match="lexically"):
         create_toolchain_support_locator(
             logical_role="manifest", path="/tmp/../tmp/file", kind="file"
         )
     decomposed = unicodedata.normalize("NFD", "/tmp/café/file")
     with pytest.raises(ToolchainSupportLockError, match="NFC"):
-        create_toolchain_support_locator(
-            logical_role="manifest", path=decomposed, kind="file"
-        )
+        create_toolchain_support_locator(logical_role="manifest", path=decomposed, kind="file")
 
 
 def test_opaque_locator_path_and_stable_metadata_are_bound(tmp_path: Path) -> None:
@@ -1788,14 +1687,10 @@ def test_opaque_locator_path_and_stable_metadata_are_bound(tmp_path: Path) -> No
     first.chmod(0o644)
     second.chmod(0o644)
     first_receipt = capture_toolchain_support_file(
-        create_toolchain_support_locator(
-            logical_role="manifest", path=first, kind="file"
-        )
+        create_toolchain_support_locator(logical_role="manifest", path=first, kind="file")
     )
     second_receipt = capture_toolchain_support_file(
-        create_toolchain_support_locator(
-            logical_role="manifest", path=second, kind="file"
-        )
+        create_toolchain_support_locator(logical_role="manifest", path=second, kind="file")
     )
 
     assert first_receipt.raw_sha256 == second_receipt.raw_sha256
@@ -1804,9 +1699,7 @@ def test_opaque_locator_path_and_stable_metadata_are_bound(tmp_path: Path) -> No
 
     first.chmod(0o600)
     changed = capture_toolchain_support_file(
-        create_toolchain_support_locator(
-            logical_role="manifest", path=first, kind="file"
-        )
+        create_toolchain_support_locator(logical_role="manifest", path=first, kind="file")
     )
     assert changed.metadata_sha256 != first_receipt.metadata_sha256
     assert changed.merkle_sha256 != first_receipt.merkle_sha256
@@ -1883,7 +1776,7 @@ def test_v5_tree_disposition_schema_rejects_v4_missing_extra_and_stale_fields(
 
     v4 = lock.to_dict()
     v4["schema_version"] = 4
-    v4["domain"] = "rextio.full-c6-toolchain-support-lock.v4"
+    v4["domain"] = "rextio.artifact-toolchain-support-lock.v4"
     v4_bytes = _canonical(v4)
     with pytest.raises(ToolchainSupportLockError, match="identity"):
         parse_toolchain_support_lock(
@@ -1922,10 +1815,13 @@ def test_secure_load_round_trip_and_rejects_link_aliases(tmp_path: Path) -> None
     locator = create_toolchain_support_locator(
         logical_role="support-lock", path=lock_path, kind="file"
     )
-    assert load_toolchain_support_lock(
-        locator,
-        expected_raw_sha256=lock.raw_sha256,
-    ) == lock
+    assert (
+        load_toolchain_support_lock(
+            locator,
+            expected_raw_sha256=lock.raw_sha256,
+        )
+        == lock
+    )
 
     symlink_path = tmp_path / "support-symlink.json"
     symlink_path.symlink_to(lock_path.name)
@@ -2107,9 +2003,7 @@ def test_xattr_names_values_and_aggregate_bytes_are_bound(tmp_path: Path) -> Non
 
     assert lock.manifests[0].xattr_count >= 1
     assert lock.roots[0].xattr_count >= 1
-    assert lock.xattr_count == (
-        lock.manifests[0].xattr_count + lock.roots[0].xattr_count
-    )
+    assert lock.xattr_count == (lock.manifests[0].xattr_count + lock.roots[0].xattr_count)
     assert lock.xattr_bytes >= len(b"manifest-xattr") + len(b"header-xattr")
 
     _set_test_xattr(manifest, b"com.rextio.manifest", b"changed-xattr")
@@ -2239,9 +2133,7 @@ def test_lock_xattr_count_budget_is_shared_across_multiple_roots(
         root_b_receipt.xattr_count,
     )
     assert (
-        manifest_receipt.xattr_count
-        + root_a_receipt.xattr_count
-        + root_b_receipt.xattr_count
+        manifest_receipt.xattr_count + root_a_receipt.xattr_count + root_b_receipt.xattr_count
         > shared_limit
     )
     monkeypatch.setattr(
@@ -2298,9 +2190,7 @@ def test_contained_symlink_is_bound_and_escape_broken_and_cycle_are_rejected(
     (contained / "target").write_bytes(b"target")
     (contained / "alias").symlink_to("target")
     receipt = capture_toolchain_support_tree(
-        create_toolchain_support_locator(
-            logical_role="contained-root", path=contained, kind="tree"
-        )
+        create_toolchain_support_locator(logical_role="contained-root", path=contained, kind="tree")
     )
     assert receipt.symlink_count == 1
 
@@ -2321,9 +2211,7 @@ def test_contained_symlink_is_bound_and_escape_broken_and_cycle_are_rejected(
     (broken / "alias").symlink_to("missing")
     with pytest.raises(ToolchainSupportLockError, match="broken"):
         capture_toolchain_support_tree(
-            create_toolchain_support_locator(
-                logical_role="broken-root", path=broken, kind="tree"
-            )
+            create_toolchain_support_locator(logical_role="broken-root", path=broken, kind="tree")
         )
 
     cycle = tmp_path / "cycle"
@@ -2332,9 +2220,7 @@ def test_contained_symlink_is_bound_and_escape_broken_and_cycle_are_rejected(
     (cycle / "b").symlink_to("a")
     with pytest.raises(ToolchainSupportLockError, match="cycle"):
         capture_toolchain_support_tree(
-            create_toolchain_support_locator(
-                logical_role="cycle-root", path=cycle, kind="tree"
-            )
+            create_toolchain_support_locator(logical_role="cycle-root", path=cycle, kind="tree")
         )
 
 
@@ -2347,9 +2233,7 @@ def test_tree_rejects_casefold_alias_special_file_and_hardlink(tmp_path: Path) -
         pytest.skip("filesystem does not permit the casefold-alias fixture")
     with pytest.raises(ToolchainSupportLockError, match="alias"):
         capture_toolchain_support_tree(
-            create_toolchain_support_locator(
-                logical_role="alias-root", path=aliases, kind="tree"
-            )
+            create_toolchain_support_locator(logical_role="alias-root", path=aliases, kind="tree")
         )
 
     special = tmp_path / "special"
@@ -2360,9 +2244,7 @@ def test_tree_rejects_casefold_alias_special_file_and_hardlink(tmp_path: Path) -
         pytest.skip(f"FIFO creation unavailable: {exc}")
     with pytest.raises(ToolchainSupportLockError, match="special"):
         capture_toolchain_support_tree(
-            create_toolchain_support_locator(
-                logical_role="special-root", path=special, kind="tree"
-            )
+            create_toolchain_support_locator(logical_role="special-root", path=special, kind="tree")
         )
 
     hardlinks = tmp_path / "hardlinks"
@@ -2403,10 +2285,7 @@ def test_tree_member_mode_diagnostic_is_exact_bounded_and_path_opaque(
     expected_path_sha256 = hashlib.sha256(
         _canonical(
             {
-                "domain": (
-                    "rextio.full-c6-toolchain-support-"
-                    "mode-diagnostic-path.v1"
-                ),
+                "domain": ("rextio.artifact-toolchain-support-mode-diagnostic-path.v1"),
                 "relative_path": relative_path,
             }
         )
@@ -2579,13 +2458,9 @@ def test_linux_exact_mode_disposition_is_bound_once_without_double_count(
     receipt = tree.mode_dispositions[0]
     assert receipt.mode == 0o2755
     assert receipt.kind == "regular"
-    assert (
-        receipt.support_root_locator_path_sha256
-        == support_lock._locator_path_digest(root)
-    )
-    assert (
-        receipt.relative_path_sha256
-        == support_lock._relative_mode_path_digest("utempter/utempter")
+    assert receipt.support_root_locator_path_sha256 == support_lock._locator_path_digest(root)
+    assert receipt.relative_path_sha256 == support_lock._relative_mode_path_digest(
+        "utempter/utempter"
     )
     assert receipt.raw_sha256 == hashlib.sha256(member.read_bytes()).hexdigest()
     assert len(receipt.full_stamp_sha256) == 64
@@ -2704,10 +2579,7 @@ def test_tree_hardlink_diagnostic_is_bounded_and_path_opaque(tmp_path: Path) -> 
     expected_path_sha256 = hashlib.sha256(
         _canonical(
             {
-                "domain": (
-                    "rextio.full-c6-toolchain-support-"
-                    "hardlink-diagnostic-path.v1"
-                ),
+                "domain": ("rextio.artifact-toolchain-support-hardlink-diagnostic-path.v1"),
                 "relative_path": first_relative_path,
             }
         )
@@ -2781,18 +2653,18 @@ def _xcode_topology_inputs(
         support_relative = support_path.relative_to(root).as_posix()
         alias_digests = sorted(
             topology_digest(
-                "rextio.full-c6-xcode-hardlink-topology-alias-path.v1",
+                "rextio.artifact-xcode-hardlink-topology-alias-path.v1",
                 {"app_relative_path": item.relative_to(app).as_posix()},
             )
             for item in group_paths
         )
         support_digest = topology_digest(
-            "rextio.full-c6-xcode-hardlink-topology-support-path.v1",
+            "rextio.artifact-xcode-hardlink-topology-support-path.v1",
             {"support_relative_path": support_relative},
         )
         policy_groups.append(
             topology_digest(
-                "rextio.full-c6-xcode-hardlink-topology-policy-group.v1",
+                "rextio.artifact-xcode-hardlink-topology-policy-group.v1",
                 {
                     "support_relative_path_sha256s": [support_digest],
                     "link_count": len(group_paths),
@@ -2802,7 +2674,7 @@ def _xcode_topology_inputs(
             )
         )
     policy_merkle = topology_digest(
-        "rextio.full-c6-xcode-hardlink-topology-policy.v1",
+        "rextio.artifact-xcode-hardlink-topology-policy.v1",
         {"policy_group_sha256s": sorted(policy_groups)},
     )
     monkeypatch.setattr(support_lock, "_XCODE_APP_BOUNDARY", app)
@@ -2910,20 +2782,20 @@ def _xcode_multiple_support_path_inputs(
 
     support_digests = sorted(
         support_lock._xcode_topology_sha256(
-            "rextio.full-c6-xcode-hardlink-topology-support-path.v1",
+            "rextio.artifact-xcode-hardlink-topology-support-path.v1",
             {"support_relative_path": path.relative_to(root).as_posix()},
         )
         for path in (first, second)
     )
     alias_digests = sorted(
         support_lock._xcode_topology_sha256(
-            "rextio.full-c6-xcode-hardlink-topology-alias-path.v1",
+            "rextio.artifact-xcode-hardlink-topology-alias-path.v1",
             {"app_relative_path": path.relative_to(app).as_posix()},
         )
         for path in (first, second, external_alias)
     )
     policy_group = support_lock._xcode_topology_sha256(
-        "rextio.full-c6-xcode-hardlink-topology-policy-group.v1",
+        "rextio.artifact-xcode-hardlink-topology-policy-group.v1",
         {
             "support_relative_path_sha256s": support_digests,
             "link_count": 3,
@@ -2932,7 +2804,7 @@ def _xcode_multiple_support_path_inputs(
         },
     )
     policy_merkle = support_lock._xcode_topology_sha256(
-        "rextio.full-c6-xcode-hardlink-topology-policy.v1",
+        "rextio.artifact-xcode-hardlink-topology-policy.v1",
         {"policy_group_sha256s": [policy_group]},
     )
     monkeypatch.setattr(support_lock, "_XCODE_APP_BOUNDARY", app)
@@ -3070,15 +2942,16 @@ def test_frozen_xcode_sdk_hardlink_policy_constants_are_exact() -> None:
         "/Applications/Xcode.app/Contents/Developer/Platforms/"
         "MacOSX.platform/Developer/SDKs/MacOSX.sdk"
     )
-    assert (
-        getattr(support_lock, "_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256", None)
-        == "06a2a3aad7cf447c6c6606bfbffc69f1de90229943e1b7d73e4b0534c73c35d0"
+    assert getattr(
+        support_lock, "_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256", None
+    ) == support_lock._locator_path_digest(
+        Path(
+            "/Applications/Xcode.app/Contents/Developer/Platforms/"
+            "MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+        )
     )
     assert getattr(support_lock, "_XCODE_SDK_HARDLINK_GROUP_COUNT", None) == 4_626
-    assert (
-        getattr(support_lock, "_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT", None)
-        == 8_605
-    )
+    assert getattr(support_lock, "_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT", None) == 8_605
     assert getattr(support_lock, "_XCODE_SDK_HARDLINK_ALIAS_COUNT", None) == 24_430
     assert (
         getattr(support_lock, "_XCODE_SDK_HARDLINK_POLICY_MERKLE_SHA256", None)
@@ -3121,9 +2994,7 @@ def test_exact_xcode_sdk_topology_is_selected_and_round_trips(
     )
 
     receipt = lock.roots[0].hardlink_dispositions[0]
-    assert receipt.resource_root_locator_path_sha256 == (
-        support_lock._locator_path_digest(root)
-    )
+    assert receipt.resource_root_locator_path_sha256 == (support_lock._locator_path_digest(root))
     assert receipt.group_count == 1
     assert receipt.support_member_count == 2
     assert receipt.alias_count == 3
@@ -3184,9 +3055,7 @@ def test_xcode_sdk_topology_consumes_two_plans_and_reopens_every_path(
     real_reopen = support_lock._open_xcode_topology_regular
     reopened: list[tuple[Path, str]] = []
 
-    def tracked_reopen(
-        *, boundary: Path, relative_path: str, expected: object
-    ) -> None:
+    def tracked_reopen(*, boundary: Path, relative_path: str, expected: object) -> None:
         reopened.append((boundary, relative_path))
         real_reopen(
             boundary=boundary,
@@ -3353,19 +3222,10 @@ def test_exact_xcode_topology_is_root_scoped_bound_and_not_double_counted(
     receipt = tree.hardlink_dispositions[0]
     assert receipt.group_count == receipt.support_member_count == 2
     assert receipt.alias_count == 5
-    assert (
-        receipt.resource_root_locator_path_sha256
-        == support_lock._locator_path_digest(root)
-    )
+    assert receipt.resource_root_locator_path_sha256 == support_lock._locator_path_digest(root)
     assert receipt.version_manifest_role == "xcode-version-plist"
-    assert (
-        receipt.version_manifest_raw_sha256
-        == lock.manifests[0].raw_sha256
-    )
-    assert (
-        receipt.version_manifest_merkle_sha256
-        == lock.manifests[0].merkle_sha256
-    )
+    assert receipt.version_manifest_raw_sha256 == lock.manifests[0].raw_sha256
+    assert receipt.version_manifest_merkle_sha256 == lock.manifests[0].merkle_sha256
     assert len(receipt.observation_merkle_sha256) == 64
     for path in paths:
         assert path.name.encode() not in lock.canonical_bytes
@@ -3629,9 +3489,7 @@ def test_xcode_topology_uses_two_independent_consumed_plans_and_reopens_all(
     real_reopen = support_lock._open_xcode_topology_regular
     reopened: list[tuple[Path, str]] = []
 
-    def tracked_reopen(
-        *, boundary: Path, relative_path: str, expected: object
-    ) -> None:
+    def tracked_reopen(*, boundary: Path, relative_path: str, expected: object) -> None:
         reopened.append((boundary, relative_path))
         real_reopen(
             boundary=boundary,
@@ -3685,9 +3543,7 @@ def test_xcode_topology_rejects_plan_leftover_final_reopen_race_and_bounds(
     real_reopen = support_lock._open_xcode_topology_regular
     reopened = False
 
-    def racing_reopen(
-        *, boundary: Path, relative_path: str, expected: object
-    ) -> None:
+    def racing_reopen(*, boundary: Path, relative_path: str, expected: object) -> None:
         nonlocal reopened
         if not reopened:
             reopened = True
@@ -3781,9 +3637,7 @@ def test_manifest_rejects_symlink_and_hardlink(tmp_path: Path) -> None:
     symlink.symlink_to(manifest.name)
     with pytest.raises(ToolchainSupportLockError):
         capture_toolchain_support_file(
-            create_toolchain_support_locator(
-                logical_role="manifest", path=symlink, kind="file"
-            )
+            create_toolchain_support_locator(logical_role="manifest", path=symlink, kind="file")
         )
 
     symlink.unlink()
@@ -3811,9 +3665,7 @@ def test_tree_rejects_member_byte_count_and_depth_overflow(
     monkeypatch.setattr(support_lock, "MAX_TOOLCHAIN_SUPPORT_FILE_BYTES", 1)
     with pytest.raises(ToolchainSupportLockError, match="byte bound"):
         capture_toolchain_support_tree(
-            create_toolchain_support_locator(
-                logical_role="byte-root", path=byte_root, kind="tree"
-            )
+            create_toolchain_support_locator(logical_role="byte-root", path=byte_root, kind="tree")
         )
 
     monkeypatch.setattr(
@@ -3850,9 +3702,7 @@ def test_tree_rejects_member_byte_count_and_depth_overflow(
     monkeypatch.setattr(support_lock, "MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH", 1)
     with pytest.raises(ToolchainSupportLockError, match="depth"):
         capture_toolchain_support_tree(
-            create_toolchain_support_locator(
-                logical_role="deep-root", path=deep_root, kind="tree"
-            )
+            create_toolchain_support_locator(logical_role="deep-root", path=deep_root, kind="tree")
         )
 
 
@@ -3878,14 +3728,8 @@ def test_role_aliases_and_locator_kinds_fail_closed(tmp_path: Path) -> None:
         generate_toolchain_support_lock(
             target_triple="aarch64-apple-darwin",
             manifests=[
-                create_toolchain_support_locator(
-                    logical_role="wrong-kind", path=root, kind="tree"
-                )
+                create_toolchain_support_locator(logical_role="wrong-kind", path=root, kind="tree")
             ],
-            roots=[
-                create_toolchain_support_locator(
-                    logical_role="root", path=root, kind="tree"
-                )
-            ],
+            roots=[create_toolchain_support_locator(logical_role="root", path=root, kind="tree")],
         )
     assert alias_locator.logical_role == "python-abi-config"

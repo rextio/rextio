@@ -190,7 +190,10 @@ def test_c613_provenance_adds_only_present_stub_materials_and_is_deterministic()
 def test_c613_rejects_missing_c610_digest_and_nested_mutation() -> None:
     fixture = _fixture(stub_present=True)
     analysis = fixture["analysis"]
-    with pytest.raises(ValueError, match="requires C6.10"):
+    with pytest.raises(
+        ValueError,
+        match="requires artifact-evidence verification",
+    ):
         build_intoto_provenance_document(
             subject=EvidenceFileRef("dist/demo.whl", "7" * 64, 1, "host-extension-wheel"),
             sbom=EvidenceFileRef("dist/demo.cdx.json", "8" * 64, 1, "cyclonedx-sbom"),
@@ -199,7 +202,7 @@ def test_c613_rejects_missing_c610_digest_and_nested_mutation() -> None:
             target_triple="x86_64-unknown-linux-gnu",
             analysis_input_verification=analysis,
         )
-    with pytest.raises(ValueError, match="C6.10 digest"):
+    with pytest.raises(ValueError, match="artifact-evidence digest"):
         _provenance(
             fixture,
             analysis=replace(analysis, source_transformation_verification_sha256="0" * 64),

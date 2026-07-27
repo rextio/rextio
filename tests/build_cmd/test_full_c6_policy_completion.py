@@ -1,4 +1,4 @@
-"""Adversarial tests for the offline Full C6 owner-policy handoff."""
+"""Adversarial tests for the offline artifact-policy owner handoff."""
 
 from __future__ import annotations
 
@@ -11,6 +11,15 @@ from typing import Literal, cast
 
 import pytest
 
+from rextio.artifacts.contract_dialects import (
+    ARTIFACT_CONTRACT_DIALECTS,
+    CURRENT,
+    LEGACY_0_1_7,
+    OWNER_ACKNOWLEDGEMENT,
+    OWNER_AUTHENTICATION,
+    POLICY_COMPLETION,
+    ArtifactContractDialect,
+)
 from rextio.artifacts.evidence import canonical_json_bytes, sha256_hex
 from rextio.build.full_c6_policy import (
     FullC6OwnerDeclaration,
@@ -33,9 +42,7 @@ from rextio.build.full_c6_policy_template import (
 )
 
 
-_BOOTSTRAP = runpy.run_path(
-    str(Path(__file__).with_name("test_full_c6_policy_bootstrap.py"))
-)
+_BOOTSTRAP = runpy.run_path(str(Path(__file__).with_name("test_full_c6_policy_bootstrap.py")))
 
 
 def _bootstrap(tmp_path: Path):
@@ -45,14 +52,13 @@ def _bootstrap(tmp_path: Path):
 def _completion(
     bootstrap: FullC6PolicyBootstrapRequest,
 ) -> FullC6OwnerPolicyCompletion:
+    dialect = ARTIFACT_CONTRACT_DIALECTS[bootstrap._artifact_contract_dialect]
     template = bootstrap.technical_template
     decisions: list[FullC6OwnerLicenseDecision] = []
     for row in template.rows:
         if row.required_license_disposition != "owner-approved-allow":
             continue
-        observation: (
-            FullC6ExternalLicenseObservation | FullC6InternalLicenseObservation
-        )
+        observation: FullC6ExternalLicenseObservation | FullC6InternalLicenseObservation
         if row.license_evidence_origin == "production-external-observation":
             observation = template.external_license_observation
         else:
@@ -66,9 +72,7 @@ def _completion(
                 authority_identity=row.authority_identity,
                 declared_spdx="MIT",
                 detected_spdx=observation.detected_spdx,
-                source_detector_receipt_sha256=(
-                    observation.source_detector_receipt_sha256
-                ),
+                source_detector_receipt_sha256=(observation.source_detector_receipt_sha256),
                 detector_payload_sha256=observation.detector_payload_sha256,
                 license_files=observation.license_files,
                 evidence_origin=cast(
@@ -78,6 +82,7 @@ def _completion(
                     ],
                     row.license_evidence_origin,
                 ),
+                _artifact_contract_dialect=dialect.name,
             )
         )
     return FullC6OwnerPolicyCompletion(
@@ -86,13 +91,13 @@ def _completion(
         owner_declaration=FullC6OwnerDeclaration(
             owner_identity=template.observed_owner_identity,
             owner_role="organization-owner",
-            trusted_public_key_sha256=(
-                bootstrap.trusted_owner_public_key_sha256
-            ),
+            trusted_public_key_sha256=(bootstrap.trusted_owner_public_key_sha256),
+            acknowledgement=dialect.string_value(OWNER_ACKNOWLEDGEMENT),
+            authentication=dialect.string_value(OWNER_AUTHENTICATION),
+            _artifact_contract_dialect=dialect.name,
         ),
-        license_decisions=tuple(
-            sorted(decisions, key=lambda item: item.authority_identity)
-        ),
+        license_decisions=tuple(sorted(decisions, key=lambda item: item.authority_identity)),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -128,6 +133,76 @@ def test_completion_round_trip_finalizes_exact_non_authorizing_manifest(
         for row in receipt.rows
         if row.license_disposition == "owner-approved-allow"
     )
+
+
+def test_bootstrap_constructor_rejects_current_root_with_legacy_template(
+    tmp_path: Path,
+) -> None:
+    current = _bootstrap(tmp_path)
+    legacy_template = _BOOTSTRAP["_legacy_template"](current.technical_template)
+    with pytest.raises(
+        RuntimeError,
+        match="mixed template dialect",
+    ):
+        FullC6PolicyBootstrapRequest(
+            inputs=current.inputs,
+            trusted_owner_public_key_sha256=(current.trusted_owner_public_key_sha256),
+            technical_template=legacy_template,
+        )
+
+
+def test_exact_legacy_completion_round_trip_is_read_only(
+    tmp_path: Path,
+) -> None:
+    current = _bootstrap(tmp_path)
+    legacy_bootstrap = _BOOTSTRAP["_legacy_request"](current)
+    completion = _completion(legacy_bootstrap)
+    raw = completion.to_bytes()
+
+    rebuilt = parse_full_c6_owner_policy_completion(raw)
+
+    assert rebuilt._artifact_contract_dialect == LEGACY_0_1_7.name
+    assert rebuilt.to_bytes() == raw
+    with pytest.raises(
+        FullC6PolicyCompletionError,
+        match="read/verify-only",
+    ):
+        finalize_full_c6_policy_manifest(
+            bootstrap=legacy_bootstrap,
+            completion=rebuilt,
+        )
+
+
+@pytest.mark.parametrize(
+    ("root_dialect", "nested_dialect"),
+    [
+        (CURRENT, LEGACY_0_1_7),
+        (LEGACY_0_1_7, CURRENT),
+    ],
+)
+def test_completion_rejects_root_and_nested_dialect_hybrids(
+    tmp_path: Path,
+    root_dialect: ArtifactContractDialect,
+    nested_dialect: ArtifactContractDialect,
+) -> None:
+    current_bootstrap = _bootstrap(tmp_path)
+    bootstrap = (
+        current_bootstrap
+        if nested_dialect is CURRENT
+        else _BOOTSTRAP["_legacy_request"](current_bootstrap)
+    )
+    document = _completion(bootstrap).to_dict()
+    identity = root_dialect.identity(POLICY_COMPLETION)
+    document.update(
+        {
+            "kind": identity.kind,
+            "schema_version": identity.schema_version,
+            "domain": identity.domain,
+        }
+    )
+
+    with pytest.raises(FullC6PolicyCompletionError):
+        parse_full_c6_owner_policy_completion(canonical_json_bytes(document))
 
 
 def test_completion_rejects_wrong_bootstrap_and_transformation_set(
@@ -197,14 +272,10 @@ def test_completion_requires_observed_owner_and_bootstrap_key(
     completion = _completion(bootstrap)
     owner = completion.owner_declaration
     replacement = FullC6OwnerDeclaration(
-        owner_identity=(
-            "Another Owner" if field == "owner_identity" else owner.owner_identity
-        ),
+        owner_identity=("Another Owner" if field == "owner_identity" else owner.owner_identity),
         owner_role=owner.owner_role,
         trusted_public_key_sha256=(
-            "8" * 64
-            if field == "trusted_public_key_sha256"
-            else owner.trusted_public_key_sha256
+            "8" * 64 if field == "trusted_public_key_sha256" else owner.trusted_public_key_sha256
         ),
     )
 
@@ -243,9 +314,7 @@ def test_completion_rejects_external_observation_changes_and_origin_confusion(
         detector_payload_sha256=full_c6_license_detector_payload_digest(
             changed_detected,
             external.license_files,
-            source_detector_receipt_sha256=(
-                external.source_detector_receipt_sha256
-            ),
+            source_detector_receipt_sha256=(external.source_detector_receipt_sha256),
         ),
     )
     with pytest.raises(FullC6PolicyCompletionError, match="independent wheel"):
@@ -287,9 +356,7 @@ def test_completion_rejects_external_observation_changes_and_origin_confusion(
         detector_payload_sha256=full_c6_license_detector_payload_digest(
             project.detected_spdx,
             fabricated,
-            source_detector_receipt_sha256=(
-                project.source_detector_receipt_sha256
-            ),
+            source_detector_receipt_sha256=(project.source_detector_receipt_sha256),
         ),
     )
     with pytest.raises(

@@ -564,7 +564,7 @@ def _validate_full_c6_config(
         trusted_key is None or trusted_key_sha256 is None
     ):
         raise ConfigError(
-            "[build] signed Full C6 inputs require artifact_trusted_public_key "
+            "[build] signed artifact-contract inputs require artifact_trusted_public_key "
             "and artifact_trusted_public_key_sha256"
         )
     if final_signature is not None and signing_request_output is None:
@@ -598,7 +598,7 @@ def _validate_full_c6_config(
         if build[key] is not None
     }
     if len(set(configured_paths.values())) != len(configured_paths):
-        raise ConfigError("[build] Full C6 artifact paths must be distinct")
+        raise ConfigError("[build] artifact-contract paths must be distinct")
     if cargo_vendor is not None:
         vendor_path = PurePosixPath(cargo_vendor)
         for key, configured in configured_paths.items():
@@ -607,7 +607,8 @@ def _validate_full_c6_config(
             configured_path = PurePosixPath(configured)
             if vendor_path in configured_path.parents or configured_path in vendor_path.parents:
                 raise ConfigError(
-                    "[build] artifact_cargo_vendor must not overlap another Full C6 path"
+                    "[build] artifact_cargo_vendor must not overlap another "
+                    "artifact-contract path"
                 )
     if cargo_lock is not None:
         lock_path = PurePosixPath(cargo_lock)
@@ -617,7 +618,8 @@ def _validate_full_c6_config(
             configured_path = PurePosixPath(configured)
             if lock_path in configured_path.parents or configured_path in lock_path.parents:
                 raise ConfigError(
-                    "[build] artifact_cargo_lock must not overlap another Full C6 path"
+                    "[build] artifact_cargo_lock must not overlap another "
+                    "artifact-contract path"
                 )
 
     if not strict_distribution:
@@ -910,7 +912,7 @@ def _require_package_policy_map(section: str, key: str, value: Any) -> None:
     if len(activated) > 1:
         names = ", ".join(sorted(activated))
         raise ConfigError(
-            "Train C5 permits exactly one source-native external package; "
+            "source-native preview permits exactly one external package; "
             f"activated declarations: {names}"
         )
 

@@ -1,4 +1,4 @@
-"""Strict, bounded two-build executor for the narrow Full C6 profile.
+"""Strict, bounded two-build executor for the narrow artifact build profile.
 
 This module owns the filesystem and subprocess boundary that the lower-level
 reproducibility verifier intentionally leaves to its caller.  It freezes one
@@ -9,7 +9,7 @@ canonical JSON evidence.
 The returned receipt is deliberately non-authorizing.  In-process callbacks
 are a test/integration seam and cannot prove process or network isolation;
 production callers should use the command-factory path and feed this receipt
-into the separate final Full C6 authorization gate.
+into the separate final artifact build authorization gate.
 """
 
 from __future__ import annotations
@@ -32,6 +32,14 @@ from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TypeAlias
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    NATIVE_DRIVER_DOMAIN,
+    NATIVE_DRIVER_MANIFEST,
+    NATIVE_BUILD_TYPE,
+    NATIVE_EXECUTION_DRIVER,
+    NATIVE_EXECUTOR_DOMAIN,
+)
 from rextio.artifacts.profiles import detect_host_target_triple
 from rextio.build.full_c6_cargo_workspace import (
     FULL_C6_CARGO_EXECUTOR_CONFIG,
@@ -111,16 +119,14 @@ from rextio.build.wheel_builder import (
 from rextio.limits import DEFAULT_BUILD_TIMEOUT_SECONDS, MAX_BUILD_TIMEOUT_SECONDS
 
 
-FULL_C6_EXECUTOR_DOMAIN = "rextio.full-c6-two-build-executor.v1"
-FULL_C6_EXECUTOR_SCOPE = (
-    "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
-)
-FULL_C6_NATIVE_EXECUTION_DRIVER = "rextio-native-orchestrator-v1"
+FULL_C6_EXECUTOR_DOMAIN = CURRENT.string_value(NATIVE_EXECUTOR_DOMAIN)
+FULL_C6_EXECUTOR_SCOPE = "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
+FULL_C6_NATIVE_EXECUTION_DRIVER = CURRENT.string_value(NATIVE_EXECUTION_DRIVER)
 FULL_C6_CALLBACK_EXECUTION_DRIVER = "callback-test-seam"
 FULL_C6_UNBOUND_EXECUTION_DRIVER = "native-subprocess-unbound"
-FULL_C6_NATIVE_DRIVER_MANIFEST = "rextio.full-c6-native-driver.json"
+FULL_C6_NATIVE_DRIVER_MANIFEST = CURRENT.string_value(NATIVE_DRIVER_MANIFEST)
 FULL_C6_NATIVE_POSTPROCESSOR = "rextio-external-wheel-postprocessor-v1"
-FULL_C6_NATIVE_DRIVER_DOMAIN = "rextio.full-c6-native-driver.v2"
+FULL_C6_NATIVE_DRIVER_DOMAIN = CURRENT.string_value(NATIVE_DRIVER_DOMAIN)
 FULL_C6_PREEXISTING_LOCK_DRIVER = "preexisting-lock"
 FULL_C6_NATIVE_LOCK_DRIVER = "native-subprocess"
 FULL_C6_CALLBACK_LOCK_DRIVER = "callback-test-seam"
@@ -138,41 +144,40 @@ _FULL_C6_EXTENSION_SUFFIXES = {
     "aarch64-apple-darwin": ".cpython-311-darwin.so",
     "x86_64-unknown-linux-gnu": ".cpython-311-x86_64-linux-gnu.so",
 }
-_PYO3_ENV_NAMES = frozenset(
-    {"PYO3_CONFIG_FILE", "PYO3_ENVIRONMENT_SIGNATURE"}
-)
+_PYO3_ENV_NAMES = frozenset({"PYO3_CONFIG_FILE", "PYO3_ENVIRONMENT_SIGNATURE"})
 _NATIVE_LINKER_ENV_NAMES = frozenset(
     {
         "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER",
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
     }
 )
-_RESERVED_ENV = frozenset(
-    {
-        "CARGO_ENCODED_RUSTFLAGS",
-        "CARGO_BUILD_TARGET",
-        "CARGO_HOME",
-        "CARGO_NET_OFFLINE",
-        "CARGO_TARGET_DIR",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "PYTHONHASHSEED",
-        "PYO3_CONFIG_FILE",
-        "PYO3_ENVIRONMENT_SIGNATURE",
-        "PYO3_PYTHON",
-        "PWD",
-        "RUSTC",
-        "RUSTFLAGS",
-        "SOURCE_DATE_EPOCH",
-        "TMPDIR",
-        "TZ",
-    }
-) | _NATIVE_LINKER_ENV_NAMES
+_RESERVED_ENV = (
+    frozenset(
+        {
+            "CARGO_ENCODED_RUSTFLAGS",
+            "CARGO_BUILD_TARGET",
+            "CARGO_HOME",
+            "CARGO_NET_OFFLINE",
+            "CARGO_TARGET_DIR",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "PYTHONHASHSEED",
+            "PYO3_CONFIG_FILE",
+            "PYO3_ENVIRONMENT_SIGNATURE",
+            "PYO3_PYTHON",
+            "PWD",
+            "RUSTC",
+            "RUSTFLAGS",
+            "SOURCE_DATE_EPOCH",
+            "TMPDIR",
+            "TZ",
+        }
+    )
+    | _NATIVE_LINKER_ENV_NAMES
+)
 _EXECUTOR_ENV_ALLOWLIST = (
-    STRICT_BUILD_ENV_ALLOWLIST
-    | frozenset({"HOME", "PWD", "TMPDIR"})
-    | _PYO3_ENV_NAMES
+    STRICT_BUILD_ENV_ALLOWLIST | frozenset({"HOME", "PWD", "TMPDIR"}) | _PYO3_ENV_NAMES
 )
 _FORBIDDEN_ENV = frozenset(
     {
@@ -203,7 +208,7 @@ _LINUX_NATIVE_PAYLOAD_ROLES = {
     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "toolchain-linker",
 }
 _NATIVE_AUTHORITY_SEAL_KEY = secrets.token_bytes(32)
-_NATIVE_AUTHORITY_DOMAIN = "rextio.full-c6-native-execution-authority.v1"
+_NATIVE_AUTHORITY_DOMAIN = "rextio.artifact-native-execution-authority.v2"
 _MAX_MACOS_SANDBOX_DIAGNOSTIC_BYTES = 64 * 1024
 _MACOS_SANDBOX_TARGET = "aarch64-apple-darwin"
 _MACOS_SANDBOX_ENGINE = "macos-sandbox-exec-v1"
@@ -215,12 +220,8 @@ _LINUX_GCC_LTO_VIRTUAL_PREFIXES = (
     "/rextio/support/gcc-toolchain/",
     "/libexec/gcc/x86_64-linux-gnu/13/",
 )
-_LINUX_GCC_LTO_PLUGIN_NAME_RE = re.compile(
-    r"(?<![\w.-])liblto_plugin\.so(?![\w.-])"
-)
-_LINUX_GCC_LTO_LOAD_FAILURE_RE = re.compile(
-    r"(?<![\w-])error loading plugin(?![\w-])"
-)
+_LINUX_GCC_LTO_PLUGIN_NAME_RE = re.compile(r"(?<![\w.-])liblto_plugin\.so(?![\w.-])")
+_LINUX_GCC_LTO_LOAD_FAILURE_RE = re.compile(r"(?<![\w-])error loading plugin(?![\w-])")
 _LINUX_PERMISSION_MARKERS = (
     "permission denied",
     "operation not permitted",
@@ -280,9 +281,7 @@ _LINUX_PERMISSION_OPERATION_PHRASES = (
         ),
     ),
 )
-_CARGO_MACOS_CPU_COUNT_FAILURE = (
-    "failed to determine the amount of parallelism available"
-)
+_CARGO_MACOS_CPU_COUNT_FAILURE = "failed to determine the amount of parallelism available"
 _CARGO_MACOS_CPU_COUNT_FAILURE_LINES = frozenset(
     {
         _CARGO_MACOS_CPU_COUNT_FAILURE,
@@ -330,13 +329,11 @@ FULL_C6_LINUX_SANDBOX_PERMISSION_REASONS = (
 
 
 class FullC6ExecutorError(ReproducibilityError):
-    """The strict Full C6 executor could not establish its bounded receipt."""
+    """The strict artifact build executor could not establish its bounded receipt."""
 
 
 _LINUX_LAUNCHER_STDERR_REASONS = {
-    linux_launcher_failure_marker(stage).decode("ascii"): (
-        f"linux-launcher-{stage}"
-    )
+    linux_launcher_failure_marker(stage).decode("ascii"): (f"linux-launcher-{stage}")
     for stage in FULL_C6_LINUX_LAUNCHER_FAILURE_STAGES
 }
 _NATIVE_SANDBOX_STDERR_MESSAGES = {
@@ -398,10 +395,7 @@ def _linux_permission_context(stderr: str) -> str | None:
     permission_indexes = {
         index
         for index, line in enumerate(lines)
-        if any(
-            marker in line.casefold()
-            for marker in _LINUX_PERMISSION_MARKERS
-        )
+        if any(marker in line.casefold() for marker in _LINUX_PERMISSION_MARKERS)
     }
     if not permission_indexes:
         return None
@@ -452,9 +446,7 @@ def _macos_sandbox_denial_context(stderr: str) -> str | None:
         return None
     nearby_indexes: set[int] = set()
     for index in denial_indexes:
-        nearby_indexes.update(
-            range(max(0, index - 3), min(len(lines), index + 2))
-        )
+        nearby_indexes.update(range(max(0, index - 3), min(len(lines), index + 2)))
     return "\n".join(lines[index] for index in sorted(nearby_indexes))
 
 
@@ -555,10 +547,7 @@ def _classify_linux_sandbox_permission(stderr: str) -> str | None:
     if candidates:
         return None
     for reason, phrases in _LINUX_PERMISSION_OPERATION_PHRASES:
-        if any(
-            _context_mentions_exact_phrase(lowered, phrase)
-            for phrase in phrases
-        ):
+        if any(_context_mentions_exact_phrase(lowered, phrase) for phrase in phrases):
             candidates.add(reason)
     if len(candidates) == 1:
         return candidates.pop()
@@ -576,10 +565,7 @@ def _classify_macos_sandbox_permission(
         return None
     if not context:
         return "native-macos-permission-unmatched"
-    if any(
-        line in _CARGO_MACOS_CPU_COUNT_FAILURE_LINES
-        for line in context.splitlines()
-    ):
+    if any(line in _CARGO_MACOS_CPU_COUNT_FAILURE_LINES for line in context.splitlines()):
         return "native-macos-permission-sysctl-cpu-count"
     lowered = context.casefold()
     if "sandbox_apply" in lowered or (
@@ -620,8 +606,7 @@ def _classify_macos_sandbox_permission(
     )
     for logical_role, reason in role_categories:
         if any(
-            rule.logical_role == logical_role
-            and _context_mentions_exact_path(context, rule.path)
+            rule.logical_role == logical_role and _context_mentions_exact_path(context, rule.path)
             for rule in sandbox_plan.rules
         ):
             return reason
@@ -799,17 +784,14 @@ def _native_sandbox_stderr_error(
 def _rebuild_external_wheel_contract(
     value: ExternalWheelContract,
 ) -> ExternalWheelContract:
-    if (
-        type(value) is not ExternalWheelContract
-        or type(value.external_members) is not tuple
-    ):
-        raise TypeError("Full C6 native external wheel contract is invalid")
+    if type(value) is not ExternalWheelContract or type(value.external_members) is not tuple:
+        raise TypeError("artifact build native external wheel contract is invalid")
     if type(value.source_members) is not tuple:
-        raise TypeError("Full C6 native external wheel source members are invalid")
+        raise TypeError("artifact build native external wheel source members are invalid")
     members: list[ExternalWheelMemberIdentity] = []
     for item in value.external_members:
         if type(item) is not ExternalWheelMemberIdentity:
-            raise TypeError("Full C6 native external wheel member is invalid")
+            raise TypeError("artifact build native external wheel member is invalid")
         members.append(
             ExternalWheelMemberIdentity(
                 path=item.path,
@@ -850,9 +832,7 @@ def _output_license_manifest_document(
             if contract.external_source_distribution is None
             else {
                 "distribution": contract.external_source_distribution,
-                "source_lock_verification_sha256": (
-                    contract.source_lock_verification_sha256
-                ),
+                "source_lock_verification_sha256": (contract.source_lock_verification_sha256),
                 "version": contract.external_source_version,
             }
         ),
@@ -899,12 +879,8 @@ def _output_license_contract_identity(
     ]
     return {
         "contract_sha256": hashlib.sha256(_canonical_json(document)).hexdigest(),
-        "expression_sha256": hashlib.sha256(
-            contract.expression.encode("utf-8")
-        ).hexdigest(),
-        "file_set_sha256": hashlib.sha256(
-            _canonical_json(file_identities)
-        ).hexdigest(),
+        "expression_sha256": hashlib.sha256(contract.expression.encode("utf-8")).hexdigest(),
+        "file_set_sha256": hashlib.sha256(_canonical_json(file_identities)).hexdigest(),
         "file_count": len(file_identities),
     }
 
@@ -927,7 +903,7 @@ class FullC6NativeToolPaths:
         for name in ("python", "cargo", "rustc", "linker"):
             value = getattr(self, name)
             if not isinstance(value, Path) or not value.is_absolute():
-                raise ValueError(f"Full C6 native {name} path must be an absolute Path")
+                raise ValueError(f"artifact build native {name} path must be an absolute Path")
 
 
 @dataclass(frozen=True, slots=True)
@@ -936,8 +912,9 @@ class FullC6NativeDriverManifest:
 
     The manifest lives inside the project tree captured by
     :class:`FullC6FrozenTreeManifest`.  It binds the exact Cargo invocation,
-    host target, output distribution name, and the complete C5.2 source-wheel
-    exclusion contract.  It is configuration, never distribution authority.
+    host target, output distribution name, and the complete external-source
+    wheel exclusion contract.  It is configuration, never distribution
+    authority.
     """
 
     target_triple: str
@@ -954,24 +931,24 @@ class FullC6NativeDriverManifest:
     def __post_init__(self) -> None:
         argv = tuple(self.cargo_argv)
         if self.domain != FULL_C6_NATIVE_DRIVER_DOMAIN:
-            raise ValueError("Full C6 native driver domain is invalid")
+            raise ValueError("artifact build native driver domain is invalid")
         if self.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER:
-            raise ValueError("Full C6 native execution driver is invalid")
+            raise ValueError("artifact build native execution driver is invalid")
         if self.postprocessor != FULL_C6_NATIVE_POSTPROCESSOR:
-            raise ValueError("Full C6 native postprocessor is invalid")
+            raise ValueError("artifact build native postprocessor is invalid")
         if self.authority != "non-authorizing" or self.distribution_authorized is not False:
-            raise ValueError("Full C6 native driver has an invalid authority posture")
+            raise ValueError("artifact build native driver has an invalid authority posture")
         if self.target_triple not in {
             "aarch64-apple-darwin",
             "x86_64-unknown-linux-gnu",
         }:
-            raise ValueError("Full C6 native driver target is unsupported")
+            raise ValueError("artifact build native driver target is unsupported")
         if (
             type(self.distribution_name) is not str
             or re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?", self.distribution_name)
             is None
         ):
-            raise ValueError("Full C6 native distribution name is invalid")
+            raise ValueError("artifact build native distribution name is invalid")
         external_contract = _rebuild_external_wheel_contract(self.external_contract)
         output_license_contract = rebuild_output_wheel_license_contract(
             self.output_license_contract
@@ -995,9 +972,7 @@ class FullC6NativeDriverManifest:
             "distribution_name": self.distribution_name,
             "domain": self.domain,
             "execution_driver": self.execution_driver,
-            "external_wheel_contract": _external_wheel_contract_document(
-                self.external_contract
-            ),
+            "external_wheel_contract": _external_wheel_contract_document(self.external_contract),
             "output_wheel_license_contract": _output_license_manifest_document(
                 self.output_license_contract
             ),
@@ -1009,7 +984,7 @@ class FullC6NativeDriverManifest:
         """Return the only accepted on-disk encoding."""
         data = _canonical_json(self.to_dict())
         if len(data) > MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES:
-            raise ValueError("Full C6 native driver manifest exceeds its byte bound")
+            raise ValueError("artifact build native driver manifest exceeds its byte bound")
         return data
 
 
@@ -1035,19 +1010,15 @@ def full_c6_native_driver_manifest_bytes(
 
 
 def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverManifest:
-    if (
-        type(data) is not bytes
-        or not data
-        or len(data) > MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES
-    ):
-        raise FullC6ExecutorError("Full C6 native driver manifest exceeds its byte bound")
+    if type(data) is not bytes or not data or len(data) > MAX_FULL_C6_NATIVE_DRIVER_MANIFEST_BYTES:
+        raise FullC6ExecutorError("artifact build native driver manifest exceeds its byte bound")
 
     def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
             if key in result:
                 raise FullC6ExecutorError(
-                    "Full C6 native driver manifest contains a duplicate key"
+                    "artifact build native driver manifest contains a duplicate key"
                 )
             result[key] = value
         return result
@@ -1057,9 +1028,9 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
     except FullC6ExecutorError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
-        raise FullC6ExecutorError("Full C6 native driver manifest is invalid JSON") from exc
+        raise FullC6ExecutorError("artifact build native driver manifest is invalid JSON") from exc
     if type(document) is not dict or data != _canonical_json(document):
-        raise FullC6ExecutorError("Full C6 native driver manifest is not canonical JSON")
+        raise FullC6ExecutorError("artifact build native driver manifest is not canonical JSON")
     required = {
         "authority",
         "cargo_argv",
@@ -1073,7 +1044,7 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         "target_triple",
     }
     if set(document) != required:
-        raise FullC6ExecutorError("Full C6 native driver manifest fields are invalid")
+        raise FullC6ExecutorError("artifact build native driver manifest fields are invalid")
     raw_contract = document["external_wheel_contract"]
     if type(raw_contract) is not dict or set(raw_contract) != {
         "distribution",
@@ -1082,14 +1053,14 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         "source_members",
         "version",
     }:
-        raise FullC6ExecutorError("Full C6 native external wheel contract is invalid")
+        raise FullC6ExecutorError("artifact build native external wheel contract is invalid")
     raw_license_contract = document["output_wheel_license_contract"]
     if type(raw_license_contract) is not dict or set(raw_license_contract) != {
         "external_source",
         "expression",
         "files",
     }:
-        raise FullC6ExecutorError("Full C6 native output license contract is invalid")
+        raise FullC6ExecutorError("artifact build native output license contract is invalid")
     raw_members = raw_contract["external_members"]
     raw_sources = raw_contract["source_members"]
     raw_argv = document["cargo_argv"]
@@ -1100,7 +1071,7 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
         or not all(type(item) is str for item in raw_sources)
         or not all(type(item) is str for item in raw_argv)
     ):
-        raise FullC6ExecutorError("Full C6 native driver manifest collections are invalid")
+        raise FullC6ExecutorError("artifact build native driver manifest collections are invalid")
     members: list[ExternalWheelMemberIdentity] = []
     try:
         for raw in raw_members:
@@ -1146,8 +1117,7 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
                         "version",
                     }
                     or any(
-                        type(raw_external_source[name]) is not str
-                        for name in raw_external_source
+                        type(raw_external_source[name]) is not str for name in raw_external_source
                     )
                 )
             )
@@ -1178,16 +1148,12 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
                 or hashlib.sha256(payload).hexdigest() != raw["sha256"]
             ):
                 raise ValueError("output license file identity is invalid")
-            license_files.append(
-                OutputWheelLicenseFile(path=raw["path"], data=payload)
-            )
+            license_files.append(OutputWheelLicenseFile(path=raw["path"], data=payload))
         output_license_contract = OutputWheelLicenseContract(
             expression=raw_license_contract["expression"],
             files=tuple(license_files),
             external_source_distribution=(
-                None
-                if raw_external_source is None
-                else raw_external_source["distribution"]
+                None if raw_external_source is None else raw_external_source["distribution"]
             ),
             external_source_version=(
                 None if raw_external_source is None else raw_external_source["version"]
@@ -1223,9 +1189,9 @@ def _parse_full_c6_native_driver_manifest(data: bytes) -> FullC6NativeDriverMani
             distribution_authorized=document["distribution_authorized"],
         )
     except (TypeError, ValueError) as exc:
-        raise FullC6ExecutorError("Full C6 native driver manifest is invalid") from exc
+        raise FullC6ExecutorError("artifact build native driver manifest is invalid") from exc
     if manifest.to_bytes() != data:
-        raise FullC6ExecutorError("Full C6 native driver manifest is not canonical")
+        raise FullC6ExecutorError("artifact build native driver manifest is not canonical")
     return manifest
 
 
@@ -1242,7 +1208,7 @@ class FullC6TreeEntry:
     def __post_init__(self) -> None:
         _validate_relative_name(self.logical_name)
         if self.kind not in {"directory", "file"}:
-            raise ValueError("Full C6 tree entry kind is invalid")
+            raise ValueError("artifact build tree entry kind is invalid")
         if self.kind == "directory":
             if (
                 self.sha256 is not None
@@ -1253,7 +1219,7 @@ class FullC6TreeEntry:
                 or isinstance(self.mode, bool)
                 or self.mode != _CANONICAL_DIRECTORY_MODE
             ):
-                raise ValueError("Full C6 directory entry is not canonical")
+                raise ValueError("artifact build directory entry is not canonical")
         elif (
             type(self.sha256) is not str
             or _SHA256_RE.fullmatch(self.sha256) is None
@@ -1264,7 +1230,7 @@ class FullC6TreeEntry:
             or isinstance(self.mode, bool)
             or self.mode not in {_CANONICAL_FILE_MODE, _CANONICAL_EXECUTABLE_MODE}
         ):
-            raise ValueError("Full C6 file entry is not canonical")
+            raise ValueError("artifact build file entry is not canonical")
 
     def to_dict(self) -> dict[str, object]:
         """Return the path-sanitized canonical entry."""
@@ -1288,23 +1254,25 @@ class FullC6FrozenTreeManifest:
     def __post_init__(self) -> None:
         entries = tuple(self.entries)
         if not entries or len(entries) > MAX_FULL_C6_TREE_ENTRIES:
-            raise ValueError("Full C6 tree entry count is outside the bound")
+            raise ValueError("artifact build tree entry count is outside the bound")
         if not all(type(item) is FullC6TreeEntry for item in entries):
-            raise TypeError("Full C6 tree entries have an invalid type")
+            raise TypeError("artifact build tree entries have an invalid type")
         canonical = tuple(sorted(entries, key=lambda item: (item.logical_name, item.kind)))
         if entries != canonical or len({item.logical_name for item in entries}) != len(entries):
-            raise ValueError("Full C6 tree entries are not canonical and unique")
+            raise ValueError("artifact build tree entries are not canonical and unique")
         if sum(item.kind == "file" for item in entries) > MAX_FULL_C6_TREE_FILES:
-            raise ValueError("Full C6 tree file count exceeds the bound")
+            raise ValueError("artifact build tree file count exceeds the bound")
         if sum(item.size for item in entries) > MAX_FULL_C6_TREE_BYTES:
-            raise ValueError("Full C6 tree byte count exceeds the bound")
+            raise ValueError("artifact build tree byte count exceeds the bound")
         if type(self.cargo_lock_generated) is not bool:
             raise TypeError("Cargo.lock generation marker must be boolean")
         if self.complete_for_scope is not True:
-            raise ValueError("Full C6 tree manifest must be complete for its scope")
+            raise ValueError("artifact build tree manifest must be complete for its scope")
         names = {item.logical_name for item in entries if item.kind == "file"}
         if "Cargo.toml" not in names or "Cargo.lock" not in names:
-            raise ValueError("Full C6 tree must contain exact Cargo.toml and Cargo.lock files")
+            raise ValueError(
+                "artifact build tree must contain exact Cargo.toml and Cargo.lock files"
+            )
         cargo_inputs = {
             item.logical_name: item
             for item in entries
@@ -1314,7 +1282,7 @@ class FullC6FrozenTreeManifest:
             item.kind != "file" or item.mode != _CANONICAL_FILE_MODE or item.size == 0
             for item in cargo_inputs.values()
         ):
-            raise ValueError("Full C6 Cargo.toml and Cargo.lock must be nonempty data files")
+            raise ValueError("artifact build Cargo.toml and Cargo.lock must be nonempty data files")
         object.__setattr__(self, "entries", entries)
 
     @property
@@ -1344,15 +1312,15 @@ class FullC6EnvironmentBinding:
 
     def __post_init__(self) -> None:
         if self.name not in _EXECUTOR_ENV_ALLOWLIST:
-            raise ValueError("Full C6 environment name is outside the allowlist")
+            raise ValueError("artifact build environment name is outside the allowlist")
         if _SHA256_RE.fullmatch(self.value_sha256) is None:
-            raise ValueError("Full C6 environment value digest is invalid")
+            raise ValueError("artifact build environment value digest is invalid")
         if (
             type(self.value_size) is not int
             or isinstance(self.value_size, bool)
             or not (0 <= self.value_size <= 64 * 1024)
         ):
-            raise ValueError("Full C6 environment value size is invalid")
+            raise ValueError("artifact build environment value size is invalid")
 
     def to_dict(self) -> dict[str, object]:
         """Return the digest-only environment binding."""
@@ -1381,22 +1349,22 @@ class FullC6InvocationReceipt:
 
     def __post_init__(self) -> None:
         if self.ordinal not in (1, 2):
-            raise ValueError("Full C6 invocation ordinal is invalid")
+            raise ValueError("artifact build invocation ordinal is invalid")
         if _SHA256_RE.fullmatch(self.argv_sha256) is None:
-            raise ValueError("Full C6 invocation argv digest is invalid")
+            raise ValueError("artifact build invocation argv digest is invalid")
         if type(self.argv_count) is not int or not (5 <= self.argv_count <= 256):
-            raise ValueError("Full C6 invocation argv count is invalid")
+            raise ValueError("artifact build invocation argv count is invalid")
         environment = tuple(self.environment)
         if not all(type(item) is FullC6EnvironmentBinding for item in environment):
-            raise TypeError("Full C6 invocation environment is invalid")
+            raise TypeError("artifact build invocation environment is invalid")
         if environment != tuple(sorted(environment, key=lambda item: item.name)) or len(
             {item.name for item in environment}
         ) != len(environment):
-            raise ValueError("Full C6 invocation environment is not canonical and unique")
+            raise ValueError("artifact build invocation environment is not canonical and unique")
         _validate_timeout(self.timeout_seconds)
         _validate_output_bound(self.max_output_bytes)
         if self.inherit_env is not False:
-            raise ValueError("Full C6 invocation must not inherit the host environment")
+            raise ValueError("artifact build invocation must not inherit the host environment")
         sandbox_values = (
             self.sandbox_engine,
             self.sandbox_plan_sha256,
@@ -1415,7 +1383,7 @@ class FullC6InvocationReceipt:
             if self.sandbox_seccomp_sha256 is not None:
                 raise ValueError("macOS sandbox invocation cannot claim seccomp")
         else:
-            raise ValueError("Full C6 invocation sandbox binding is incomplete")
+            raise ValueError("artifact build invocation sandbox binding is incomplete")
         object.__setattr__(self, "environment", environment)
 
     def to_dict(self) -> dict[str, object]:
@@ -1459,35 +1427,35 @@ class FullC6ExecutorReceipt:
 
     def __post_init__(self) -> None:
         if type(self.frozen_tree) is not FullC6FrozenTreeManifest:
-            raise TypeError("Full C6 executor tree manifest is invalid")
+            raise TypeError("artifact build executor tree manifest is invalid")
         invocations = tuple(self.invocations)
         if len(invocations) != 2 or tuple(item.ordinal for item in invocations) != (1, 2):
-            raise ValueError("Full C6 executor requires exactly two ordered invocations")
+            raise ValueError("artifact build executor requires exactly two ordered invocations")
         if not all(type(item) is FullC6InvocationReceipt for item in invocations):
-            raise TypeError("Full C6 executor invocation receipt is invalid")
+            raise TypeError("artifact build executor invocation receipt is invalid")
         if not hmac.compare_digest(invocations[0].argv_sha256, invocations[1].argv_sha256):
-            raise ValueError("Full C6 executor commands differ between builds")
+            raise ValueError("artifact build executor commands differ between builds")
         if invocations[0].environment != invocations[1].environment:
-            raise ValueError("Full C6 executor environments differ between builds")
+            raise ValueError("artifact build executor environments differ between builds")
         if type(self.reproducibility) is not ReproducibilityReceipt:
-            raise TypeError("Full C6 executor reproducibility receipt is invalid")
+            raise TypeError("artifact build executor reproducibility receipt is invalid")
         if self.execution_driver not in {
             FULL_C6_NATIVE_EXECUTION_DRIVER,
             FULL_C6_CALLBACK_EXECUTION_DRIVER,
             FULL_C6_UNBOUND_EXECUTION_DRIVER,
         }:
-            raise ValueError("Full C6 executor execution driver is invalid")
+            raise ValueError("artifact build executor execution driver is invalid")
         if self.lock_driver not in {
             FULL_C6_PREEXISTING_LOCK_DRIVER,
             FULL_C6_NATIVE_LOCK_DRIVER,
             FULL_C6_CALLBACK_LOCK_DRIVER,
         }:
-            raise ValueError("Full C6 executor lock driver is invalid")
+            raise ValueError("artifact build executor lock driver is invalid")
         if self.execution_driver == FULL_C6_NATIVE_EXECUTION_DRIVER:
             _require_sha256(self.toolchain_sha256, "executor toolchain")
             _require_sha256(self.cargo_executable_sha256, "executor Cargo executable")
             if self.postprocessor != FULL_C6_NATIVE_POSTPROCESSOR:
-                raise ValueError("Full C6 executor postprocessor is invalid")
+                raise ValueError("artifact build executor postprocessor is invalid")
             _require_sha256(
                 self.postprocessor_manifest_sha256,
                 "executor postprocessor manifest",
@@ -1496,14 +1464,14 @@ class FullC6ExecutorReceipt:
                 "aarch64-apple-darwin",
                 "x86_64-unknown-linux-gnu",
             }:
-                raise ValueError("Full C6 executor target is unsupported")
+                raise ValueError("artifact build executor target is unsupported")
             _require_sha256(self.pyo3_config_sha256, "executor PyO3 config")
             if (
                 type(self.pyo3_config_size) is not int
                 or isinstance(self.pyo3_config_size, bool)
                 or not (1 <= self.pyo3_config_size <= 64 * 1024)
             ):
-                raise ValueError("Full C6 executor PyO3 config size is invalid")
+                raise ValueError("artifact build executor PyO3 config size is invalid")
             _require_sha256(
                 self.pyo3_config_profile_sha256,
                 "executor PyO3 config profile",
@@ -1514,23 +1482,21 @@ class FullC6ExecutorReceipt:
                 else "linux-bwrap-landlock-v1"
             )
             if any(item.sandbox_engine != expected_engine for item in invocations):
-                raise ValueError("Full C6 executor sandbox engine is invalid")
+                raise ValueError("artifact build executor sandbox engine is invalid")
             if not hmac.compare_digest(
                 invocations[0].sandbox_plan_sha256 or "",
                 invocations[1].sandbox_plan_sha256 or "",
             ):
-                raise ValueError("Full C6 executor sandbox plans differ between builds")
+                raise ValueError("artifact build executor sandbox plans differ between builds")
             if not hmac.compare_digest(
                 invocations[0].sandbox_profile_sha256 or "",
                 invocations[1].sandbox_profile_sha256 or "",
             ):
                 raise ValueError(
-                    "Full C6 executor sandbox profile contracts differ between builds"
+                    "artifact build executor sandbox profile contracts differ between builds"
                 )
-            if invocations[0].sandbox_seccomp_sha256 != (
-                invocations[1].sandbox_seccomp_sha256
-            ):
-                raise ValueError("Full C6 executor seccomp bindings differ between builds")
+            if invocations[0].sandbox_seccomp_sha256 != (invocations[1].sandbox_seccomp_sha256):
+                raise ValueError("artifact build executor seccomp bindings differ between builds")
         elif any(
             item is not None
             for item in (
@@ -1557,9 +1523,9 @@ class FullC6ExecutorReceipt:
         ):
             raise ValueError("non-authoritative executor cannot claim sandbox bindings")
         if self.domain != FULL_C6_EXECUTOR_DOMAIN or self.scope != FULL_C6_EXECUTOR_SCOPE:
-            raise ValueError("Full C6 executor domain or scope is invalid")
+            raise ValueError("artifact build executor domain or scope is invalid")
         if self.complete_for_scope is not True or self.authorizes_distribution is not False:
-            raise ValueError("Full C6 executor receipt has an invalid authority posture")
+            raise ValueError("artifact build executor receipt has an invalid authority posture")
         object.__setattr__(self, "invocations", invocations)
 
     @property
@@ -1608,9 +1574,7 @@ class FullC6NativeExecutionAuthority:
     _pyo3_config_identity: FullC6Pyo3ConfigIdentity = dataclass_field(repr=False)
     _driver_manifest: FullC6NativeDriverManifest = dataclass_field(repr=False)
     _wheel_filename: str = dataclass_field(repr=False)
-    _wheel_captures: tuple[ExternalWheelCapture, ExternalWheelCapture] = dataclass_field(
-        repr=False
-    )
+    _wheel_captures: tuple[ExternalWheelCapture, ExternalWheelCapture] = dataclass_field(repr=False)
     _output_license_verifications: tuple[
         OutputWheelLicenseVerification,
         OutputWheelLicenseVerification,
@@ -1625,34 +1589,34 @@ class FullC6NativeExecutionAuthority:
 
     def __new__(cls, *_args: object, **_kwargs: object) -> FullC6NativeExecutionAuthority:
         """Reject every direct caller construction attempt."""
-        raise TypeError("Full C6 native execution authority is executor-constructed only")
+        raise TypeError("artifact build native execution authority is executor-constructed only")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 native execution authority cannot be copied")
+        raise TypeError("artifact build native execution authority cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 native execution authority cannot be copied")
+        raise TypeError("artifact build native execution authority cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 native execution authority cannot be serialized")
+        raise TypeError("artifact build native execution authority cannot be serialized")
 
     def __reduce_ex__(self, _protocol: object) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 native execution authority cannot be serialized")
+        raise TypeError("artifact build native execution authority cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 native execution authority cannot be serialized")
+        raise TypeError("artifact build native execution authority cannot be serialized")
 
     @property
     def digest(self) -> str:
         """Return the semantic digest of the retained, process-sealed evidence."""
         if not validate_full_c6_native_execution_authority(self):
-            raise FullC6ExecutorError("Full C6 native execution authority is stale")
+            raise FullC6ExecutorError("artifact build native execution authority is stale")
         return hashlib.sha256(_canonical_json(_native_authority_payload(self))).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         """Return path-free identities without any retained artifact bytes."""
         if not validate_full_c6_native_execution_authority(self):
-            raise FullC6ExecutorError("Full C6 native execution authority is stale")
+            raise FullC6ExecutorError("artifact build native execution authority is stale")
         payload = _native_authority_payload(self)
         return {**payload, "digest": hashlib.sha256(_canonical_json(payload)).hexdigest()}
 
@@ -1725,7 +1689,7 @@ class FullC6NativeExecutionAuthority:
     def wheel_filename(self) -> str:
         """Return the exact canonical wheel filename shared by both builds."""
         if not validate_full_c6_native_execution_authority(self):
-            raise FullC6ExecutorError("Full C6 native execution authority is stale")
+            raise FullC6ExecutorError("artifact build native execution authority is stale")
         return self._wheel_filename
 
 
@@ -1768,7 +1732,7 @@ class FullC6BuildCommand:
         for name in (self.unsigned_wheel, self.sbom_json, self.provenance_input_json):
             _validate_relative_name(name)
         if len({self.unsigned_wheel, self.sbom_json, self.provenance_input_json}) != 3:
-            raise ValueError("Full C6 build outputs must be distinct")
+            raise ValueError("artifact-build outputs must be distinct")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1884,14 +1848,10 @@ def _output_license_verification_identity(
         for item in verification.license_members
     ]
     return {
-        "expression_sha256": hashlib.sha256(
-            verification.expression.encode("utf-8")
-        ).hexdigest(),
+        "expression_sha256": hashlib.sha256(verification.expression.encode("utf-8")).hexdigest(),
         "metadata_member": verification.metadata_member,
         "metadata_sha256": verification.metadata_sha256,
-        "license_member_set_sha256": hashlib.sha256(
-            _canonical_json(members)
-        ).hexdigest(),
+        "license_member_set_sha256": hashlib.sha256(_canonical_json(members)).hexdigest(),
         "record_member": verification.record_member,
         "wheel_sha256": verification.wheel_sha256,
     }
@@ -1911,7 +1871,7 @@ def _require_canonical_wheel_filename(value: object) -> str:
         or PureWindowsPath(value).name != value
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.whl", value) is None
     ):
-        raise ValueError("Full C6 native wheel filename is not canonical")
+        raise ValueError("artifact build native wheel filename is not canonical")
     return value
 
 
@@ -1929,9 +1889,7 @@ def _native_authority_payload(
         "pyo3_config_profile": authority._pyo3_config_identity.to_dict(),
         "driver_manifest_sha256": manifest.digest,
         "wheel_filename": authority._wheel_filename,
-        "external_wheel_contract": _external_wheel_contract_identity(
-            manifest.external_contract
-        ),
+        "external_wheel_contract": _external_wheel_contract_identity(manifest.external_contract),
         "output_license_contract": _output_license_contract_identity(
             manifest.output_license_contract
         ),
@@ -1940,23 +1898,19 @@ def _native_authority_payload(
         "cargo_vendor_layout": cargo.vendor_layout,
         "cargo_vendor_tree_sha256": cargo.vendor_tree_sha256,
         "cargo_executor_config": cargo.executor_config.to_dict(),
-        "wheel_captures": [
-            _native_capture_identity(item) for item in authority._wheel_captures
-        ],
+        "wheel_captures": [_native_capture_identity(item) for item in authority._wheel_captures],
         "output_license_verifications": [
             _output_license_verification_identity(item)
             for item in authority._output_license_verifications
         ],
         "native_artifacts": [
-            _retained_payload_identity(item)
-            for item in authority._native_artifact_payloads
+            _retained_payload_identity(item) for item in authority._native_artifact_payloads
         ],
         "preliminary_sboms": [
             _retained_payload_identity(item) for item in authority._sbom_payloads
         ],
         "preliminary_provenance_inputs": [
-            _retained_payload_identity(item)
-            for item in authority._provenance_input_payloads
+            _retained_payload_identity(item) for item in authority._provenance_input_payloads
         ],
     }
 
@@ -1984,18 +1938,18 @@ def _validate_native_authority_shape(
     authority: FullC6NativeExecutionAuthority,
 ) -> None:
     if type(authority.executor_receipt) is not FullC6ExecutorReceipt:
-        raise TypeError("Full C6 native executor receipt is invalid")
+        raise TypeError("artifact build native executor receipt is invalid")
     receipt = authority.executor_receipt
     if receipt.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER:
-        raise ValueError("Full C6 native authority requires the production driver")
+        raise ValueError("artifact build native authority requires the production driver")
     if (
         type(authority._toolchain) is not BuildToolchainIdentity
         or authority._toolchain.digest != receipt.toolchain_sha256
     ):
-        raise ValueError("Full C6 native toolchain identity is stale")
+        raise ValueError("artifact build native toolchain identity is stale")
     pyo3_config = authority._pyo3_config_identity
     if type(pyo3_config) is not FullC6Pyo3ConfigIdentity:
-        raise TypeError("Full C6 native PyO3 config identity is invalid")
+        raise TypeError("artifact build native PyO3 config identity is invalid")
     try:
         rebuilt_pyo3_config = FullC6Pyo3ConfigIdentity(
             target_triple=pyo3_config.target_triple,
@@ -2006,7 +1960,7 @@ def _validate_native_authority_shape(
             scope=pyo3_config.scope,
         )
     except (TypeError, ValueError) as exc:
-        raise ValueError("Full C6 native PyO3 config identity is stale") from exc
+        raise ValueError("artifact build native PyO3 config identity is stale") from exc
     if (
         rebuilt_pyo3_config != pyo3_config
         or pyo3_config.target_triple != receipt.target_triple
@@ -2014,28 +1968,27 @@ def _validate_native_authority_shape(
         or pyo3_config.size != receipt.pyo3_config_size
         or pyo3_config.digest != receipt.pyo3_config_profile_sha256
     ):
-        raise ValueError("Full C6 native PyO3 config differs from executor receipt")
+        raise ValueError("artifact build native PyO3 config differs from executor receipt")
     manifest = authority._driver_manifest
     if type(manifest) is not FullC6NativeDriverManifest:
-        raise TypeError("Full C6 native driver manifest is invalid")
+        raise TypeError("artifact build native driver manifest is invalid")
     try:
         rebuilt_manifest = _parse_full_c6_native_driver_manifest(manifest.to_bytes())
     except (TypeError, ValueError, FullC6ExecutorError) as exc:
-        raise ValueError("Full C6 native driver manifest is stale") from exc
+        raise ValueError("artifact build native driver manifest is stale") from exc
     if rebuilt_manifest != manifest:
-        raise ValueError("Full C6 native driver manifest is stale")
+        raise ValueError("artifact build native driver manifest is stale")
     if (
         manifest.digest != receipt.postprocessor_manifest_sha256
         or receipt.postprocessor != manifest.postprocessor
         or receipt.target_triple != manifest.target_triple
     ):
-        raise ValueError("Full C6 native driver differs from executor receipt")
+        raise ValueError("artifact build native driver differs from executor receipt")
     manifest_entry = next(
         (
             item
             for item in receipt.frozen_tree.entries
-            if item.logical_name == FULL_C6_NATIVE_DRIVER_MANIFEST
-            and item.kind == "file"
+            if item.logical_name == FULL_C6_NATIVE_DRIVER_MANIFEST and item.kind == "file"
         ),
         None,
     )
@@ -2044,28 +1997,25 @@ def _validate_native_authority_shape(
         or manifest_entry.sha256 != manifest.digest
         or manifest_entry.size != len(manifest.to_bytes())
     ):
-        raise ValueError("Full C6 native driver differs from frozen source")
+        raise ValueError("artifact build native driver differs from frozen source")
     expected_payload_argv = (
         _linux_native_payload_argv(manifest.cargo_argv)
         if manifest.target_triple == "x86_64-unknown-linux-gnu"
         else manifest.cargo_argv
     )
-    expected_argv_sha256 = hashlib.sha256(
-        _canonical_json(list(expected_payload_argv))
-    ).hexdigest()
+    expected_argv_sha256 = hashlib.sha256(_canonical_json(list(expected_payload_argv))).hexdigest()
     if any(
-        item.argv_sha256 != expected_argv_sha256
-        or item.argv_count != len(expected_payload_argv)
+        item.argv_sha256 != expected_argv_sha256 or item.argv_count != len(expected_payload_argv)
         for item in receipt.invocations
     ):
-        raise ValueError("Full C6 native argv differs from driver manifest")
+        raise ValueError("artifact build native argv differs from driver manifest")
     cargo = authority.cargo_workspace
     if not validate_full_c6_cargo_dependency_workspace_receipt(cargo):
-        raise ValueError("Full C6 native Cargo workspace receipt is stale")
+        raise ValueError("artifact build native Cargo workspace receipt is stale")
     if authority.domain != _NATIVE_AUTHORITY_DOMAIN:
-        raise ValueError("Full C6 native authority domain is invalid")
+        raise ValueError("artifact build native authority domain is invalid")
     if authority.complete_for_scope is not True or authority.authorizes_distribution is not False:
-        raise ValueError("Full C6 native authority posture is invalid")
+        raise ValueError("artifact build native authority posture is invalid")
     collections = (
         authority._wheel_captures,
         authority._output_license_verifications,
@@ -2074,27 +2024,27 @@ def _validate_native_authority_shape(
         authority._provenance_input_payloads,
     )
     if any(type(item) is not tuple or len(item) != 2 for item in collections):
-        raise TypeError("Full C6 native authority requires two retained outputs")
+        raise TypeError("artifact build native authority requires two retained outputs")
     if any(type(item) is not ExternalWheelCapture for item in authority._wheel_captures):
-        raise TypeError("Full C6 native wheel captures are invalid")
+        raise TypeError("artifact build native wheel captures are invalid")
     if any(
         type(item) is not OutputWheelLicenseVerification
         for item in authority._output_license_verifications
     ):
-        raise TypeError("Full C6 native output license verifications are invalid")
+        raise TypeError("artifact build native output license verifications are invalid")
     for values in collections[2:]:
         if any(type(item) is not bytes or not item for item in values):
-            raise TypeError("Full C6 native retained payload is invalid")
+            raise TypeError("artifact build native retained payload is invalid")
     if authority._wheel_captures[0] != authority._wheel_captures[1]:
-        raise ValueError("Full C6 native wheel captures differ")
+        raise ValueError("artifact build native wheel captures differ")
     if authority._native_artifact_payloads[0] != authority._native_artifact_payloads[1]:
-        raise ValueError("Full C6 native artifact payloads differ")
+        raise ValueError("artifact build native artifact payloads differ")
     if authority._output_license_verifications[0] != authority._output_license_verifications[1]:
-        raise ValueError("Full C6 native output license verifications differ")
+        raise ValueError("artifact build native output license verifications differ")
     if authority._sbom_payloads[0] != authority._sbom_payloads[1]:
-        raise ValueError("Full C6 native preliminary SBOM payloads differ")
+        raise ValueError("artifact build native preliminary SBOM payloads differ")
     if authority._provenance_input_payloads[0] != authority._provenance_input_payloads[1]:
-        raise ValueError("Full C6 native preliminary provenance payloads differ")
+        raise ValueError("artifact build native preliminary provenance payloads differ")
     wheel_filename = _require_canonical_wheel_filename(authority._wheel_filename)
     for ordinal, (capture, output_license, artifact, sbom, provenance) in enumerate(
         zip(
@@ -2114,7 +2064,7 @@ def _validate_native_authority_shape(
                 wheel_filename=wheel_filename,
             )
         except WheelContractError as exc:
-            raise ValueError("Full C6 native output license bytes are stale") from exc
+            raise ValueError("artifact build native output license bytes are stale") from exc
         if (
             hashlib.sha256(capture.wheel_bytes).hexdigest() != build.unsigned_wheel.sha256
             or len(capture.wheel_bytes) != build.unsigned_wheel.size
@@ -2122,8 +2072,7 @@ def _validate_native_authority_shape(
             or len(artifact) != capture.native_member.size
             or hashlib.sha256(sbom).hexdigest() != build.sbom_json.sha256
             or len(sbom) != build.sbom_json.size
-            or hashlib.sha256(provenance).hexdigest()
-            != build.provenance_input_json.sha256
+            or hashlib.sha256(provenance).hexdigest() != build.provenance_input_json.sha256
             or len(provenance) != build.provenance_input_json.size
             or not _validate_retained_canonical_json(sbom)
             or not _validate_retained_canonical_json(provenance)
@@ -2133,7 +2082,7 @@ def _validate_native_authority_shape(
             or output_license.record_member != capture.verification.record_member
             or capture.verification.requirement != manifest.external_contract.requirement
         ):
-            raise ValueError("Full C6 native retained evidence differs from reproducibility")
+            raise ValueError("artifact build native retained evidence differs from reproducibility")
     lock = next(
         (
             item
@@ -2143,7 +2092,7 @@ def _validate_native_authority_shape(
         None,
     )
     if lock is None or lock.sha256 != cargo.cargo_sources.lock_file.sha256:
-        raise ValueError("Full C6 native Cargo.lock differs from dependency workspace")
+        raise ValueError("artifact build native Cargo.lock differs from dependency workspace")
 
 
 def validate_full_c6_native_execution_authority(
@@ -2174,13 +2123,14 @@ def _validated_full_c6_native_output_material(
 
     This intentionally remains a private executor boundary.  Public callers
     cannot supply or replace any retained wheel, artifact, contract, receipt,
-    or workspace input when materializing a Full C6 native output.
+    or workspace input when materializing a artifact build native output.
     """
-    if (
-        type(authority) is not FullC6NativeExecutionAuthority
-        or not validate_full_c6_native_execution_authority(authority)
+    if type(
+        authority
+    ) is not FullC6NativeExecutionAuthority or not validate_full_c6_native_execution_authority(
+        authority
     ):
-        raise FullC6ExecutorError("Full C6 native execution authority is stale")
+        raise FullC6ExecutorError("artifact build native execution authority is stale")
     capture = authority._wheel_captures[0]
     native_member = capture.native_member
     return _FullC6NativeOutputMaterial(
@@ -2215,9 +2165,7 @@ def _create_native_execution_authority(
     manifests = tuple(item.driver_manifest for item in results)
     filenames = tuple(item.wheel_filename for item in results)
     if manifests[0] != manifests[1] or filenames[0] != filenames[1]:
-        raise FullC6ExecutorError(
-            "Full C6 native retained contracts differ between builds"
-        )
+        raise FullC6ExecutorError("artifact build native retained contracts differ between builds")
     authority = object.__new__(FullC6NativeExecutionAuthority)
     object.__setattr__(authority, "executor_receipt", executor_receipt)
     object.__setattr__(authority, "cargo_workspace", cargo_workspace)
@@ -2254,7 +2202,7 @@ def _create_native_execution_authority(
     ).digest()
     object.__setattr__(authority, "_transaction_seal", seal)
     if not validate_full_c6_native_execution_authority(authority):
-        raise FullC6ExecutorError("Full C6 native execution authority could not be sealed")
+        raise FullC6ExecutorError("artifact build native execution authority could not be sealed")
     return authority
 
 
@@ -2274,9 +2222,9 @@ class _ReceiptBoundCargoConfig:
             "cargo-home:config",
             "cargo-home:config.toml",
         }:
-            raise ValueError("Full C6 receipt-bound Cargo config location is invalid")
+            raise ValueError("artifact build receipt-bound Cargo config location is invalid")
         if _SHA256_RE.fullmatch(self.sha256) is None:
-            raise ValueError("Full C6 receipt-bound Cargo config digest is invalid")
+            raise ValueError("artifact build receipt-bound Cargo config digest is invalid")
 
 
 def _reject_frozen_cargo_workspace_overlays(tree: _FrozenTree) -> None:
@@ -2285,7 +2233,7 @@ def _reject_frozen_cargo_workspace_overlays(tree: _FrozenTree) -> None:
         top = PurePosixPath(item.public.logical_name).parts[0]
         if unicodedata.normalize("NFC", top).casefold() in {".cargo", "vendor"}:
             raise FullC6ExecutorError(
-                "Full C6 native Cargo config/vendor workspace must be "
+                "artifact build native Cargo config/vendor workspace must be "
                 "executor-generated and receipt-bound"
             )
 
@@ -2346,24 +2294,19 @@ def execute_full_c6_two_build(
             or not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace)
         ):
             raise FullC6ExecutorError(
-                "Full C6 native execution requires a valid process-sealed Cargo workspace"
+                "artifact build native execution requires a valid process-sealed Cargo workspace"
             )
         if type(_native_results_sink) is not list or _native_results_sink:
-            raise FullC6ExecutorError("Full C6 native retained-evidence sink is invalid")
-        if (
-            type(_native_sandbox_evidence_sink) is not list
-            or _native_sandbox_evidence_sink
-        ):
-            raise FullC6ExecutorError(
-                "Full C6 native sandbox-evidence sink is invalid"
-            )
+            raise FullC6ExecutorError("artifact build native retained-evidence sink is invalid")
+        if type(_native_sandbox_evidence_sink) is not list or _native_sandbox_evidence_sink:
+            raise FullC6ExecutorError("artifact build native sandbox-evidence sink is invalid")
         if type(_native_pyo3_config_identity) is not FullC6Pyo3ConfigIdentity:
             raise FullC6ExecutorError(
-                "Full C6 native execution requires one fixed PyO3 config identity"
+                "artifact build native execution requires one fixed PyO3 config identity"
             )
         if not isinstance(_native_pyo3_config_path, Path):
             raise FullC6ExecutorError(
-                "Full C6 native execution requires one external PyO3 config path"
+                "artifact build native execution requires one external PyO3 config path"
             )
         assert toolchain is not None
         trusted_support_plan = _require_native_toolchain_support_critical(
@@ -2378,16 +2321,14 @@ def execute_full_c6_two_build(
                 _native_pyo3_config_identity,
             )
         except FullC6Pyo3ConfigError as exc:
-            raise FullC6ExecutorError(
-                "Full C6 external PyO3 config is invalid"
-            ) from exc
+            raise FullC6ExecutorError("artifact build external PyO3 config is invalid") from exc
         try:
             native_output_license_contract = rebuild_output_wheel_license_contract(
                 _native_output_license_contract  # type: ignore[arg-type]
             )
         except (TypeError, ValueError) as exc:
             raise FullC6ExecutorError(
-                "Full C6 native execution requires an exact output license contract"
+                "artifact build native execution requires an exact output license contract"
             ) from exc
     elif (
         cargo_workspace is not None
@@ -2400,7 +2341,7 @@ def execute_full_c6_two_build(
         or toolchain_support_lock is not None
     ):
         raise FullC6ExecutorError(
-            "Full C6 callback execution cannot claim a native Cargo workspace"
+            "artifact build callback execution cannot claim a native Cargo workspace"
         )
     else:
         native_output_license_contract = None
@@ -2419,9 +2360,7 @@ def execute_full_c6_two_build(
             pyo3_support_root_identity = os.lstat(pyo3_support_root)
             pyo3_config_file_identity = os.lstat(_native_pyo3_config_path)
         except OSError as exc:
-            raise FullC6ExecutorError(
-                "Full C6 PyO3 support root is unavailable"
-            ) from exc
+            raise FullC6ExecutorError("artifact build PyO3 support root is unavailable") from exc
         _verify_native_pyo3_support_root(
             pyo3_support_root,
             pyo3_support_root_identity,
@@ -2479,11 +2418,11 @@ def execute_full_c6_two_build(
         assert native_tools is not None
         assert cargo_workspace is not None
         if frozen.manifest is None:
-            raise FullC6ExecutorError("Full C6 native driver requires a frozen Cargo.lock")
+            raise FullC6ExecutorError("artifact build native driver requires a frozen Cargo.lock")
         _reject_frozen_cargo_workspace_overlays(frozen)
         if cargo_workspace.cargo_sources.digest != toolchain.cargo_sources.digest:
             raise FullC6ExecutorError(
-                "Full C6 Cargo workspace differs from the toolchain source identity"
+                "artifact build Cargo workspace differs from the toolchain source identity"
             )
         cargo_lock_data = _entry_data(frozen, "Cargo.lock")
         if (
@@ -2491,36 +2430,36 @@ def execute_full_c6_two_build(
             != cargo_workspace.cargo_sources.lock_file.sha256
         ):
             raise FullC6ExecutorError(
-                "Full C6 Cargo workspace differs from the frozen Cargo.lock"
+                "artifact build Cargo workspace differs from the frozen Cargo.lock"
             )
         try:
             manifest_data = _entry_data(frozen, FULL_C6_NATIVE_DRIVER_MANIFEST)
         except FullC6ExecutorError as exc:
             raise FullC6ExecutorError(
-                f"Full C6 frozen tree is missing exact {FULL_C6_NATIVE_DRIVER_MANIFEST}"
+                f"artifact build frozen tree is missing exact {FULL_C6_NATIVE_DRIVER_MANIFEST}"
             ) from exc
         native_manifest = _parse_full_c6_native_driver_manifest(manifest_data)
         if native_manifest.output_license_contract != native_output_license_contract:
             raise FullC6ExecutorError(
-                "Full C6 output license contract differs from the frozen native driver"
+                "artifact build output license contract differs from the frozen native driver"
             )
         fixed_argv = _require_exact_native_cargo_command(native_manifest.cargo_argv)
         if fixed_argv != toolchain.argv.values:
             raise FullC6ExecutorError(
-                "Full C6 native driver argv differs from toolchain identity"
+                "artifact build native driver argv differs from toolchain identity"
             )
         try:
             host_target = detect_host_target_triple()
         except ValueError as exc:
-            raise FullC6ExecutorError("Full C6 native host target is unsupported") from exc
+            raise FullC6ExecutorError("artifact build native host target is unsupported") from exc
         if native_manifest.target_triple != host_target:
             raise FullC6ExecutorError(
-                "Full C6 native driver target differs from the current host"
+                "artifact build native driver target differs from the current host"
             )
         assert _native_pyo3_config_identity is not None
         if _native_pyo3_config_identity.target_triple != native_manifest.target_triple:
             raise FullC6ExecutorError(
-                "Full C6 PyO3 config target differs from the native driver"
+                "artifact build PyO3 config target differs from the native driver"
             )
         _reject_private_argv(fixed_argv, source=source, roots=(first[0], second[0]))
         _verify_native_toolchain_invocation(
@@ -2597,7 +2536,7 @@ def execute_full_c6_two_build(
                 )
             except FullC6Pyo3ConfigError as exc:
                 raise FullC6ExecutorError(
-                    "Full C6 fixed PyO3 config could not be bound"
+                    "artifact build fixed PyO3 config could not be bound"
                 ) from exc
         invocation_environment = dict(environment)
         context = FullC6BuildContext(
@@ -2617,7 +2556,7 @@ def execute_full_c6_two_build(
             except FullC6ExecutorError:
                 raise
             except Exception as exc:
-                raise FullC6ExecutorError("Full C6 build callback failed") from exc
+                raise FullC6ExecutorError("artifact-build callback failed") from exc
         elif native_orchestrator:
             assert fixed_argv is not None
             assert native_manifest is not None
@@ -2678,7 +2617,7 @@ def execute_full_c6_two_build(
                     seccomp_lease = create_linux_full_c6_seccomp_lease()
                 except FullC6ReadSandboxError as exc:
                     raise FullC6ExecutorError(
-                        "Full C6 Linux seccomp lease failed closed"
+                        "artifact build Linux seccomp lease failed closed"
                     ) from exc
                 try:
                     launch = prepare_full_c6_sandbox_launch(
@@ -2694,7 +2633,7 @@ def execute_full_c6_two_build(
                 except (FullC6ReadSandboxError, TypeError, ValueError) as exc:
                     seccomp_lease.close()
                     raise FullC6ExecutorError(
-                        "Full C6 Linux read sandbox failed closed"
+                        "artifact build Linux read sandbox failed closed"
                     ) from exc
                 except BaseException:
                     seccomp_lease.close()
@@ -2721,7 +2660,7 @@ def execute_full_c6_two_build(
                     )
                 except (FullC6ReadSandboxError, TypeError, ValueError) as exc:
                     raise FullC6ExecutorError(
-                        "Full C6 macOS read sandbox failed closed"
+                        "artifact build macOS read sandbox failed closed"
                     ) from exc
                 expected_pass_fds = ()
                 wrapper_environment = invocation_environment
@@ -2729,17 +2668,17 @@ def execute_full_c6_two_build(
             if launch.preexec_fn is not None:
                 launch.close()
                 raise FullC6ExecutorError(
-                    "Full C6 sandbox pre-exec callback contract is invalid"
+                    "artifact build sandbox pre-exec callback contract is invalid"
                 )
             if launch.pass_fds != expected_pass_fds:
                 launch.close()
                 raise FullC6ExecutorError(
-                    "Full C6 sandbox descriptor contract changed before spawn"
+                    "artifact build sandbox descriptor contract changed before spawn"
                 )
             if launch.seccomp_sha256 != seccomp_sha256:
                 launch.close()
                 raise FullC6ExecutorError(
-                    "Full C6 sandbox seccomp receipt changed before spawn"
+                    "artifact build sandbox seccomp receipt changed before spawn"
                 )
             try:
                 try:
@@ -2767,7 +2706,7 @@ def execute_full_c6_two_build(
                     launch.close()
             except FullC6ReadSandboxError as exc:
                 raise FullC6ExecutorError(
-                    "Full C6 native read sandbox failed closed"
+                    "artifact build native read sandbox failed closed"
                 ) from exc
             finally:
                 assert pyo3_support_root is not None
@@ -2850,9 +2789,11 @@ def execute_full_c6_two_build(
             try:
                 spec = command_factory(context)
             except Exception as exc:
-                raise FullC6ExecutorError("Full C6 command factory failed") from exc
+                raise FullC6ExecutorError("artifact build command factory failed") from exc
             if type(spec) is not FullC6BuildCommand:
-                raise FullC6ExecutorError("Full C6 command factory returned an invalid command")
+                raise FullC6ExecutorError(
+                    "artifact build command factory returned an invalid command"
+                )
             argv = _require_prestrict_build_command(spec.argv)
             _reject_private_argv(argv, source=source, roots=(first[0], second[0]))
             if toolchain is not None:
@@ -2885,9 +2826,9 @@ def execute_full_c6_two_build(
                 provenance_input_json=build_root / spec.provenance_input_json,
             )
         if time.monotonic() - started > float(timeout_seconds):
-            raise FullC6ExecutorError("Full C6 build callback exceeded its timeout bound")
+            raise FullC6ExecutorError("artifact-build callback exceeded its timeout bound")
         if type(outputs) is not ReproducibilityBuildOutputs:
-            raise FullC6ExecutorError("Full C6 build returned invalid output paths")
+            raise FullC6ExecutorError("artifact-build callback returned invalid output paths")
         _verify_private_root(build_root, expected_root[1])
         _verify_project_root(project_root, project_identity)
         _verify_outputs_are_independent(build_root, project_root, outputs)
@@ -2910,9 +2851,7 @@ def execute_full_c6_two_build(
                 pyo3_config_path=(pyo3_config_path if native_orchestrator else None),
                 timeout_seconds=float(timeout_seconds),
                 max_output_bytes=max_output_bytes,
-                sandbox_evidence=(
-                    native_sandbox_evidence[-1] if native_orchestrator else None
-                ),
+                sandbox_evidence=(native_sandbox_evidence[-1] if native_orchestrator else None),
             )
         )
         return outputs
@@ -2934,12 +2873,14 @@ def execute_full_c6_two_build(
         or len(project_copies) != 2
         or len(project_identities) != 2
     ):
-        raise FullC6ExecutorError("Full C6 executor did not perform exactly two builds")
+        raise FullC6ExecutorError("artifact build executor did not perform exactly two builds")
     if native_orchestrator and len(native_results) != 2:
-        raise FullC6ExecutorError("Full C6 native executor did not capture exactly two wheels")
+        raise FullC6ExecutorError(
+            "artifact build native executor did not capture exactly two wheels"
+        )
     if native_orchestrator and len(native_sandbox_evidence) != 2:
         raise FullC6ExecutorError(
-            "Full C6 native executor did not capture exactly two sandbox launches"
+            "artifact build native executor did not capture exactly two sandbox launches"
         )
     if command_values[0] != command_values[1]:
         raise FullC6ExecutorError("strict Cargo commands differ between isolated builds")
@@ -2972,12 +2913,12 @@ def execute_full_c6_two_build(
             expected=_native_pyo3_config_identity,
         )
         if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
-            raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
+            raise FullC6ExecutorError("artifact build Cargo workspace receipt became stale")
         for result in native_results:
             refreshed = _recapture_native_output(result, native_manifest)
             if refreshed != result.capture:
                 raise FullC6ExecutorError(
-                    "Full C6 verified native wheel changed before receipt capture"
+                    "artifact build verified native wheel changed before receipt capture"
                 )
             try:
                 refreshed_output_license = verify_output_wheel_license_bytes(
@@ -2987,15 +2928,15 @@ def execute_full_c6_two_build(
                 )
             except WheelContractError as exc:
                 raise FullC6ExecutorError(
-                    "Full C6 verified output license changed before receipt capture"
+                    "artifact build verified output license changed before receipt capture"
                 ) from exc
             if refreshed_output_license != result.output_license_verification:
                 raise FullC6ExecutorError(
-                    "Full C6 verified output license changed before receipt capture"
+                    "artifact build verified output license changed before receipt capture"
                 )
             if refreshed.verification.wheel_sha256 != reproducibility.wheel_sha256:
                 raise FullC6ExecutorError(
-                    "Full C6 verified wheel differs from reproducibility evidence"
+                    "artifact build verified wheel differs from reproducibility evidence"
                 )
             for path, retained, label in (
                 (result.outputs.sbom_json, result.sbom_bytes, "SBOM"),
@@ -3010,15 +2951,15 @@ def execute_full_c6_two_build(
                     current, _opened = _secure_read_regular(Path(path), linked)
                 except OSError as exc:
                     raise FullC6ExecutorError(
-                        f"Full C6 verified native {label} could not be recaptured"
+                        f"artifact build verified native {label} could not be recaptured"
                     ) from exc
                 if current != retained:
                     raise FullC6ExecutorError(
-                        f"Full C6 verified native {label} changed before receipt capture"
+                        f"artifact build verified native {label} changed before receipt capture"
                     )
     _assert_source_unchanged(source, without_generated_lock)
     if frozen.manifest is None:
-        raise FullC6ExecutorError("Full C6 frozen tree is missing its complete manifest")
+        raise FullC6ExecutorError("artifact build frozen tree is missing its complete manifest")
     try:
         receipt = FullC6ExecutorReceipt(
             frozen_tree=frozen.manifest,
@@ -3042,15 +2983,11 @@ def execute_full_c6_two_build(
                 if native_orchestrator and toolchain is not None
                 else None
             ),
-            postprocessor=(
-                native_manifest.postprocessor if native_manifest is not None else None
-            ),
+            postprocessor=(native_manifest.postprocessor if native_manifest is not None else None),
             postprocessor_manifest_sha256=(
                 native_manifest.digest if native_manifest is not None else None
             ),
-            target_triple=(
-                native_manifest.target_triple if native_manifest is not None else None
-            ),
+            target_triple=(native_manifest.target_triple if native_manifest is not None else None),
             pyo3_config_sha256=(
                 _native_pyo3_config_identity.sha256
                 if native_orchestrator and _native_pyo3_config_identity is not None
@@ -3093,27 +3030,23 @@ def execute_full_c6_native_two_build(
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     max_output_bytes: int = MAX_FULL_C6_OUTPUT_BYTES,
 ) -> FullC6NativeExecutionAuthority:
-    """Run the sole production Full C6 native build and wheel postprocessor.
+    """Run the sole production artifact build native build and wheel postprocessor.
 
     Unlike :func:`execute_full_c6_two_build`'s callback and command-factory
     seams, this entrypoint owns every output-producing step.  Its canonical
     manifest and Python staging bytes must already be part of ``source_root``.
     """
     try:
-        output_license_contract = rebuild_output_wheel_license_contract(
-            output_license_contract
-        )
+        output_license_contract = rebuild_output_wheel_license_contract(output_license_contract)
     except (TypeError, ValueError) as exc:
         raise FullC6ExecutorError(
-            "Full C6 native execution requires an exact output license contract"
+            "artifact build native execution requires an exact output license contract"
         ) from exc
     try:
-        pyo3_config_identity = capture_full_c6_pyo3_config(
-            detect_host_target_triple()
-        )
+        pyo3_config_identity = capture_full_c6_pyo3_config(detect_host_target_triple())
     except (FullC6Pyo3ConfigError, ValueError) as exc:
         raise FullC6ExecutorError(
-            "Full C6 native execution requires the fixed CPython 3.11 PyO3 profile"
+            "artifact build native execution requires the fixed CPython 3.11 PyO3 profile"
         ) from exc
     trusted_support_plan = _require_native_toolchain_support(
         toolchain_support_plan,
@@ -3125,7 +3058,7 @@ def execute_full_c6_native_two_build(
     retained_sandbox_evidence: list[_NativeSandboxInvocationEvidence] = []
     support_root: Path | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="rextio-full-c6-pyo3-") as raw_support:
+        with tempfile.TemporaryDirectory(prefix="rextio-artifact-pyo3-") as raw_support:
             support_root = Path(raw_support).resolve(strict=True)
             os.chmod(support_root, _CANONICAL_DIRECTORY_MODE)
             pyo3_config_path = materialize_full_c6_pyo3_config(
@@ -3158,16 +3091,16 @@ def execute_full_c6_native_two_build(
         raise
     except (FullC6Pyo3ConfigError, OSError) as exc:
         raise FullC6ExecutorError(
-            "Full C6 read-only PyO3 support material failed closed"
+            "artifact build read-only PyO3 support material failed closed"
         ) from exc
     if support_root is None or os.path.lexists(support_root):
         raise FullC6ExecutorError(
-            "Full C6 read-only PyO3 support material cleanup failed closed"
+            "artifact build read-only PyO3 support material cleanup failed closed"
         )
     if len(retained_results) != 2:
-        raise FullC6ExecutorError("Full C6 native retained evidence is incomplete")
+        raise FullC6ExecutorError("artifact build native retained evidence is incomplete")
     if len(retained_sandbox_evidence) != 2:
-        raise FullC6ExecutorError("Full C6 native sandbox evidence is incomplete")
+        raise FullC6ExecutorError("artifact build native sandbox evidence is incomplete")
     _require_native_toolchain_support(
         trusted_support_plan,
         toolchain_support_lock,
@@ -3193,7 +3126,7 @@ def _postprocess_native_build(
 ) -> _NativePostprocessResult:
     """Create one wheel and two preliminary non-authorizing documents."""
     if frozen.manifest is None:
-        raise FullC6ExecutorError("Full C6 native postprocessor lacks a frozen tree")
+        raise FullC6ExecutorError("artifact build native postprocessor lacks a frozen tree")
     extension_suffix = _full_c6_extension_suffix(manifest.target_triple)
     artifact = (
         context.build_root
@@ -3215,7 +3148,7 @@ def _postprocess_native_build(
     except FullC6ExecutorError:
         raise
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 native Cargo artifact is missing") from exc
+        raise FullC6ExecutorError("artifact build native Cargo artifact is missing") from exc
 
     staging = context.build_root / "wheel-staging"
     output = context.build_root / "output"
@@ -3228,7 +3161,9 @@ def _postprocess_native_build(
         os.chmod(output, _CANONICAL_DIRECTORY_MODE)
         os.chmod(verified_output, _CANONICAL_DIRECTORY_MODE)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 native output staging could not be created") from exc
+        raise FullC6ExecutorError(
+            "artifact build native output staging could not be created"
+        ) from exc
     _materialize_frozen_python_staging(frozen, staging)
     installed = staging / f"_rextio_native{extension_suffix}"
     _write_exclusive_bytes(installed, artifact_data, mode=_CANONICAL_FILE_MODE)
@@ -3242,7 +3177,7 @@ def _postprocess_native_build(
             output_license_contract=manifest.output_license_contract,
         )
         if wheel_result.status != "built" or type(wheel_result.path) is not str:
-            raise FullC6ExecutorError("Full C6 native wheel postprocessor failed")
+            raise FullC6ExecutorError("artifact build native wheel postprocessor failed")
         wheel = Path(wheel_result.path)
         wheel_filename = _require_canonical_wheel_filename(wheel.name)
         capture = capture_external_wheel_contract(
@@ -3260,7 +3195,7 @@ def _postprocess_native_build(
         raise
     except (OSError, TypeError, ValueError, WheelContractError) as exc:
         raise FullC6ExecutorError(
-            "Full C6 native wheel contract verification failed"
+            "artifact build native wheel contract verification failed"
         ) from exc
     verified_wheel = verified_output / wheel.name
     _write_exclusive_bytes(
@@ -3281,12 +3216,10 @@ def _postprocess_native_build(
             wheel_filename=wheel_filename,
         )
     except (OSError, TypeError, ValueError, WheelContractError) as exc:
-        raise FullC6ExecutorError(
-            "Full C6 verified wheel materialization failed"
-        ) from exc
+        raise FullC6ExecutorError("artifact build verified wheel materialization failed") from exc
     if reverified_output_license != output_license_verification:
         raise FullC6ExecutorError(
-            "Full C6 output license verification changed after materialization"
+            "artifact build output license verification changed after materialization"
         )
 
     common = {
@@ -3318,7 +3251,7 @@ def _postprocess_native_build(
         "distribution_authorized": False,
         "predicate": {
             "buildDefinition": {
-                "buildType": "https://rextio.dev/build/full-c6-native-orchestrator/v1",
+                "buildType": CURRENT.string_value(NATIVE_BUILD_TYPE),
                 "externalParameters": common,
                 "internalParameters": {
                     "authority": "non-authorizing",
@@ -3378,7 +3311,7 @@ def _recapture_native_output(
         )
     except (OSError, TypeError, ValueError, WheelContractError) as exc:
         raise FullC6ExecutorError(
-            "Full C6 verified native wheel could not be recaptured"
+            "artifact build verified native wheel could not be recaptured"
         ) from exc
 
 
@@ -3388,7 +3321,7 @@ def _full_c6_extension_suffix(target_triple: str) -> str:
         return _FULL_C6_EXTENSION_SUFFIXES[target_triple]
     except KeyError as exc:
         raise FullC6ExecutorError(
-            "Full C6 CPython extension suffix target is unsupported"
+            "artifact build CPython extension suffix target is unsupported"
         ) from exc
 
 
@@ -3397,19 +3330,15 @@ def _native_cargo_artifact_name(target_triple: str) -> str:
         return "lib_rextio_native.dylib"
     if target_triple == "x86_64-unknown-linux-gnu":
         return "lib_rextio_native.so"
-    raise FullC6ExecutorError("Full C6 native Cargo artifact target is unsupported")
+    raise FullC6ExecutorError("artifact build native Cargo artifact target is unsupported")
 
 
 def _materialize_frozen_python_staging(tree: _FrozenTree, destination: Path) -> None:
     prefix = PurePosixPath("python-staging")
-    root = tuple(
-        item
-        for item in tree.entries
-        if item.public.logical_name == prefix.as_posix()
-    )
+    root = tuple(item for item in tree.entries if item.public.logical_name == prefix.as_posix())
     if len(root) != 1 or root[0].public.kind != "directory":
         raise FullC6ExecutorError(
-            "Full C6 frozen tree is missing exact python-staging directory"
+            "artifact build frozen tree is missing exact python-staging directory"
         )
     selected = tuple(
         item
@@ -3419,14 +3348,14 @@ def _materialize_frozen_python_staging(tree: _FrozenTree, destination: Path) -> 
     )
     files = tuple(item for item in selected if item.public.kind == "file")
     if not files:
-        raise FullC6ExecutorError("Full C6 frozen Python staging is empty")
+        raise FullC6ExecutorError("artifact build frozen Python staging is empty")
     if any(
         PurePosixPath(item.public.logical_name).name.startswith("_rextio_native")
         and PurePosixPath(item.public.logical_name).name.endswith((".so", ".dylib", ".dll", ".pyd"))
         for item in files
     ):
         raise FullC6ExecutorError(
-            "Full C6 frozen Python staging contains a caller-supplied native extension"
+            "artifact build frozen Python staging contains a caller-supplied native extension"
         )
     directories = sorted(
         (item for item in selected if item.public.kind == "directory"),
@@ -3439,7 +3368,9 @@ def _materialize_frozen_python_staging(tree: _FrozenTree, destination: Path) -> 
             path.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
             os.chmod(path, _CANONICAL_DIRECTORY_MODE)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 Python staging directory could not be copied") from exc
+        raise FullC6ExecutorError(
+            "artifact build Python staging directory could not be copied"
+        ) from exc
     for item in files:
         relative = PurePosixPath(item.public.logical_name).relative_to(prefix)
         assert item.data is not None
@@ -3457,14 +3388,14 @@ def _write_exclusive_bytes(path: Path, data: bytes, *, mode: int) -> None:
     try:
         descriptor = os.open(path, flags, mode)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 output file could not be created safely") from exc
+        raise FullC6ExecutorError("artifact build output file could not be created safely") from exc
     try:
         os.fchmod(descriptor, mode)
         view = memoryview(data)
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
-                raise FullC6ExecutorError("Full C6 output file write failed")
+                raise FullC6ExecutorError("artifact build output file write failed")
             view = view[written:]
         os.fsync(descriptor)
         observed = os.fstat(descriptor)
@@ -3473,14 +3404,17 @@ def _write_exclusive_bytes(path: Path, data: bytes, *, mode: int) -> None:
             or observed.st_nlink != 1
             or observed.st_size != len(data)
         ):
-            raise FullC6ExecutorError("Full C6 output file identity is invalid")
+            raise FullC6ExecutorError("artifact build output file identity is invalid")
     finally:
         os.close(descriptor)
 
 
 def _preliminary_properties(values: Mapping[str, object]) -> list[dict[str, str]]:
     return [
-        {"name": f"rextio:{name}", "value": str(value).lower() if type(value) is bool else str(value)}
+        {
+            "name": f"rextio:{name}",
+            "value": str(value).lower() if type(value) is bool else str(value),
+        }
         for name, value in sorted(values.items())
     ]
 
@@ -3500,7 +3434,7 @@ def _validate_executor_arguments(
     native_orchestrator: bool,
 ) -> None:
     if type(native_orchestrator) is not bool:
-        raise FullC6ExecutorError("Full C6 native orchestrator flag must be boolean")
+        raise FullC6ExecutorError("artifact build native orchestrator flag must be boolean")
     if sum((build is not None, command_factory is not None, native_orchestrator)) != 1:
         raise FullC6ExecutorError(
             "choose exactly one build callback, command factory, or native orchestrator"
@@ -3511,9 +3445,9 @@ def _validate_executor_arguments(
     elif cargo_command is not None:
         raise FullC6ExecutorError("command-factory mode must supply its own Cargo command")
     if toolchain is not None and type(toolchain) is not BuildToolchainIdentity:
-        raise FullC6ExecutorError("Full C6 executor toolchain identity is invalid")
+        raise FullC6ExecutorError("artifact build executor toolchain identity is invalid")
     if native_tools is not None and type(native_tools) is not FullC6NativeToolPaths:
-        raise FullC6ExecutorError("Full C6 native tool paths are invalid")
+        raise FullC6ExecutorError("artifact build native tool paths are invalid")
     if build is not None and toolchain is not None:
         raise FullC6ExecutorError("callback executor cannot claim a production toolchain")
     if not native_orchestrator and native_tools is not None:
@@ -3521,22 +3455,22 @@ def _validate_executor_arguments(
     if native_orchestrator:
         if type(toolchain) is not BuildToolchainIdentity:
             raise FullC6ExecutorError(
-                "Full C6 native orchestrator requires an exact toolchain identity"
+                "artifact build native orchestrator requires an exact toolchain identity"
             )
         if type(native_tools) is not FullC6NativeToolPaths:
             raise FullC6ExecutorError(
-                "Full C6 native orchestrator requires exact native tool paths"
+                "artifact build native orchestrator requires exact native tool paths"
             )
         if lock_generator is not None or lock_command_factory is not None:
             raise FullC6ExecutorError(
-                "Full C6 native orchestrator requires a pre-generated frozen Cargo.lock"
+                "artifact build native orchestrator requires a pre-generated frozen Cargo.lock"
             )
     for value, label in (
         (lock_generator, "lock generator"),
         (lock_command_factory, "lock command factory"),
     ):
         if value is not None and not callable(value):
-            raise FullC6ExecutorError(f"Full C6 {label} is not callable")
+            raise FullC6ExecutorError(f"artifact build {label} is not callable")
     if (
         type(source_date_epoch) is not int
         or isinstance(source_date_epoch, bool)
@@ -3558,7 +3492,7 @@ def _validate_timeout(value: float) -> None:
         or value <= 0
         or value > MAX_BUILD_TIMEOUT_SECONDS
     ):
-        raise ValueError("Full C6 timeout is outside the allowed bound")
+        raise ValueError("artifact build timeout is outside the allowed bound")
 
 
 def _validate_output_bound(value: int) -> None:
@@ -3567,30 +3501,32 @@ def _validate_output_bound(value: int) -> None:
         or isinstance(value, bool)
         or not (1 <= value <= MAX_FULL_C6_OUTPUT_BYTES)
     ):
-        raise ValueError("Full C6 subprocess output bound is invalid")
+        raise ValueError("artifact build subprocess output bound is invalid")
 
 
 def _validate_source_root(value: Path | str) -> tuple[Path, os.stat_result]:
     root, observed = _validate_real_directory(value, label="source")
     try:
         if next(root.iterdir(), None) is None:
-            raise FullC6ExecutorError("Full C6 source root must not be empty")
+            raise FullC6ExecutorError("artifact build source root must not be empty")
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 source root could not be inspected") from exc
+        raise FullC6ExecutorError("artifact build source root could not be inspected") from exc
     return root, observed
 
 
 def _validate_quarantine_root(value: Path | str) -> tuple[Path, os.stat_result]:
     root, observed = _validate_real_directory(value, label="quarantine")
     if stat.S_IMODE(observed.st_mode) != _CANONICAL_DIRECTORY_MODE:
-        raise FullC6ExecutorError("Full C6 quarantine root must have mode 0700")
+        raise FullC6ExecutorError("artifact build quarantine root must have mode 0700")
     if hasattr(os, "geteuid") and observed.st_uid != os.geteuid():
-        raise FullC6ExecutorError("Full C6 quarantine root must be owned by the current user")
+        raise FullC6ExecutorError(
+            "artifact build quarantine root must be owned by the current user"
+        )
     try:
         if next(root.iterdir(), None) is not None:
-            raise FullC6ExecutorError("Full C6 quarantine root must be empty")
+            raise FullC6ExecutorError("artifact build quarantine root must be empty")
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 quarantine root could not be inspected") from exc
+        raise FullC6ExecutorError("artifact build quarantine root could not be inspected") from exc
     return root, observed
 
 
@@ -3600,24 +3536,26 @@ def _validate_real_directory(value: Path | str, *, label: str) -> tuple[Path, os
         _reject_symlink_components(candidate)
         observed = os.lstat(candidate)
     except FileNotFoundError as exc:
-        raise FullC6ExecutorError(f"Full C6 {label} root is missing") from exc
+        raise FullC6ExecutorError(f"artifact build {label} root is missing") from exc
     except OSError as exc:
-        raise FullC6ExecutorError(f"Full C6 {label} root could not be inspected") from exc
+        raise FullC6ExecutorError(f"artifact build {label} root could not be inspected") from exc
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
-        raise FullC6ExecutorError(f"Full C6 {label} root must be a real directory")
+        raise FullC6ExecutorError(f"artifact build {label} root must be a real directory")
     try:
         return candidate.resolve(strict=True), observed
     except OSError as exc:
-        raise FullC6ExecutorError(f"Full C6 {label} root could not be resolved") from exc
+        raise FullC6ExecutorError(f"artifact build {label} root could not be resolved") from exc
 
 
 def _require_disjoint_roots(roots: tuple[Path, ...]) -> None:
     if len(set(roots)) != len(roots):
-        raise FullC6ExecutorError("Full C6 source and quarantine roots must be distinct")
+        raise FullC6ExecutorError("artifact build source and quarantine roots must be distinct")
     for index, root in enumerate(roots):
         for other in roots[index + 1 :]:
             if root in other.parents or other in root.parents:
-                raise FullC6ExecutorError("Full C6 source and quarantine roots must not be nested")
+                raise FullC6ExecutorError(
+                    "artifact build source and quarantine roots must not be nested"
+                )
 
 
 def _verify_private_root(root: Path, expected: os.stat_result) -> None:
@@ -3625,13 +3563,13 @@ def _verify_private_root(root: Path, expected: os.stat_result) -> None:
         _reject_symlink_components(root)
         observed = os.lstat(root)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 quarantine root changed") from exc
+        raise FullC6ExecutorError("artifact build quarantine root changed") from exc
     if (
         not stat.S_ISDIR(observed.st_mode)
         or stat.S_IMODE(observed.st_mode) != _CANONICAL_DIRECTORY_MODE
         or (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino)
     ):
-        raise FullC6ExecutorError("Full C6 quarantine root changed")
+        raise FullC6ExecutorError("artifact build quarantine root changed")
 
 
 def _verify_project_root(root: Path, expected: os.stat_result) -> None:
@@ -3639,13 +3577,13 @@ def _verify_project_root(root: Path, expected: os.stat_result) -> None:
         _reject_symlink_components(root)
         observed = os.lstat(root)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 materialized project root changed") from exc
+        raise FullC6ExecutorError("artifact build materialized project root changed") from exc
     if (
         not stat.S_ISDIR(observed.st_mode)
         or stat.S_IMODE(observed.st_mode) != _CANONICAL_DIRECTORY_MODE
         or (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino)
     ):
-        raise FullC6ExecutorError("Full C6 materialized project root changed")
+        raise FullC6ExecutorError("artifact build materialized project root changed")
 
 
 def _capture_stable_tree(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree:
@@ -3657,7 +3595,7 @@ def _capture_stable_tree(root: Path, *, cargo_lock_generated: bool) -> _FrozenTr
         or first.root_key != second.root_key
         or first.filesystem_keys != second.filesystem_keys
     ):
-        raise FullC6ExecutorError("Full C6 source tree changed during capture")
+        raise FullC6ExecutorError("artifact build source tree changed during capture")
     return first
 
 
@@ -3666,9 +3604,9 @@ def _capture_tree_once(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree
         _reject_symlink_components(root)
         root_observed = os.lstat(root)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 source root changed during capture") from exc
+        raise FullC6ExecutorError("artifact build source root changed during capture") from exc
     if not stat.S_ISDIR(root_observed.st_mode):
-        raise FullC6ExecutorError("Full C6 source root changed during capture")
+        raise FullC6ExecutorError("artifact build source root changed during capture")
     entries: list[_FrozenEntry] = []
     aliases: set[str] = set()
     inode_keys: set[tuple[int, int]] = set()
@@ -3686,7 +3624,7 @@ def _capture_tree_once(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree
             with os.scandir(directory) as iterator:
                 children = sorted(iterator, key=lambda item: item.name)
         except OSError as exc:
-            raise FullC6ExecutorError("Full C6 source tree could not be enumerated") from exc
+            raise FullC6ExecutorError("artifact build source tree could not be enumerated") from exc
         for child in children:
             relative = (
                 PurePosixPath(child.name)
@@ -3697,14 +3635,16 @@ def _capture_tree_once(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree
             _validate_relative_name(logical_name)
             alias = unicodedata.normalize("NFC", logical_name).casefold()
             if alias in aliases:
-                raise FullC6ExecutorError("Full C6 source tree contains a path alias")
+                raise FullC6ExecutorError("artifact build source tree contains a path alias")
             aliases.add(alias)
             try:
                 observed = child.stat(follow_symlinks=False)
             except OSError as exc:
-                raise FullC6ExecutorError("Full C6 source member could not be inspected") from exc
+                raise FullC6ExecutorError(
+                    "artifact build source member could not be inspected"
+                ) from exc
             if stat.S_ISLNK(observed.st_mode):
-                raise FullC6ExecutorError("Full C6 source tree must not contain symlinks")
+                raise FullC6ExecutorError("artifact build source tree must not contain symlinks")
             if stat.S_ISDIR(observed.st_mode):
                 filesystem_keys.append((logical_name, observed.st_dev, observed.st_ino))
                 public = FullC6TreeEntry(
@@ -3719,45 +3659,43 @@ def _capture_tree_once(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree
             elif stat.S_ISREG(observed.st_mode):
                 if observed.st_nlink != 1:
                     raise FullC6ExecutorError(
-                        "Full C6 source tree must not contain shared hardlinks"
+                        "artifact build source tree must not contain shared hardlinks"
                     )
                 data, opened = _secure_read_regular(Path(child.path), observed)
                 inode_key = (opened.st_dev, opened.st_ino)
                 if inode_key in inode_keys:
                     raise FullC6ExecutorError(
-                        "Full C6 source tree must not contain shared hardlinks"
+                        "artifact build source tree must not contain shared hardlinks"
                     )
                 inode_keys.add(inode_key)
                 filesystem_keys.append((logical_name, opened.st_dev, opened.st_ino))
                 file_count += 1
                 total_bytes += len(data)
-                executable = bool(
-                    observed.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-                )
+                executable = bool(observed.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
                 public = FullC6TreeEntry(
                     logical_name=logical_name,
                     kind="file",
                     sha256=hashlib.sha256(data).hexdigest(),
                     size=len(data),
-                    mode=(
-                        _CANONICAL_EXECUTABLE_MODE if executable else _CANONICAL_FILE_MODE
-                    ),
+                    mode=(_CANONICAL_EXECUTABLE_MODE if executable else _CANONICAL_FILE_MODE),
                 )
                 entries.append(_FrozenEntry(public=public, data=data))
             else:
                 raise FullC6ExecutorError(
-                    "Full C6 source tree contains a non-regular filesystem member"
+                    "artifact build source tree contains a non-regular filesystem member"
                 )
             if (
                 len(entries) > MAX_FULL_C6_TREE_ENTRIES
                 or file_count > MAX_FULL_C6_TREE_FILES
                 or total_bytes > MAX_FULL_C6_TREE_BYTES
             ):
-                raise FullC6ExecutorError("Full C6 source tree exceeds a configured bound")
+                raise FullC6ExecutorError("artifact build source tree exceeds a configured bound")
         try:
             after_directory = os.lstat(directory)
         except OSError as exc:
-            raise FullC6ExecutorError("Full C6 source directory changed during capture") from exc
+            raise FullC6ExecutorError(
+                "artifact build source directory changed during capture"
+            ) from exc
         _require_same_directory(before_directory, after_directory)
     canonical_entries = tuple(sorted(entries, key=lambda item: item.public.logical_name))
     has_lock = any(
@@ -3777,7 +3715,7 @@ def _capture_tree_once(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree
         item.public.kind == "file" and item.public.logical_name == "Cargo.toml"
         for item in canonical_entries
     ):
-        raise FullC6ExecutorError("Full C6 tree must contain exact Cargo.toml")
+        raise FullC6ExecutorError("artifact build tree must contain exact Cargo.toml")
     return _FrozenTree(
         manifest=manifest,
         entries=canonical_entries,
@@ -3789,7 +3727,7 @@ def _capture_tree_once(root: Path, *, cargo_lock_generated: bool) -> _FrozenTree
 
 def _secure_read_regular(path: Path, before: os.stat_result) -> tuple[bytes, os.stat_result]:
     if before.st_size < 0 or before.st_size > MAX_FULL_C6_FILE_BYTES:
-        raise FullC6ExecutorError("Full C6 source file exceeds the byte bound")
+        raise FullC6ExecutorError("artifact build source file exceeds the byte bound")
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -3800,7 +3738,7 @@ def _secure_read_regular(path: Path, before: os.stat_result) -> tuple[bytes, os.
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 source file could not be opened safely") from exc
+        raise FullC6ExecutorError("artifact build source file could not be opened safely") from exc
     try:
         opened = os.fstat(descriptor)
         _require_same_regular(before, opened)
@@ -3810,7 +3748,9 @@ def _secure_read_regular(path: Path, before: os.stat_result) -> tuple[bytes, os.
             try:
                 chunk = os.read(descriptor, min(65536, remaining))
             except BlockingIOError as exc:
-                raise FullC6ExecutorError("Full C6 source file could not be read safely") from exc
+                raise FullC6ExecutorError(
+                    "artifact build source file could not be read safely"
+                ) from exc
             if not chunk:
                 break
             chunks.append(chunk)
@@ -3819,13 +3759,13 @@ def _secure_read_regular(path: Path, before: os.stat_result) -> tuple[bytes, os.
         after = os.fstat(descriptor)
         _require_same_regular(opened, after)
         if len(data) != after.st_size or len(data) > MAX_FULL_C6_FILE_BYTES:
-            raise FullC6ExecutorError("Full C6 source file changed during capture")
+            raise FullC6ExecutorError("artifact build source file changed during capture")
     finally:
         os.close(descriptor)
     try:
         final = os.lstat(path)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 source file changed during capture") from exc
+        raise FullC6ExecutorError("artifact build source file changed during capture") from exc
     _require_same_regular(opened, final)
     return data, opened
 
@@ -3838,7 +3778,7 @@ def _secure_read_build_artifact(
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory_flag = getattr(os, "O_DIRECTORY", None)
     if nofollow is None or directory_flag is None or len(components) < 2:
-        raise FullC6ExecutorError("Full C6 artifact openat traversal is unavailable")
+        raise FullC6ExecutorError("artifact output openat traversal is unavailable")
     if any(
         not component
         or component in {".", ".."}
@@ -3847,27 +3787,15 @@ def _secure_read_build_artifact(
         or "\0" in component
         for component in components
     ):
-        raise FullC6ExecutorError("Full C6 artifact path components are invalid")
+        raise FullC6ExecutorError("artifact output path components are invalid")
     root = Path(os.path.abspath(build_root))
-    directory_flags = (
-        os.O_RDONLY
-        | nofollow
-        | directory_flag
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    file_flags = (
-        os.O_RDONLY
-        | nofollow
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
+    directory_flags = os.O_RDONLY | nofollow | directory_flag | getattr(os, "O_CLOEXEC", 0)
+    file_flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         linked_root = os.lstat(root)
         root_fd = os.open(root, directory_flags)
     except OSError as exc:
-        raise FullC6ExecutorError(
-            "Full C6 artifact build root could not be opened safely"
-        ) from exc
+        raise FullC6ExecutorError("artifact build root could not be opened safely") from exc
     directory_records: list[tuple[int, int, str, os.stat_result]] = []
     file_fd: int | None = None
     try:
@@ -3880,7 +3808,7 @@ def _secure_read_build_artifact(
                 child_fd = os.open(component, directory_flags, dir_fd=current_fd)
             except OSError as exc:
                 raise FullC6ExecutorError(
-                    "Full C6 artifact directory is a symlink or could not be opened safely"
+                    "artifact output directory is a symlink or could not be opened safely"
                 ) from exc
             try:
                 opened = os.fstat(child_fd)
@@ -3896,22 +3824,18 @@ def _secure_read_build_artifact(
             linked_file = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
             file_fd = os.open(filename, file_flags, dir_fd=current_fd)
         except OSError as exc:
-            raise FullC6ExecutorError(
-                "Full C6 artifact file could not be opened safely"
-            ) from exc
+            raise FullC6ExecutorError("artifact output file could not be opened safely") from exc
         opened_file = os.fstat(file_fd)
         _require_same_regular(linked_file, opened_file)
         if opened_file.st_size < 0 or opened_file.st_size > MAX_FULL_C6_FILE_BYTES:
-            raise FullC6ExecutorError("Full C6 artifact exceeds the byte bound")
+            raise FullC6ExecutorError("artifact output exceeds the byte bound")
         chunks: list[bytes] = []
         remaining = MAX_FULL_C6_FILE_BYTES + 1
         while remaining > 0:
             try:
                 chunk = os.read(file_fd, min(65536, remaining))
             except BlockingIOError as exc:
-                raise FullC6ExecutorError(
-                    "Full C6 artifact file could not be read safely"
-                ) from exc
+                raise FullC6ExecutorError("artifact output file could not be read safely") from exc
             if not chunk:
                 break
             chunks.append(chunk)
@@ -3922,7 +3846,7 @@ def _secure_read_build_artifact(
         _require_same_regular(opened_file, after_file)
         _require_same_regular(after_file, current_file)
         if len(data) != after_file.st_size or len(data) > MAX_FULL_C6_FILE_BYTES:
-            raise FullC6ExecutorError("Full C6 artifact changed during capture")
+            raise FullC6ExecutorError("artifact output changed during capture")
 
         for parent_fd, child_fd, component, opened in reversed(directory_records):
             after = os.fstat(child_fd)
@@ -3937,7 +3861,7 @@ def _secure_read_build_artifact(
     except FullC6ExecutorError:
         raise
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 artifact path changed during capture") from exc
+        raise FullC6ExecutorError("artifact output path changed during capture") from exc
     finally:
         if file_fd is not None:
             os.close(file_fd)
@@ -3963,12 +3887,12 @@ def _secure_read_regular_at(
     try:
         descriptor = os.open(name, flags, dir_fd=directory_fd)
     except OSError as exc:
-        raise FullC6ExecutorError(f"Full C6 {label} could not be opened safely") from exc
+        raise FullC6ExecutorError(f"artifact build {label} could not be opened safely") from exc
     try:
         opened = os.fstat(descriptor)
         _require_same_regular(linked, opened)
         if opened.st_size < 0 or opened.st_size > MAX_FULL_C6_FILE_BYTES:
-            raise FullC6ExecutorError(f"Full C6 {label} exceeds the byte bound")
+            raise FullC6ExecutorError(f"artifact build {label} exceeds the byte bound")
         chunks: list[bytes] = []
         remaining = MAX_FULL_C6_FILE_BYTES + 1
         while remaining > 0:
@@ -3976,7 +3900,7 @@ def _secure_read_regular_at(
                 chunk = os.read(descriptor, min(65536, remaining))
             except BlockingIOError as exc:
                 raise FullC6ExecutorError(
-                    f"Full C6 {label} could not be read safely"
+                    f"artifact build {label} could not be read safely"
                 ) from exc
             if not chunk:
                 break
@@ -3988,26 +3912,26 @@ def _secure_read_regular_at(
         _require_same_regular(opened, after)
         _require_same_regular(after, current)
         if len(data) != after.st_size or len(data) > MAX_FULL_C6_FILE_BYTES:
-            raise FullC6ExecutorError(f"Full C6 {label} changed during capture")
+            raise FullC6ExecutorError(f"artifact build {label} changed during capture")
         return data, opened
     except OSError as exc:
-        raise FullC6ExecutorError(f"Full C6 {label} changed during capture") from exc
+        raise FullC6ExecutorError(f"artifact build {label} changed during capture") from exc
     finally:
         os.close(descriptor)
 
 
 def _require_same_regular(earlier: os.stat_result, later: os.stat_result) -> None:
     if not stat.S_ISREG(later.st_mode) or later.st_nlink != 1:
-        raise FullC6ExecutorError("Full C6 source file changed or is hardlinked")
+        raise FullC6ExecutorError("artifact build source file changed or is hardlinked")
     if (earlier.st_dev, earlier.st_ino, earlier.st_size) != (
         later.st_dev,
         later.st_ino,
         later.st_size,
     ):
-        raise FullC6ExecutorError("Full C6 source file changed during capture")
+        raise FullC6ExecutorError("artifact build source file changed during capture")
     for field in ("st_mtime_ns", "st_ctime_ns"):
         if hasattr(earlier, field) and getattr(earlier, field) != getattr(later, field):
-            raise FullC6ExecutorError("Full C6 source file changed during capture")
+            raise FullC6ExecutorError("artifact build source file changed during capture")
 
 
 def _require_same_directory(earlier: os.stat_result, later: os.stat_result) -> None:
@@ -4015,10 +3939,10 @@ def _require_same_directory(earlier: os.stat_result, later: os.stat_result) -> N
         later.st_dev,
         later.st_ino,
     ):
-        raise FullC6ExecutorError("Full C6 source directory changed during capture")
+        raise FullC6ExecutorError("artifact build source directory changed during capture")
     for field in ("st_mtime_ns", "st_ctime_ns"):
         if hasattr(earlier, field) and getattr(earlier, field) != getattr(later, field):
-            raise FullC6ExecutorError("Full C6 source directory changed during capture")
+            raise FullC6ExecutorError("artifact build source directory changed during capture")
 
 
 def _assert_source_unchanged(source: Path, expected: _FrozenTree) -> None:
@@ -4032,7 +3956,7 @@ def _assert_source_unchanged(source: Path, expected: _FrozenTree) -> None:
         or observed.root_key != expected.root_key
         or observed.filesystem_keys != expected.filesystem_keys
     ):
-        raise FullC6ExecutorError("Full C6 source tree changed after it was frozen")
+        raise FullC6ExecutorError("artifact build source tree changed after it was frozen")
 
 
 def _with_generated_lock(tree: _FrozenTree, lock_data: bytes) -> _FrozenTree:
@@ -4176,7 +4100,7 @@ def _materialize_project(
             project.mkdir(mode=_CANONICAL_DIRECTORY_MODE)
         else:
             if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
-                raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
+                raise FullC6ExecutorError("artifact build Cargo workspace receipt became stale")
             materialize_full_c6_cargo_dependency_workspace(cargo_workspace, project)
         os.chmod(project, _CANONICAL_DIRECTORY_MODE)
         directories = sorted(
@@ -4200,12 +4124,16 @@ def _materialize_project(
                 while view:
                     written = os.write(descriptor, view)
                     if written <= 0:
-                        raise FullC6ExecutorError("Full C6 project copy could not be written")
+                        raise FullC6ExecutorError(
+                            "artifact build project copy could not be written"
+                        )
                     view = view[written:]
                 os.fsync(descriptor)
                 observed = os.fstat(descriptor)
                 if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
-                    raise FullC6ExecutorError("Full C6 project copy is not an independent file")
+                    raise FullC6ExecutorError(
+                        "artifact build project copy is not an independent file"
+                    )
             finally:
                 os.close(descriptor)
         inode_keys = _verify_materialized_tree(
@@ -4218,10 +4146,12 @@ def _materialize_project(
         raise
     except FullC6CargoWorkspaceError as exc:
         raise FullC6ExecutorError(
-            "Full C6 Cargo workspace could not be materialized safely"
+            "artifact build Cargo workspace could not be materialized safely"
         ) from exc
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 project tree could not be materialized safely") from exc
+        raise FullC6ExecutorError(
+            "artifact build project tree could not be materialized safely"
+        ) from exc
 
 
 def _verify_materialized_tree(
@@ -4241,10 +4171,12 @@ def _verify_materialized_tree(
     }
     if cargo_workspace is not None:
         if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
-            raise FullC6ExecutorError("Full C6 Cargo workspace receipt became stale")
+            raise FullC6ExecutorError("artifact build Cargo workspace receipt became stale")
         for item in cargo_workspace.executor_projection:
             if item.logical_name in projection:
-                raise FullC6ExecutorError("Full C6 Cargo workspace overlaps generated source")
+                raise FullC6ExecutorError(
+                    "artifact build Cargo workspace overlaps generated source"
+                )
             projection[item.logical_name] = (
                 item.kind,
                 item.sha256,
@@ -4254,7 +4186,7 @@ def _verify_materialized_tree(
     first = _capture_materialized_projection(project, projection)
     second = _capture_materialized_projection(project, projection)
     if first != second:
-        raise FullC6ExecutorError("Full C6 materialized project tree changed")
+        raise FullC6ExecutorError("artifact build materialized project tree changed")
     return frozenset((item[-2], item[-1]) for item in first if item[1] == "file")
 
 
@@ -4265,9 +4197,11 @@ def _capture_materialized_projection(
     try:
         root = os.lstat(project)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 materialized project root is unavailable") from exc
+        raise FullC6ExecutorError(
+            "artifact build materialized project root is unavailable"
+        ) from exc
     if not stat.S_ISDIR(root.st_mode) or stat.S_IMODE(root.st_mode) != _CANONICAL_DIRECTORY_MODE:
-        raise FullC6ExecutorError("Full C6 materialized project root changed")
+        raise FullC6ExecutorError("artifact build materialized project root changed")
     pending: list[tuple[Path, PurePosixPath, os.stat_result]] = [
         (project, PurePosixPath("."), root)
     ]
@@ -4283,7 +4217,7 @@ def _capture_materialized_projection(
                 children = sorted(iterator, key=lambda item: item.name)
         except OSError as exc:
             raise FullC6ExecutorError(
-                "Full C6 materialized project could not be enumerated"
+                "artifact build materialized project could not be enumerated"
             ) from exc
         for child in children:
             relative = (
@@ -4295,52 +4229,52 @@ def _capture_materialized_projection(
             _validate_relative_name(name)
             alias = unicodedata.normalize("NFC", name).casefold()
             if alias in aliases:
-                raise FullC6ExecutorError("Full C6 materialized project contains a path alias")
+                raise FullC6ExecutorError(
+                    "artifact build materialized project contains a path alias"
+                )
             aliases.add(alias)
             identity = expected.get(name)
             if identity is None:
-                raise FullC6ExecutorError("Full C6 materialized project contains an overlay")
+                raise FullC6ExecutorError("artifact build materialized project contains an overlay")
             try:
                 linked = child.stat(follow_symlinks=False)
             except OSError as exc:
                 raise FullC6ExecutorError(
-                    "Full C6 materialized project member could not be inspected"
+                    "artifact build materialized project member could not be inspected"
                 ) from exc
             kind, digest, size, mode = identity
             if stat.S_ISLNK(linked.st_mode) or stat.S_IMODE(linked.st_mode) != mode:
-                raise FullC6ExecutorError("Full C6 materialized project member changed")
+                raise FullC6ExecutorError("artifact build materialized project member changed")
             if kind == "directory" and stat.S_ISDIR(linked.st_mode):
                 observed.append((name, kind, None, 0, mode, linked.st_dev, linked.st_ino))
                 pending.append((Path(child.path), relative, linked))
             elif kind == "file" and stat.S_ISREG(linked.st_mode):
                 if linked.st_nlink != 1:
                     raise FullC6ExecutorError(
-                        "Full C6 materialized project contains a shared hardlink"
+                        "artifact build materialized project contains a shared hardlink"
                     )
                 data, opened = _secure_read_regular(Path(child.path), linked)
                 key = (opened.st_dev, opened.st_ino)
                 if key in inodes:
                     raise FullC6ExecutorError(
-                        "Full C6 materialized project contains a shared hardlink"
+                        "artifact build materialized project contains a shared hardlink"
                     )
                 inodes.add(key)
                 actual_digest = hashlib.sha256(data).hexdigest()
                 if actual_digest != digest or len(data) != size:
-                    raise FullC6ExecutorError("Full C6 materialized project tree changed")
+                    raise FullC6ExecutorError("artifact build materialized project tree changed")
                 observed.append(
                     (name, kind, actual_digest, len(data), mode, opened.st_dev, opened.st_ino)
                 )
             else:
-                raise FullC6ExecutorError("Full C6 materialized project member changed")
+                raise FullC6ExecutorError("artifact build materialized project member changed")
         try:
             after = os.lstat(directory)
         except OSError as exc:
-            raise FullC6ExecutorError("Full C6 materialized directory changed") from exc
+            raise FullC6ExecutorError("artifact build materialized directory changed") from exc
         _require_same_directory(before, after)
-    if set(aliases) != {
-        unicodedata.normalize("NFC", name).casefold() for name in expected
-    }:
-        raise FullC6ExecutorError("Full C6 materialized project is incomplete")
+    if set(aliases) != {unicodedata.normalize("NFC", name).casefold() for name in expected}:
+        raise FullC6ExecutorError("artifact build materialized project is incomplete")
     return tuple(sorted(observed, key=lambda item: item[0]))
 
 
@@ -4361,17 +4295,21 @@ def _verify_outputs_are_independent(
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(build_root)
             if resolved == project_root or project_root in resolved.parents:
-                raise FullC6ExecutorError("Full C6 outputs must be outside the frozen project")
+                raise FullC6ExecutorError(
+                    "artifact build outputs must be outside the frozen project"
+                )
             observed = os.lstat(candidate)
         except ValueError as exc:
-            raise FullC6ExecutorError("Full C6 output escaped its private build root") from exc
+            raise FullC6ExecutorError(
+                "artifact build output escaped its private build root"
+            ) from exc
         except OSError as exc:
-            raise FullC6ExecutorError("Full C6 output could not be inspected") from exc
+            raise FullC6ExecutorError("artifact build output could not be inspected") from exc
         if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
-            raise FullC6ExecutorError("Full C6 output must be an independent regular file")
+            raise FullC6ExecutorError("artifact build output must be an independent regular file")
         key = (observed.st_dev, observed.st_ino)
         if key in inodes:
-            raise FullC6ExecutorError("Full C6 outputs must not share hardlinks")
+            raise FullC6ExecutorError("artifact build outputs must not share hardlinks")
         inodes.add(key)
 
 
@@ -4428,37 +4366,39 @@ def _verify_macos_native_tmpdir(
         observed = os.lstat(expected)
     except OSError as exc:
         raise FullC6ExecutorError(
-            "Full C6 macOS native temporary directory is unavailable"
+            "artifact build macOS native temporary directory is unavailable"
         ) from exc
     if (
         environment.get("TMPDIR") != os.fspath(expected)
         or not stat.S_ISDIR(observed.st_mode)
         or stat.S_IMODE(observed.st_mode) != _CANONICAL_DIRECTORY_MODE
     ):
-        raise FullC6ExecutorError(
-            "Full C6 macOS native temporary directory changed"
-        )
+        raise FullC6ExecutorError("artifact build macOS native temporary directory changed")
 
 
 def _validate_base_environment(value: Mapping[str, str] | None) -> dict[str, str]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
-        raise FullC6ExecutorError("Full C6 base environment must be a mapping")
+        raise FullC6ExecutorError("artifact build base environment must be a mapping")
     result: dict[str, str] = {}
     for name, item in value.items():
         if type(name) is not str or type(item) is not str:
-            raise FullC6ExecutorError("Full C6 environment names and values must be strings")
+            raise FullC6ExecutorError("artifact build environment names and values must be strings")
         upper = name.upper()
         if name != upper or upper not in _EXECUTOR_ENV_ALLOWLIST:
-            raise FullC6ExecutorError("Full C6 environment name is outside the allowlist")
+            raise FullC6ExecutorError("artifact build environment name is outside the allowlist")
         if upper in _RESERVED_ENV:
-            raise FullC6ExecutorError("Full C6 caller cannot override an executor-owned variable")
+            raise FullC6ExecutorError(
+                "artifact build caller cannot override an executor-owned variable"
+            )
         if upper in _FORBIDDEN_ENV or upper.endswith("_PROXY") or "WRAPPER" in upper:
-            raise FullC6ExecutorError("Full C6 proxy or compiler-wrapper environment is forbidden")
+            raise FullC6ExecutorError(
+                "artifact build proxy or compiler-wrapper environment is forbidden"
+            )
         encoded = item.encode("utf-8")
         if not item or "\0" in item or len(encoded) > 64 * 1024:
-            raise FullC6ExecutorError("Full C6 environment value is invalid")
+            raise FullC6ExecutorError("artifact build environment value is invalid")
         result[name] = item
     return result
 
@@ -4474,7 +4414,9 @@ def _require_prestrict_build_command(value: Sequence[str]) -> tuple[str, ...]:
             "strict Cargo command must already contain one canonical --locked/--offline/--frozen set"
         )
     if Path(argv[0]).name not in {"cargo", "cargo.exe"} or argv[1] != "build":
-        raise FullC6ExecutorError("Full C6 executor supports only the Cargo build subcommand")
+        raise FullC6ExecutorError(
+            "artifact build executor supports only the Cargo build subcommand"
+        )
     if "--" in argv or any(any(ord(character) < 32 for character in item) for item in argv):
         raise FullC6ExecutorError("strict Cargo command contains an unsafe argument")
     forbidden = {
@@ -4486,7 +4428,9 @@ def _require_prestrict_build_command(value: Sequence[str]) -> tuple[str, ...]:
         "--target-dir",
         "-Z",
     }
-    if any(item in forbidden or any(item.startswith(f"{flag}=") for flag in forbidden) for item in argv):
+    if any(
+        item in forbidden or any(item.startswith(f"{flag}=") for flag in forbidden) for item in argv
+    ):
         raise FullC6ExecutorError("strict Cargo command contains a boundary-changing argument")
     return argv
 
@@ -4502,7 +4446,7 @@ def _require_exact_native_cargo_command(value: Sequence[str]) -> tuple[str, ...]
         "--frozen",
     ):
         raise FullC6ExecutorError(
-            "Full C6 native driver command must be exactly "
+            "artifact build native driver command must be exactly "
             "cargo build --release --locked --offline --frozen"
         )
     return argv
@@ -4516,9 +4460,7 @@ def _require_offline_lock_command(value: Sequence[str]) -> tuple[str, ...]:
         or Path(argv[0]).name not in {"cargo", "cargo.exe"}
         or argv[1:] != ("generate-lockfile", "--offline")
     ):
-        raise FullC6ExecutorError(
-            "lock command must be exactly cargo generate-lockfile --offline"
-        )
+        raise FullC6ExecutorError("lock command must be exactly cargo generate-lockfile --offline")
     return argv
 
 
@@ -4542,15 +4484,14 @@ def _invocation_receipt(
 ) -> FullC6InvocationReceipt:
     if sandbox_evidence is not None:
         if type(sandbox_evidence) is not _NativeSandboxInvocationEvidence:
-            raise FullC6ExecutorError("Full C6 sandbox invocation evidence is invalid")
+            raise FullC6ExecutorError("artifact build sandbox invocation evidence is invalid")
         if (
             sandbox_evidence.ordinal != ordinal
             or sandbox_evidence.payload_argv != argv
-            or sandbox_evidence.payload_environment
-            != tuple(sorted(environment.items()))
+            or sandbox_evidence.payload_environment != tuple(sorted(environment.items()))
         ):
             raise FullC6ExecutorError(
-                "Full C6 sandbox evidence differs from canonical payload invocation"
+                "artifact build sandbox evidence differs from canonical payload invocation"
             )
     canonical_environment = _canonical_invocation_environment(
         environment,
@@ -4574,23 +4515,15 @@ def _invocation_receipt(
             environment=bindings,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
-            sandbox_engine=(
-                sandbox_evidence.engine if sandbox_evidence is not None else None
-            ),
+            sandbox_engine=(sandbox_evidence.engine if sandbox_evidence is not None else None),
             sandbox_plan_sha256=(
-                sandbox_evidence.plan_sha256
-                if sandbox_evidence is not None
-                else None
+                sandbox_evidence.plan_sha256 if sandbox_evidence is not None else None
             ),
             sandbox_profile_sha256=(
-                sandbox_evidence.profile_sha256
-                if sandbox_evidence is not None
-                else None
+                sandbox_evidence.profile_sha256 if sandbox_evidence is not None else None
             ),
             sandbox_seccomp_sha256=(
-                sandbox_evidence.seccomp_sha256
-                if sandbox_evidence is not None
-                else None
+                sandbox_evidence.seccomp_sha256 if sandbox_evidence is not None else None
             ),
         )
     except (TypeError, ValueError) as exc:
@@ -4631,9 +4564,7 @@ def _canonical_invocation_environment(
         )
     if "PYO3_CONFIG_FILE" in canonical:
         if pyo3_config_path is None:
-            raise FullC6ExecutorError(
-                "Full C6 PyO3 receipt path is missing"
-            )
+            raise FullC6ExecutorError("artifact build PyO3 receipt path is missing")
         owned_paths["PYO3_CONFIG_FILE"] = (
             pyo3_config_path,
             _PYO3_RECEIPT_TOKEN,
@@ -4641,14 +4572,14 @@ def _canonical_invocation_environment(
     for name, (expected, token) in owned_paths.items():
         if canonical.get(name) not in {str(expected), token}:
             raise FullC6ExecutorError(
-                "Full C6 executor-owned environment changed before receipt capture"
+                "artifact build executor-owned environment changed before receipt capture"
             )
         canonical[name] = token
 
     rustflags = canonical.get("CARGO_ENCODED_RUSTFLAGS")
     if type(rustflags) is not str:
         raise FullC6ExecutorError(
-            "Full C6 executor-owned environment changed before receipt capture"
+            "artifact build executor-owned environment changed before receipt capture"
         )
     flags = rustflags.split("\x1f")
     expected_remaps = (
@@ -4665,7 +4596,7 @@ def _canonical_invocation_environment(
         flags[index] not in expected for index, expected in enumerate(expected_remaps)
     ):
         raise FullC6ExecutorError(
-            "Full C6 executor-owned environment changed before receipt capture"
+            "artifact build executor-owned environment changed before receipt capture"
         )
     canonical["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
         (
@@ -4690,19 +4621,19 @@ def _verify_native_toolchain_invocation(
 ) -> None:
     """Bind an invocation to every concrete native tool selected at runtime."""
     if argv != toolchain.argv.values:
-        raise FullC6ExecutorError("Full C6 executor argv differs from toolchain identity")
+        raise FullC6ExecutorError("artifact build executor argv differs from toolchain identity")
     executable = _resolve_invoked_tool(argv[0], environment)
     try:
         executable = executable.resolve(strict=True)
         verify_tool_identity(executable, toolchain.cargo)
     except (OSError, ToolchainIdentityError) as exc:
         raise FullC6ExecutorError(
-            "Full C6 Cargo executable differs from toolchain identity"
+            "artifact build Cargo executable differs from toolchain identity"
         ) from exc
     if native_tools is None:
         return
     if target_triple not in {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}:
-        raise FullC6ExecutorError("Full C6 native target binding is invalid")
+        raise FullC6ExecutorError("artifact build native target binding is invalid")
     bindings = (
         ("python", native_tools.python, toolchain.python),
         ("cargo", native_tools.cargo, toolchain.cargo),
@@ -4716,21 +4647,21 @@ def _verify_native_toolchain_invocation(
             verify_tool_identity(resolved, expected)
         except (OSError, ToolchainIdentityError) as exc:
             raise FullC6ExecutorError(
-                f"Full C6 {name} executable differs from toolchain identity"
+                f"artifact build {name} executable differs from toolchain identity"
             ) from exc
         resolved_tools[name] = resolved
     try:
         current_python = Path(sys.executable).resolve(strict=True)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 current Python executable is unavailable") from exc
+        raise FullC6ExecutorError(
+            "artifact build current Python executable is unavailable"
+        ) from exc
     if current_python != resolved_tools["python"]:
         raise FullC6ExecutorError(
-            "Full C6 current Python executable differs from toolchain identity"
+            "artifact build current Python executable differs from toolchain identity"
         )
     if executable != resolved_tools["cargo"]:
-        raise FullC6ExecutorError(
-            "Full C6 invoked Cargo path differs from native tool path"
-        )
+        raise FullC6ExecutorError("artifact build invoked Cargo path differs from native tool path")
     if not require_owned_environment:
         return
     expected_values = {
@@ -4739,12 +4670,12 @@ def _verify_native_toolchain_invocation(
         "RUSTC": str(resolved_tools["rustc"]),
     }
     if any(environment.get(name) != value for name, value in expected_values.items()):
-        raise FullC6ExecutorError("Full C6 native owned environment binding changed")
+        raise FullC6ExecutorError("artifact build native owned environment binding changed")
     inactive_linker_names = _NATIVE_LINKER_ENV_NAMES.difference(expected_values)
     if any(name in environment for name in inactive_linker_names):
-        raise FullC6ExecutorError("Full C6 inactive native linker binding is present")
+        raise FullC6ExecutorError("artifact build inactive native linker binding is present")
     if (pyo3_config_path is None) != (pyo3_config_identity is None):
-        raise FullC6ExecutorError("Full C6 native PyO3 binding is incomplete")
+        raise FullC6ExecutorError("artifact build native PyO3 binding is incomplete")
     if pyo3_config_path is not None and pyo3_config_identity is not None:
         _verify_native_pyo3_binding(
             environment,
@@ -4761,7 +4692,7 @@ def _verify_native_toolchain_invocation(
         or not all(item.startswith("--remap-path-prefix=") for item in encoded[:2])
         or tuple(encoded[2:]) != expected_flags
     ):
-        raise FullC6ExecutorError("Full C6 native linker selection changed")
+        raise FullC6ExecutorError("artifact build native linker selection changed")
 
 
 def _resolve_invoked_tool(value: str, environment: Mapping[str, str]) -> Path:
@@ -4769,10 +4700,10 @@ def _resolve_invoked_tool(value: str, environment: Mapping[str, str]) -> Path:
         return Path(value)
     search_path = environment.get("PATH")
     if type(search_path) is not str or not search_path:
-        raise FullC6ExecutorError("Full C6 Cargo executable requires a bound PATH")
+        raise FullC6ExecutorError("artifact build Cargo executable requires a bound PATH")
     resolved = shutil.which(value, path=search_path)
     if resolved is None:
-        raise FullC6ExecutorError("Full C6 Cargo executable cannot be resolved")
+        raise FullC6ExecutorError("artifact build Cargo executable cannot be resolved")
     return Path(resolved)
 
 
@@ -4783,10 +4714,10 @@ def _verify_native_base_environment(
     try:
         observed = capture_environment_identity(environment)
     except ToolchainIdentityError as exc:
-        raise FullC6ExecutorError("Full C6 native base environment is invalid") from exc
+        raise FullC6ExecutorError("artifact build native base environment is invalid") from exc
     if observed != toolchain.environment:
         raise FullC6ExecutorError(
-            "Full C6 native base environment differs from toolchain identity"
+            "artifact build native base environment differs from toolchain identity"
         )
 
 
@@ -4807,14 +4738,10 @@ def _require_native_toolchain_support(
         )
         assert lock is not None
         if not verify_full_c6_toolchain_support_lock(trusted, lock):
-            raise FullC6ToolchainSupportError(
-                "Full C6 support lock verification failed"
-            )
+            raise FullC6ToolchainSupportError("artifact build support lock verification failed")
         return trusted
     except FullC6ToolchainSupportError as exc:
-        raise FullC6ExecutorError(
-            "Full C6 toolchain support closure failed closed"
-        ) from exc
+        raise FullC6ExecutorError("artifact build toolchain support closure failed closed") from exc
 
 
 def _require_native_toolchain_support_critical(
@@ -4836,7 +4763,7 @@ def _require_native_toolchain_support_critical(
         return trusted
     except FullC6ToolchainSupportError as exc:
         raise FullC6ExecutorError(
-            "Full C6 critical toolchain support binding failed closed"
+            "artifact build critical toolchain support binding failed closed"
         ) from exc
 
 
@@ -4850,16 +4777,14 @@ def _require_native_toolchain_support_identity(
     trusted = require_full_c6_toolchain_support_plan(plan)
     if trusted.target_triple != target_triple:
         raise FullC6ToolchainSupportError(
-            "Full C6 support plan target differs from native execution"
+            "artifact build support plan target differs from native execution"
         )
     if type(toolchain) is not BuildToolchainIdentity:
         raise FullC6ToolchainSupportError(
-            "Full C6 support identity lacks an exact toolchain"
+            "artifact build support identity lacks an exact toolchain"
         )
     if type(lock) is not ToolchainSupportLock:
-        raise FullC6ToolchainSupportError(
-            "Full C6 support identity lacks an exact lock"
-        )
+        raise FullC6ToolchainSupportError("artifact build support identity lacks an exact lock")
     try:
         bindings = (
             (trusted.digest, toolchain.support_plan_sha256),
@@ -4868,7 +4793,7 @@ def _require_native_toolchain_support_identity(
         )
     except (AttributeError, TypeError, ValueError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support identity could not be reconstructed"
+            "artifact build support identity could not be reconstructed"
         ) from exc
     if any(
         type(actual) is not str
@@ -4877,7 +4802,7 @@ def _require_native_toolchain_support_identity(
         for actual, expected in bindings
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support plan or lock differs from toolchain identity"
+            "artifact build support plan or lock differs from toolchain identity"
         )
     return trusted
 
@@ -4886,16 +4811,12 @@ def _native_support_mapping(
     plan: FullC6ToolchainSupportPlan,
     logical_role: str,
 ) -> FullC6SupportNamespaceMapping:
-    matches = tuple(
-        item for item in plan.namespace_mappings if item.logical_role == logical_role
-    )
+    matches = tuple(item for item in plan.namespace_mappings if item.logical_role == logical_role)
     if len(matches) != 1:
-        raise FullC6ExecutorError(
-            "Full C6 support namespace role is missing or ambiguous"
-        )
+        raise FullC6ExecutorError("artifact build support namespace role is missing or ambiguous")
     mapping = matches[0]
     if type(mapping) is not FullC6SupportNamespaceMapping:
-        raise FullC6ExecutorError("Full C6 support namespace mapping is invalid")
+        raise FullC6ExecutorError("artifact build support namespace mapping is invalid")
     return mapping
 
 
@@ -4906,7 +4827,7 @@ def _native_support_path(
     mapping = _native_support_mapping(plan, logical_role)
     path = mapping.host_path
     if not isinstance(path, Path) or not path.is_absolute():
-        raise FullC6ExecutorError("Full C6 support namespace host path is invalid")
+        raise FullC6ExecutorError("artifact build support namespace host path is invalid")
     return path
 
 
@@ -4917,7 +4838,7 @@ def _native_support_virtual_path(
     mapping = _native_support_mapping(plan, logical_role)
     path = mapping.virtual_path
     if not isinstance(path, PurePosixPath) or not path.is_absolute():
-        raise FullC6ExecutorError("Full C6 support namespace virtual path is invalid")
+        raise FullC6ExecutorError("artifact build support namespace virtual path is invalid")
     return path.as_posix()
 
 
@@ -4926,23 +4847,17 @@ def _verify_native_linux_seccomp_launch(
 ) -> str:
     """Bind the exact live seccomp descriptor bytes at the spawn boundary."""
     if type(launch) is not FullC6SandboxLaunch or launch.seccomp_lease is None:
-        raise FullC6ExecutorError(
-            "Full C6 Linux seccomp launch capability is invalid"
-        )
+        raise FullC6ExecutorError("artifact build Linux seccomp launch capability is invalid")
     if (
         type(launch.pass_fds) is not tuple
         or len(launch.pass_fds) != 1
         or type(launch.pass_fds[0]) is not int
         or launch.pass_fds[0] < 3
     ):
-        raise FullC6ExecutorError(
-            "Full C6 Linux seccomp descriptor contract is invalid"
-        )
+        raise FullC6ExecutorError("artifact build Linux seccomp descriptor contract is invalid")
     descriptor = launch.pass_fds[0]
     if launch.seccomp_lease.fileno() != descriptor:
-        raise FullC6ExecutorError(
-            "Full C6 Linux seccomp descriptor contract changed"
-        )
+        raise FullC6ExecutorError("artifact build Linux seccomp descriptor contract changed")
     expected = linux_full_c6_seccomp_program()
     try:
         before = os.fstat(descriptor)
@@ -4951,7 +4866,7 @@ def _verify_native_linux_seccomp_launch(
         after = os.fstat(descriptor)
     except OSError as exc:
         raise FullC6ExecutorError(
-            "Full C6 Linux seccomp descriptor could not be verified"
+            "artifact build Linux seccomp descriptor could not be verified"
         ) from exc
     observed_sha256 = hashlib.sha256(payload).hexdigest()
     if (
@@ -4965,7 +4880,7 @@ def _verify_native_linux_seccomp_launch(
         or launch.seccomp_sha256 != observed_sha256
     ):
         raise FullC6ExecutorError(
-            "Full C6 Linux seccomp descriptor bytes or identity changed"
+            "artifact build Linux seccomp descriptor bytes or identity changed"
         )
     return observed_sha256
 
@@ -5012,11 +4927,7 @@ def _native_read_sandbox_plan(
         rules.append(
             SandboxPathRule(
                 path=mapping.host_path,
-                access=(
-                    "read-execute"
-                    if mapping.logical_role in executable_roles
-                    else "read"
-                ),
+                access=("read-execute" if mapping.logical_role in executable_roles else "read"),
                 logical_role=mapping.logical_role,
             )
         )
@@ -5027,9 +4938,7 @@ def _native_read_sandbox_plan(
             platform_anchor_sha256=support_plan.platform_anchor_sha256,
         )
     except (FullC6ReadSandboxError, TypeError, ValueError) as exc:
-        raise FullC6ExecutorError(
-            "Full C6 native read-sandbox plan failed closed"
-        ) from exc
+        raise FullC6ExecutorError("artifact build native read-sandbox plan failed closed") from exc
 
 
 def _linux_native_payload_argv(
@@ -5042,7 +4951,7 @@ def _linux_native_payload_argv(
         "--offline",
         "--frozen",
     ):
-        raise FullC6ExecutorError("Full C6 Linux host Cargo argv is invalid")
+        raise FullC6ExecutorError("artifact build Linux host Cargo argv is invalid")
     return (FULL_C6_LINUX_CARGO, *host_argv[1:])
 
 
@@ -5057,7 +4966,7 @@ def _linux_native_payload_environment(
         host_path = _native_support_path(support_plan, role)
         if result.get(name) != os.fspath(host_path):
             raise FullC6ExecutorError(
-                "Full C6 Linux host environment differs from support mapping"
+                "artifact build Linux host environment differs from support mapping"
             )
         result[name] = _native_support_virtual_path(support_plan, role)
     owned_paths = {
@@ -5068,9 +4977,7 @@ def _linux_native_payload_environment(
     }
     for name, virtual_path in owned_paths.items():
         if name not in result:
-            raise FullC6ExecutorError(
-                "Full C6 Linux owned environment is incomplete"
-            )
+            raise FullC6ExecutorError("artifact build Linux owned environment is incomplete")
         result[name] = virtual_path
     rustflags = result.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
     host_linker = _native_support_path(support_plan, "toolchain-linker")
@@ -5080,7 +4987,7 @@ def _linux_native_payload_environment(
         or not rustflags[1].startswith("--remap-path-prefix=")
         or rustflags[2:] != ["-C", f"linker={host_linker}"]
     ):
-        raise FullC6ExecutorError("Full C6 Linux Rust flags are not canonical")
+        raise FullC6ExecutorError("artifact build Linux Rust flags are not canonical")
     result["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
         (
             f"--remap-path-prefix={_PROJECT_ROOT_TOKEN}={_PROJECT_ROOT_TOKEN}",
@@ -5089,9 +4996,7 @@ def _linux_native_payload_environment(
             "linker=/rextio/toolchain/bin/linker",
         )
     )
-    result["PATH"] = (
-        f"/rextio/toolchain/bin:{FULL_C6_LINUX_PYTHON_ROOT}/bin"
-    )
+    result["PATH"] = f"/rextio/toolchain/bin:{FULL_C6_LINUX_PYTHON_ROOT}/bin"
     result["PWD"] = _PROJECT_ROOT_TOKEN
     gcc_support = _native_support_virtual_path(
         support_plan,
@@ -5116,7 +5021,7 @@ def _linux_native_payload_environment(
         return dict(canonical_linux_payload_environment(result))
     except FullC6LinuxLauncherError as exc:
         raise FullC6ExecutorError(
-            "Full C6 Linux payload environment differs from launcher contract"
+            "artifact build Linux payload environment differs from launcher contract"
         ) from exc
 
 
@@ -5130,10 +5035,10 @@ def _bind_native_environment(
         rustc = native_tools.rustc.resolve(strict=True)
         linker = native_tools.linker.resolve(strict=True)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 native tool path is unavailable") from exc
+        raise FullC6ExecutorError("artifact build native tool path is unavailable") from exc
     linker_environment_name = _native_linker_environment_name(target_triple)
     if any(name in environment for name in _NATIVE_LINKER_ENV_NAMES):
-        raise FullC6ExecutorError("Full C6 native linker environment is already bound")
+        raise FullC6ExecutorError("artifact build native linker environment is already bound")
     remaps = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
     environment.update(
         {
@@ -5154,12 +5059,10 @@ def _verify_native_pyo3_binding(
     identity: FullC6Pyo3ConfigIdentity,
 ) -> None:
     """Revalidate the sole PyO3 discovery input at the Cargo boundary."""
-    observed_names = frozenset(
-        name for name in environment if name.startswith("PYO3_")
-    )
+    observed_names = frozenset(name for name in environment if name.startswith("PYO3_"))
     if observed_names != _PYO3_ENV_NAMES:
         raise FullC6ExecutorError(
-            "Full C6 native environment contains residual PyO3 discovery channels"
+            "artifact build native environment contains residual PyO3 discovery channels"
         )
     if (
         environment.get("PYO3_CONFIG_FILE") != os.fspath(config_path)
@@ -5169,11 +5072,11 @@ def _verify_native_pyo3_binding(
             for name in ("CONDA_PREFIX", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME")
         )
     ):
-        raise FullC6ExecutorError("Full C6 native PyO3 environment binding changed")
+        raise FullC6ExecutorError("artifact build native PyO3 environment binding changed")
     try:
         verify_full_c6_pyo3_config(config_path, identity)
     except FullC6Pyo3ConfigError as exc:
-        raise FullC6ExecutorError("Full C6 fixed PyO3 config became stale") from exc
+        raise FullC6ExecutorError("artifact build fixed PyO3 config became stale") from exc
 
 
 def _seal_native_pyo3_config(
@@ -5192,16 +5095,14 @@ def _seal_native_pyo3_config(
             or before.st_nlink != 1
             or before.st_size != expected.size
         ):
-            raise FullC6ExecutorError(
-                "Full C6 external PyO3 config inode is unsafe"
-            )
+            raise FullC6ExecutorError("artifact build external PyO3 config inode is unsafe")
         os.fchmod(descriptor, 0o400)
         after = os.fstat(descriptor)
     except FullC6ExecutorError:
         raise
     except OSError as exc:
         raise FullC6ExecutorError(
-            "Full C6 external PyO3 config could not be sealed"
+            "artifact build external PyO3 config could not be sealed"
         ) from exc
     finally:
         if descriptor is not None:
@@ -5213,7 +5114,7 @@ def _seal_native_pyo3_config(
         linked = os.lstat(path)
     except OSError as exc:
         raise FullC6ExecutorError(
-            "Full C6 external PyO3 config changed while sealing"
+            "artifact build external PyO3 config changed while sealing"
         ) from exc
     if (
         (before.st_dev, before.st_ino, before.st_size)
@@ -5223,14 +5124,12 @@ def _seal_native_pyo3_config(
         or stat.S_IMODE(after.st_mode) != 0o400
         or stat.S_IMODE(linked.st_mode) != 0o400
     ):
-        raise FullC6ExecutorError(
-            "Full C6 external PyO3 config changed while sealing"
-        )
+        raise FullC6ExecutorError("artifact build external PyO3 config changed while sealing")
     try:
         verify_full_c6_pyo3_config(path, expected)
     except FullC6Pyo3ConfigError as exc:
         raise FullC6ExecutorError(
-            "Full C6 external PyO3 config changed while sealing"
+            "artifact build external PyO3 config changed while sealing"
         ) from exc
 
 
@@ -5252,7 +5151,7 @@ def _verify_native_pyo3_support_root(
         or not isinstance(config_identity, os.stat_result)
         or type(expected) is not FullC6Pyo3ConfigIdentity
     ):
-        raise FullC6ExecutorError("Full C6 PyO3 support root binding is invalid")
+        raise FullC6ExecutorError("artifact build PyO3 support root binding is invalid")
     try:
         _reject_symlink_components(root)
         before = os.lstat(root)
@@ -5260,13 +5159,14 @@ def _verify_native_pyo3_support_root(
             children = list(iterator)
         after = os.lstat(root)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 PyO3 support root changed") from exc
+        raise FullC6ExecutorError("artifact build PyO3 support root changed") from exc
     if (
         len(children) != 1
         or children[0].name != config_path.name
         or not stat.S_ISDIR(before.st_mode)
         or stat.S_IMODE(before.st_mode) != _CANONICAL_DIRECTORY_MODE
-        or (before.st_dev, before.st_ino) != (
+        or (before.st_dev, before.st_ino)
+        != (
             root_identity.st_dev,
             root_identity.st_ino,
         )
@@ -5277,24 +5177,20 @@ def _verify_native_pyo3_support_root(
             and (before.st_uid != os.geteuid() or after.st_uid != os.geteuid())
         )
     ):
-        raise FullC6ExecutorError("Full C6 PyO3 support root changed")
+        raise FullC6ExecutorError("artifact build PyO3 support root changed")
     try:
         linked = children[0].stat(follow_symlinks=False)
         _require_same_regular(config_identity, linked)
     except (FullC6ExecutorError, OSError) as exc:
-        raise FullC6ExecutorError("Full C6 PyO3 support config changed") from exc
-    if (
-        stat.S_IMODE(linked.st_mode) != 0o400
-        or (
-            hasattr(os, "geteuid")
-            and linked.st_uid != os.geteuid()
-        )
+        raise FullC6ExecutorError("artifact build PyO3 support config changed") from exc
+    if stat.S_IMODE(linked.st_mode) != 0o400 or (
+        hasattr(os, "geteuid") and linked.st_uid != os.geteuid()
     ):
-        raise FullC6ExecutorError("Full C6 PyO3 support config changed")
+        raise FullC6ExecutorError("artifact build PyO3 support config changed")
     try:
         verify_full_c6_pyo3_config(config_path, expected)
     except FullC6Pyo3ConfigError as exc:
-        raise FullC6ExecutorError("Full C6 PyO3 support config changed") from exc
+        raise FullC6ExecutorError("artifact build PyO3 support config changed") from exc
 
 
 def _verify_native_cargo_config_boundaries(
@@ -5309,27 +5205,27 @@ def _verify_native_cargo_config_boundaries(
     """Fail closed over every controlled Cargo config discovery location."""
     cargo_home_text = environment.get("CARGO_HOME")
     if type(cargo_home_text) is not str or not cargo_home_text:
-        raise FullC6ExecutorError("Full C6 native CARGO_HOME binding is missing")
+        raise FullC6ExecutorError("artifact build native CARGO_HOME binding is missing")
     cargo_home = Path(cargo_home_text)
     expected_cargo_home = build_root / "cargo-home"
     try:
         if cargo_home.resolve(strict=True) != expected_cargo_home.resolve(strict=True):
             raise FullC6ExecutorError(
-                "Full C6 native CARGO_HOME escaped the controlled build root"
+                "artifact build native CARGO_HOME escaped the controlled build root"
             )
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 native CARGO_HOME is unavailable") from exc
+        raise FullC6ExecutorError("artifact build native CARGO_HOME is unavailable") from exc
 
     try:
         project = project_root.resolve(strict=True)
         build = build_root.resolve(strict=True)
         quarantine = quarantine_root.resolve(strict=True)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 Cargo discovery root is unavailable") from exc
+        raise FullC6ExecutorError("artifact build Cargo discovery root is unavailable") from exc
     discovery_roots = (project, *project.parents)
     if build not in discovery_roots or quarantine not in discovery_roots:
         raise FullC6ExecutorError(
-            "Full C6 controlled Cargo discovery roots are not cwd ancestors"
+            "artifact build controlled Cargo discovery roots are not cwd ancestors"
         )
 
     observed: list[tuple[str, str]] = []
@@ -5352,14 +5248,11 @@ def _verify_native_cargo_config_boundaries(
 
     if receipt_bound_config is None:
         if observed:
-            raise FullC6ExecutorError(
-                "Full C6 discovered a non-receipt-bound Cargo config"
-            )
+            raise FullC6ExecutorError("artifact build discovered a non-receipt-bound Cargo config")
     elif observed != [(receipt_bound_config.location, receipt_bound_config.sha256)]:
         raise FullC6ExecutorError(
-            "Full C6 Cargo config differs from its receipt-bound generated config"
+            "artifact build Cargo config differs from its receipt-bound generated config"
         )
-
 
 
 def _capture_cargo_configs_from_ancestor(
@@ -5371,14 +5264,16 @@ def _capture_cargo_configs_from_ancestor(
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory_flag = getattr(os, "O_DIRECTORY", None)
     if nofollow is None or directory_flag is None:
-        raise FullC6ExecutorError("Full C6 Cargo config openat traversal is unavailable")
+        raise FullC6ExecutorError("artifact build Cargo config openat traversal is unavailable")
     flags = os.O_RDONLY | nofollow | directory_flag | getattr(os, "O_CLOEXEC", 0)
     cargo_fd: int | None = None
     try:
         linked_root = os.lstat(root)
         root_fd = os.open(root, flags)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 Cargo discovery ancestor could not be opened") from exc
+        raise FullC6ExecutorError(
+            "artifact build Cargo discovery ancestor could not be opened"
+        ) from exc
     try:
         opened_root = os.fstat(root_fd)
         _require_same_directory(linked_root, opened_root)
@@ -5392,7 +5287,7 @@ def _capture_cargo_configs_from_ancestor(
             return ()
         if stat.S_ISLNK(linked_cargo.st_mode) or not stat.S_ISDIR(linked_cargo.st_mode):
             raise FullC6ExecutorError(
-                "Full C6 Cargo config directory is not a real directory"
+                "artifact build Cargo config directory is not a real directory"
             )
         cargo_fd = os.open(".cargo", flags, dir_fd=root_fd)
         opened_cargo = os.fstat(cargo_fd)
@@ -5404,16 +5299,14 @@ def _capture_cargo_configs_from_ancestor(
             except FileNotFoundError:
                 continue
             if stat.S_ISLNK(linked.st_mode) or not stat.S_ISREG(linked.st_mode):
-                raise FullC6ExecutorError("Full C6 Cargo config is not a regular file")
+                raise FullC6ExecutorError("artifact build Cargo config is not a regular file")
             data, _opened = _secure_read_regular_at(
                 cargo_fd,
                 filename,
                 linked,
                 label="Cargo config",
             )
-            observed.append(
-                (f"{label}:.cargo/{filename}", hashlib.sha256(data).hexdigest())
-            )
+            observed.append((f"{label}:.cargo/{filename}", hashlib.sha256(data).hexdigest()))
         after_cargo = os.fstat(cargo_fd)
         current_cargo = os.stat(".cargo", dir_fd=root_fd, follow_symlinks=False)
         _require_same_directory(opened_cargo, after_cargo)
@@ -5426,7 +5319,9 @@ def _capture_cargo_configs_from_ancestor(
     except FullC6ExecutorError:
         raise
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 Cargo config path changed during capture") from exc
+        raise FullC6ExecutorError(
+            "artifact build Cargo config path changed during capture"
+        ) from exc
     finally:
         if cargo_fd is not None:
             os.close(cargo_fd)
@@ -5442,20 +5337,20 @@ def _capture_cargo_home_configs(
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory_flag = getattr(os, "O_DIRECTORY", None)
     if nofollow is None or directory_flag is None:
-        raise FullC6ExecutorError("Full C6 CARGO_HOME openat traversal is unavailable")
+        raise FullC6ExecutorError("artifact build CARGO_HOME openat traversal is unavailable")
     flags = os.O_RDONLY | nofollow | directory_flag | getattr(os, "O_CLOEXEC", 0)
     try:
         linked_home = os.lstat(cargo_home)
         home_fd = os.open(cargo_home, flags)
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 native CARGO_HOME could not be opened") from exc
+        raise FullC6ExecutorError("artifact build native CARGO_HOME could not be opened") from exc
     try:
         opened_home = os.fstat(home_fd)
         _require_same_directory(linked_home, opened_home)
         names = tuple(sorted(os.listdir(home_fd)))
         if require_empty and names:
             raise FullC6ExecutorError(
-                "Full C6 native CARGO_HOME must be empty before Cargo execution"
+                "artifact build native CARGO_HOME must be empty before Cargo execution"
             )
         observed: list[tuple[str, str]] = []
         for filename in ("config", "config.toml"):
@@ -5463,16 +5358,14 @@ def _capture_cargo_home_configs(
                 continue
             linked = os.stat(filename, dir_fd=home_fd, follow_symlinks=False)
             if stat.S_ISLNK(linked.st_mode) or not stat.S_ISREG(linked.st_mode):
-                raise FullC6ExecutorError("Full C6 Cargo config is not a regular file")
+                raise FullC6ExecutorError("artifact build Cargo config is not a regular file")
             data, _opened = _secure_read_regular_at(
                 home_fd,
                 filename,
                 linked,
                 label="Cargo config",
             )
-            observed.append(
-                (f"cargo-home:{filename}", hashlib.sha256(data).hexdigest())
-            )
+            observed.append((f"cargo-home:{filename}", hashlib.sha256(data).hexdigest()))
         after_home = os.fstat(home_fd)
         current_home = os.lstat(cargo_home)
         _require_same_directory(opened_home, after_home)
@@ -5481,7 +5374,7 @@ def _capture_cargo_home_configs(
     except FullC6ExecutorError:
         raise
     except OSError as exc:
-        raise FullC6ExecutorError("Full C6 CARGO_HOME changed during capture") from exc
+        raise FullC6ExecutorError("artifact build CARGO_HOME changed during capture") from exc
     finally:
         os.close(home_fd)
 
@@ -5500,7 +5393,7 @@ def _native_linker_rustflags(linker: Path, target_triple: str) -> tuple[str, ...
         )
     if target_triple == "x86_64-unknown-linux-gnu":
         return flags
-    raise FullC6ExecutorError("Full C6 native target binding is invalid")
+    raise FullC6ExecutorError("artifact build native target binding is invalid")
 
 
 def _native_linker_environment_name(target_triple: str) -> str:
@@ -5508,24 +5401,24 @@ def _native_linker_environment_name(target_triple: str) -> str:
         return "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"
     if target_triple == "x86_64-unknown-linux-gnu":
         return "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
-    raise FullC6ExecutorError("Full C6 native target binding is invalid")
+    raise FullC6ExecutorError("artifact build native target binding is invalid")
 
 
 def _require_sha256(value: object, label: str) -> str:
     if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
-        raise ValueError(f"Full C6 {label} digest is invalid")
+        raise ValueError(f"artifact build {label} digest is invalid")
     return value
 
 
 def _validate_relative_name(value: str) -> None:
     if type(value) is not str or not value or value != value.strip():
-        raise ValueError("Full C6 relative path is invalid")
+        raise ValueError("artifact build relative path is invalid")
     if len(value) > MAX_FULL_C6_PATH_CHARS or "\\" in value or "\0" in value:
-        raise ValueError("Full C6 relative path is invalid")
+        raise ValueError("artifact build relative path is invalid")
     if value != unicodedata.normalize("NFC", value):
-        raise ValueError("Full C6 relative path must be NFC-normalized")
+        raise ValueError("artifact build relative path must be NFC-normalized")
     if any(ord(character) < 32 for character in value):
-        raise ValueError("Full C6 relative path is invalid")
+        raise ValueError("artifact build relative path is invalid")
     posix = PurePosixPath(value)
     windows = PureWindowsPath(value)
     if (
@@ -5536,7 +5429,7 @@ def _validate_relative_name(value: str) -> None:
         or any(part in {"", ".", ".."} or len(part) > 255 for part in posix.parts)
         or ".." in windows.parts
     ):
-        raise ValueError("Full C6 relative path is outside the allowed bounds")
+        raise ValueError("artifact build relative path is outside the allowed bounds")
 
 
 def _reject_symlink_components(value: Path) -> None:
@@ -5547,7 +5440,7 @@ def _reject_symlink_components(value: Path) -> None:
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(observed.st_mode):
-            raise FullC6ExecutorError("Full C6 path contains a symlink component")
+            raise FullC6ExecutorError("artifact build path contains a symlink component")
 
 
 def _canonical_json(value: object) -> bytes:

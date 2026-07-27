@@ -116,7 +116,11 @@ from __future__ import annotations
 # capabilities/plugin manifest and related public records without changing
 # route, native-status, rejection, or promotion semantics. Pre-1.7 providers
 # and absent-hook providers keep prior generated-output behavior.
+# Contract 3.0.0 replaces milestone-derived public artifact report/status and
+# persisted-contract identities with semantic ``artifact-*`` vocabulary.
+# Diagnostic positions and the ordinary route/native-status/promotion records
+# retain their contract-2 semantics.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.28.0"
+TOOLING_CONTRACT_VERSION = "3.0.0"

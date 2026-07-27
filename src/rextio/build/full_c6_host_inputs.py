@@ -1,4 +1,4 @@
-"""Strict host prerequisites for the bounded Full C6 production path.
+"""Strict host prerequisites for the bounded artifact contract production path.
 
 This module is the only host-discovery layer for the production coordinator.
 It turns a raw, lexical project path and an exact resolved configuration into
@@ -86,8 +86,8 @@ from rextio.build.toolchain_support_lock import (
 from rextio.config.schema import RextioConfig
 
 
-FULL_C6_HOST_INPUTS_DOMAIN = "rextio.full-c6-host-prerequisites.v1"
-FULL_C6_ANALYSIS_SCOPE_DOMAIN = "rextio.full-c6-analysis-scope.v1"
+FULL_C6_HOST_INPUTS_DOMAIN = "rextio.artifact-bundle-host-prerequisites.v1"
+FULL_C6_ANALYSIS_SCOPE_DOMAIN = "rextio.artifact-bundle-analysis-scope.v1"
 FULL_C6_SOURCE_DATE_EPOCH = 0
 FULL_C6_CARGO_ROOT_PACKAGE = "rextio_generated_native"
 FULL_C6_CARGO_ARGUMENTS = (
@@ -225,31 +225,31 @@ class FullC6AnalysisScope:
     _vendor_root: Path
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 analysis scopes require verified Cargo authority")
+        raise TypeError("artifact contract analysis scopes require verified Cargo authority")
 
     def __repr__(self) -> str:
         return "FullC6AnalysisScope(material=<sealed>)"
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 analysis scopes are immutable")
+        raise TypeError("artifact contract analysis scopes are immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 analysis scopes are immutable")
+        raise TypeError("artifact contract analysis scopes are immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 analysis scopes cannot be copied")
+        raise TypeError("artifact contract analysis scopes cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 analysis scopes cannot be copied")
+        raise TypeError("artifact contract analysis scopes cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 analysis scopes cannot be serialized")
+        raise TypeError("artifact contract analysis scopes cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 analysis scopes cannot be serialized")
+        raise TypeError("artifact contract analysis scopes cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 analysis scopes cannot be serialized")
+        raise TypeError("artifact contract analysis scopes cannot be serialized")
 
 
 class _FullC6AnalysisNamespaceObservation:
@@ -262,13 +262,13 @@ class _FullC6AnalysisNamespaceObservation:
     _seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 analysis observations require sealed scope")
+        raise TypeError("artifact contract analysis observations require sealed scope")
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 analysis observations are immutable")
+        raise TypeError("artifact contract analysis observations are immutable")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 analysis observations cannot be serialized")
+        raise TypeError("artifact contract analysis observations cannot be serialized")
 
 
 class FullC6PublicationPlan:
@@ -309,31 +309,31 @@ class FullC6PublicationPlan:
     _wheel_filename: str
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 publication plans require validated production authority")
+        raise TypeError("artifact contract publication plans require validated production authority")
 
     def __repr__(self) -> str:
         return "FullC6PublicationPlan(material=<sealed>)"
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 publication plans are immutable")
+        raise TypeError("artifact contract publication plans are immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 publication plans are immutable")
+        raise TypeError("artifact contract publication plans are immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 publication plans cannot be copied")
+        raise TypeError("artifact contract publication plans cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 publication plans cannot be copied")
+        raise TypeError("artifact contract publication plans cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 publication plans cannot be serialized")
+        raise TypeError("artifact contract publication plans cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 publication plans cannot be serialized")
+        raise TypeError("artifact contract publication plans cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 publication plans cannot be serialized")
+        raise TypeError("artifact contract publication plans cannot be serialized")
 
     @property
     def wheel_filename(self) -> str:
@@ -364,7 +364,7 @@ class FullC6PublicationPlan:
 
     def _require_active(self) -> None:
         if type(self._lease) is not _Lease or not self._lease.active:
-            raise FullC6HostInputsError("Full C6 host prerequisite lease has ended")
+            raise FullC6HostInputsError("artifact contract host prerequisite lease has ended")
         try:
             seal_valid = (
                 type(self) is FullC6PublicationPlan
@@ -373,16 +373,16 @@ class FullC6PublicationPlan:
             )
         except Exception as exc:
             raise FullC6HostInputsError(
-                "Full C6 publication plan seal is invalid"
+                "artifact contract publication plan seal is invalid"
             ) from exc
         if not seal_valid:
-            raise FullC6HostInputsError("Full C6 publication plan seal is invalid")
+            raise FullC6HostInputsError("artifact contract publication plan seal is invalid")
         if (
             not self._lease.quarantine_cleaned
             or self._lease.publication_authority is not self._authority
         ):
             raise FullC6HostInputsError(
-                "Full C6 publication plan lacks completed prepublication cleanup"
+                "artifact contract publication plan lacks completed prepublication cleanup"
             )
         _verify_directory_binding(
             self._state_directory, self._state_binding, label="state"
@@ -459,31 +459,31 @@ class FullC6HostPrerequisites:
     _seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 host prerequisites require the context collector")
+        raise TypeError("artifact contract host prerequisites require the context collector")
 
     def __repr__(self) -> str:
         return "FullC6HostPrerequisites(material=<sealed>)"
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 host prerequisites are immutable")
+        raise TypeError("artifact contract host prerequisites are immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 host prerequisites are immutable")
+        raise TypeError("artifact contract host prerequisites are immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 host prerequisites cannot be copied")
+        raise TypeError("artifact contract host prerequisites cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 host prerequisites cannot be copied")
+        raise TypeError("artifact contract host prerequisites cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 host prerequisites cannot be serialized")
+        raise TypeError("artifact contract host prerequisites cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 host prerequisites cannot be serialized")
+        raise TypeError("artifact contract host prerequisites cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 host prerequisites cannot be serialized")
+        raise TypeError("artifact contract host prerequisites cannot be serialized")
 
     @property
     def project_root(self) -> Path:
@@ -505,7 +505,7 @@ class FullC6HostPrerequisites:
 
     @property
     def source_date_epoch(self) -> int:
-        """Return the only permitted Full C6 reproducibility epoch."""
+        """Return the only permitted artifact contract reproducibility epoch."""
         self._require_active()
         return FULL_C6_SOURCE_DATE_EPOCH
 
@@ -598,7 +598,7 @@ class FullC6HostPrerequisites:
         if lease.quarantine_cleaned:
             if lease.publication_authority is not authority:
                 raise FullC6HostInputsError(
-                    "Full C6 prepublication cleanup authority changed"
+                    "artifact contract prepublication cleanup authority changed"
                 )
             return
         _remove_private_quarantine_container(
@@ -623,7 +623,7 @@ class FullC6HostPrerequisites:
             or self._lease.publication_authority is not authority
         ):
             raise FullC6HostInputsError(
-                "Full C6 publication requires completed prepublication cleanup"
+                "artifact contract publication requires completed prepublication cleanup"
             )
         subject_path = full_c6_native_output_wheel_path(
             material.native_output_transaction
@@ -635,12 +635,12 @@ class FullC6HostPrerequisites:
             or _WHEEL_NAME_RE.fullmatch(wheel_filename) is None
             or unicodedata.normalize("NFC", wheel_filename) != wheel_filename
         ):
-            raise FullC6HostInputsError("Full C6 retained subject wheel path is invalid")
+            raise FullC6HostInputsError("artifact contract retained subject wheel path is invalid")
         try:
             subject_path.relative_to(self._state_directory)
         except ValueError as exc:
             raise FullC6HostInputsError(
-                "Full C6 retained subject wheel escaped owner-private state"
+                "artifact contract retained subject wheel escaped owner-private state"
             ) from exc
         subject_binding = _capture_file_binding(
             subject_path, label="retained subject wheel"
@@ -649,7 +649,7 @@ class FullC6HostPrerequisites:
         public_key = self._config.build.artifact_trusted_public_key
         final_signature = self._config.build.artifact_final_signature
         if type(public_key) is not str or type(final_signature) is not str:
-            raise FullC6HostInputsError("Full C6 publication paths are incomplete")
+            raise FullC6HostInputsError("artifact contract publication paths are incomplete")
         public_key_path = _configured_project_path(self._project_root, public_key)
         final_signature_path = _configured_project_path(
             self._project_root, final_signature
@@ -661,13 +661,13 @@ class FullC6HostPrerequisites:
             final_signature_path, label="final signature"
         )
 
-        bundle_name = f"{wheel_filename.removesuffix('.whl')}.full-c6"
+        bundle_name = f"{wheel_filename.removesuffix('.whl')}.artifact-bundle"
         if (
             not bundle_name
             or len(bundle_name) > 160
             or bundle_name != unicodedata.normalize("NFC", bundle_name)
         ):
-            raise FullC6HostInputsError("Full C6 wheel filename cannot form a bundle name")
+            raise FullC6HostInputsError("artifact contract wheel filename cannot form a bundle name")
         publication_root = _ensure_publication_root(self._project_root)
         plan = object.__new__(FullC6PublicationPlan)
         object.__setattr__(plan, "_authority", authority)
@@ -696,7 +696,7 @@ class FullC6HostPrerequisites:
         material = _validated_production_material(authority)
         if material.lifecycle.status != "publication-required":
             raise FullC6HostInputsError(
-                "Full C6 publication plan requires publication-required lifecycle"
+                "artifact contract publication plan requires publication-required lifecycle"
             )
         if (
             material.project_root != self._project_root
@@ -704,7 +704,7 @@ class FullC6HostPrerequisites:
             or material.cargo_workspace is not self._cargo_workspace
         ):
             raise FullC6HostInputsError(
-                "Full C6 production authority replaced host prerequisites"
+                "artifact contract production authority replaced host prerequisites"
             )
         return material
 
@@ -712,12 +712,12 @@ class FullC6HostPrerequisites:
         self._require_active()
         if self._lease.quarantine_cleaned:
             raise FullC6HostInputsError(
-                "Full C6 prepublication quarantine cleanup is complete"
+                "artifact contract prepublication quarantine cleanup is complete"
             )
 
     def _require_active(self) -> None:
         if type(self._lease) is not _Lease or not self._lease.active:
-            raise FullC6HostInputsError("Full C6 host prerequisite lease has ended")
+            raise FullC6HostInputsError("artifact contract host prerequisite lease has ended")
         try:
             seal_valid = (
                 type(self) is FullC6HostPrerequisites
@@ -726,10 +726,10 @@ class FullC6HostPrerequisites:
             )
         except Exception as exc:
             raise FullC6HostInputsError(
-                "Full C6 host prerequisite seal is invalid"
+                "artifact contract host prerequisite seal is invalid"
             ) from exc
         if not seal_valid:
-            raise FullC6HostInputsError("Full C6 host prerequisite seal is invalid")
+            raise FullC6HostInputsError("artifact contract host prerequisite seal is invalid")
         _verify_directory_binding(
             self._project_root,
             self._project_binding,
@@ -766,7 +766,7 @@ class FullC6HostPrerequisites:
         )
         if plan.target_triple != self._target_triple:
             raise FullC6HostInputsError(
-                "Full C6 toolchain support plan target changed"
+                "artifact contract toolchain support plan target changed"
             )
 
 
@@ -775,7 +775,7 @@ def collect_full_c6_analysis_scope(
     *,
     config: RextioConfig,
 ) -> FullC6AnalysisScope:
-    """Seal the sole non-project Python root allowed by strict Full C6.
+    """Seal the sole non-project Python root allowed by strict artifact contract.
 
     Collection deliberately performs no toolchain probe and creates no build
     state.  It does fully verify the configured Cargo.lock and vendor tree,
@@ -788,7 +788,7 @@ def collect_full_c6_analysis_scope(
         or config.build.artifact_distribution_policy != "strict-evidence"
     ):
         raise FullC6HostInputsError(
-            "Full C6 analysis scope requires exact strict typed config"
+            "artifact contract analysis scope requires exact strict typed config"
         )
     root, project_binding = _open_raw_project_root(project_root)
     _verify_directory_binding(root, project_binding, label="project")
@@ -796,7 +796,7 @@ def collect_full_c6_analysis_scope(
     cargo_workspace = _collect_configured_cargo_workspace(root, config)
     vendor_relative = config.build.artifact_cargo_vendor
     if type(vendor_relative) is not str:
-        raise FullC6HostInputsError("Full C6 analysis vendor path is unavailable")
+        raise FullC6HostInputsError("artifact contract analysis vendor path is unavailable")
     vendor_root = _configured_project_path(root, vendor_relative)
     vendor_binding = _require_secure_directory(
         vendor_root,
@@ -901,7 +901,7 @@ def finish_full_c6_analysis_namespace(
             _analysis_observation_seal(observation),
         )
     ):
-        raise FullC6HostInputsError("Full C6 analysis observation is invalid")
+        raise FullC6HostInputsError("artifact contract analysis observation is invalid")
     _require_full_c6_analysis_scope(
         value,
         project_root=project_root,
@@ -910,7 +910,7 @@ def finish_full_c6_analysis_namespace(
     )
     if _capture_analysis_scope_directories(value) != observation._directories:
         raise FullC6HostInputsError(
-            "Full C6 project Python directory changed during analysis"
+            "artifact contract project Python directory changed during analysis"
         )
 
 
@@ -937,7 +937,7 @@ def _require_full_c6_analysis_scope(
     revalidate_workspace: bool,
 ) -> Path:
     if type(value) is not FullC6AnalysisScope or type(config) is not RextioConfig:
-        raise FullC6HostInputsError("Full C6 analysis scope is invalid")
+        raise FullC6HostInputsError("artifact contract analysis scope is invalid")
     try:
         root = _lexical_absolute_path(project_root, label="analysis project root")
         seal_valid = type(value._seal) is bytes and hmac.compare_digest(
@@ -945,7 +945,7 @@ def _require_full_c6_analysis_scope(
             _analysis_scope_seal(value),
         )
     except Exception as exc:
-        raise FullC6HostInputsError("Full C6 analysis scope is invalid") from exc
+        raise FullC6HostInputsError("artifact contract analysis scope is invalid") from exc
     if (
         not seal_valid
         or value._config is not config
@@ -957,16 +957,16 @@ def _require_full_c6_analysis_scope(
             value._cargo_workspace
         )
     ):
-        raise FullC6HostInputsError("Full C6 analysis scope is stale or foreign")
+        raise FullC6HostInputsError("artifact contract analysis scope is stale or foreign")
     vendor_relative = config.build.artifact_cargo_vendor
     if (
         type(vendor_relative) is not str
         or value._vendor_relative != vendor_relative
     ):
-        raise FullC6HostInputsError("Full C6 analysis scope is stale or foreign")
+        raise FullC6HostInputsError("artifact contract analysis scope is stale or foreign")
     expected_vendor = _configured_project_path(root, vendor_relative)
     if value._vendor_root != expected_vendor:
-        raise FullC6HostInputsError("Full C6 analysis scope vendor changed")
+        raise FullC6HostInputsError("artifact contract analysis scope vendor changed")
     _verify_directory_binding(root, value._project_binding, label="analysis project")
     _verify_directory_binding(
         expected_vendor,
@@ -986,7 +986,7 @@ def _require_full_c6_analysis_scope(
             fresh_workspace.digest,
             value._cargo_workspace.digest,
         ):
-            raise FullC6HostInputsError("Full C6 analysis Cargo authority changed")
+            raise FullC6HostInputsError("artifact contract analysis Cargo authority changed")
     return expected_vendor
 
 
@@ -1013,7 +1013,7 @@ def _collect_full_c6_project_python_namespace(
         aggregate_bytes += binding.size
         if aggregate_bytes > MAX_FULL_C6_ANALYSIS_SOURCE_BYTES:
             raise FullC6HostInputsError(
-                "Full C6 project Python source bytes exceed the bounded limit"
+                "artifact contract project Python source bytes exceed the bounded limit"
             )
         bound_files.append((relative, binding))
     bindings = tuple(bound_files)
@@ -1049,19 +1049,19 @@ def _verify_full_c6_project_python_namespace(
     )
     expected_paths = tuple(relative for relative, _binding in expected_files)
     if observed_paths != expected_paths:
-        raise FullC6HostInputsError("Full C6 project Python namespace changed")
+        raise FullC6HostInputsError("artifact contract project Python namespace changed")
     observed_directory_paths = _python_namespace_directory_paths(observed_paths)
     expected_directory_paths = tuple(
         relative for relative, _binding in expected_directories
     )
     if observed_directory_paths != expected_directory_paths:
-        raise FullC6HostInputsError("Full C6 project Python directory set changed")
+        raise FullC6HostInputsError("artifact contract project Python directory set changed")
     for relative, directory_binding in expected_directories:
         observed = _capture_namespace_directory_binding(
             _namespace_directory_path(root, relative),
             label="analysis project Python directory",
         )
-        # Full C6 itself may create fixed built-in-ignored roots (``.rextio``
+        # artifact contract itself may create fixed built-in-ignored roots (``.rextio``
         # and ``dist``) between analyses, which legitimately changes only the
         # project root timestamps.  Root replacement is still blocked by the
         # stable identity; exact source-file ctime/inode bindings catch a
@@ -1070,11 +1070,11 @@ def _verify_full_c6_project_python_namespace(
         if relative == "":
             if observed.stable_identity != directory_binding.stable_identity:
                 raise FullC6HostInputsError(
-                    "Full C6 project Python root directory changed"
+                    "artifact contract project Python root directory changed"
                 )
         elif observed != directory_binding:
             raise FullC6HostInputsError(
-                "Full C6 project Python directory changed"
+                "artifact contract project Python directory changed"
             )
     for relative, file_binding in expected_files:
         _verify_file_binding(
@@ -1126,7 +1126,7 @@ def _discover_full_c6_project_python_paths(
                         observed_entries += 1
                         if observed_entries > MAX_FULL_C6_ANALYSIS_ENTRIES:
                             raise FullC6HostInputsError(
-                                "Full C6 project namespace entries exceed the bounded limit"
+                                "artifact contract project namespace entries exceed the bounded limit"
                             )
                         name = entry.name
                         if (
@@ -1137,7 +1137,7 @@ def _discover_full_c6_project_python_paths(
                             or "\\" in name
                         ):
                             raise FullC6HostInputsError(
-                                "Full C6 project namespace entry is invalid"
+                                "artifact contract project namespace entry is invalid"
                             )
                         candidate = current / name
                         relative = candidate.relative_to(root)
@@ -1151,11 +1151,11 @@ def _discover_full_c6_project_python_paths(
                             observed = entry.stat(follow_symlinks=False)
                         except OSError as exc:
                             raise FullC6HostInputsError(
-                                "Full C6 project namespace changed during discovery"
+                                "artifact contract project namespace changed during discovery"
                             ) from exc
                         if stat.S_ISLNK(observed.st_mode):
                             raise FullC6HostInputsError(
-                                "Full C6 project Python namespace contains a path alias"
+                                "artifact contract project Python namespace contains a path alias"
                             )
                         if stat.S_ISDIR(observed.st_mode):
                             traversed_directories += 1
@@ -1164,13 +1164,13 @@ def _discover_full_c6_project_python_paths(
                                 > MAX_FULL_C6_ANALYSIS_DIRECTORIES
                             ):
                                 raise FullC6HostInputsError(
-                                    "Full C6 project Python directories exceed the bounded limit"
+                                    "artifact contract project Python directories exceed the bounded limit"
                                 )
                             pending.append(candidate)
                             continue
                         if not stat.S_ISREG(observed.st_mode):
                             raise FullC6HostInputsError(
-                                "Full C6 project Python namespace contains a special entry"
+                                "artifact contract project Python namespace contains a special entry"
                             )
                         if not name.endswith(".py"):
                             continue
@@ -1185,7 +1185,7 @@ def _discover_full_c6_project_python_paths(
                             )
                         ):
                             raise FullC6HostInputsError(
-                                "Full C6 project Python namespace path is invalid"
+                                "artifact contract project Python namespace path is invalid"
                             )
                         if (
                             len(logical) > MAX_FULL_C6_ANALYSIS_RELATIVE_CHARS
@@ -1195,12 +1195,12 @@ def _discover_full_c6_project_python_paths(
                             > MAX_FULL_C6_ANALYSIS_DEPTH
                         ):
                             raise FullC6HostInputsError(
-                                "Full C6 project Python path exceeds the bounded limit"
+                                "artifact contract project Python path exceeds the bounded limit"
                             )
                         discovered.append(logical)
                         if len(discovered) > MAX_FULL_C6_ANALYSIS_PYTHON_FILES:
                             raise FullC6HostInputsError(
-                                "Full C6 project Python files exceed the bounded limit"
+                                "artifact contract project Python files exceed the bounded limit"
                             )
             finally:
                 os.close(descriptor)
@@ -1208,11 +1208,11 @@ def _discover_full_c6_project_python_paths(
         raise
     except OSError as exc:
         raise FullC6HostInputsError(
-            "Full C6 project Python namespace could not be discovered"
+            "artifact contract project Python namespace could not be discovered"
         ) from exc
     ordered = tuple(sorted(discovered))
     if len(ordered) != len(set(ordered)):
-        raise FullC6HostInputsError("Full C6 project Python namespace is ambiguous")
+        raise FullC6HostInputsError("artifact contract project Python namespace is ambiguous")
     return ordered
 
 
@@ -1225,7 +1225,7 @@ def collect_full_c6_host_prerequisites(
 ) -> Iterator[FullC6HostPrerequisites]:
     """Collect one strict host lease for CPython 3.11 on two Alpha targets."""
     if type(config) is not RextioConfig:
-        raise FullC6HostInputsError("Full C6 host collection requires exact typed config")
+        raise FullC6HostInputsError("artifact contract host collection requires exact typed config")
     root, root_binding = _open_raw_project_root(project_root)
     _verify_directory_binding(root, root_binding, label="project")
     target_triple = _require_supported_host()
@@ -1251,7 +1251,7 @@ def collect_full_c6_host_prerequisites(
     )
     if toolchain.cargo_sources is not cargo_workspace.cargo_sources:
         raise FullC6HostInputsError(
-            "Full C6 toolchain did not retain exact Cargo workspace sources"
+            "artifact contract toolchain did not retain exact Cargo workspace sources"
         )
 
     state_directory = _ensure_state_directory(root, config)
@@ -1327,14 +1327,14 @@ def collect_full_c6_host_prerequisites(
 
 def _require_supported_host() -> str:
     if platform.python_implementation() != "CPython" or sys.version_info[:2] != (3, 11):
-        raise FullC6HostInputsError("Full C6 host production requires CPython 3.11 exactly")
+        raise FullC6HostInputsError("artifact contract host production requires CPython 3.11 exactly")
     try:
         target = detect_host_target_triple()
     except ValueError as exc:
-        raise FullC6HostInputsError("Full C6 host target could not be resolved") from exc
+        raise FullC6HostInputsError("artifact contract host target could not be resolved") from exc
     if target not in _SUPPORTED_TARGETS:
         raise FullC6HostInputsError(
-            "Full C6 host production supports only macOS arm64 and Linux x86_64"
+            "artifact contract host production supports only macOS arm64 and Linux x86_64"
         )
     return target
 
@@ -1345,7 +1345,7 @@ def _open_raw_project_root(value: Path | str) -> tuple[Path, _DirectoryBinding]:
     try:
         observed = os.fstat(descriptor)
         if not stat.S_ISDIR(observed.st_mode):
-            raise FullC6HostInputsError("Full C6 project root is not a directory")
+            raise FullC6HostInputsError("artifact contract project root is not a directory")
         return root, _DirectoryBinding.from_stat(observed)
     finally:
         os.close(descriptor)
@@ -1370,7 +1370,7 @@ def _collect_configured_cargo_workspace(
         or type(vendor_sha256) is not str
         or not vendor_sha256
     ):
-        raise FullC6HostInputsError("Full C6 Cargo lock/vendor paths and pins are required")
+        raise FullC6HostInputsError("artifact contract Cargo lock/vendor paths and pins are required")
     lock_path = _configured_project_path(root, lock_relative)
     vendor_path = _configured_project_path(root, vendor_relative)
     _require_secure_regular_file(lock_path, label="Cargo.lock")
@@ -1394,9 +1394,9 @@ def _collect_configured_cargo_workspace(
     except FullC6HostInputsError:
         raise
     except Exception as exc:
-        raise FullC6HostInputsError("Full C6 Cargo workspace failed closed") from exc
+        raise FullC6HostInputsError("artifact contract Cargo workspace failed closed") from exc
     if not validate_full_c6_cargo_dependency_workspace_receipt(workspace):
-        raise FullC6HostInputsError("Full C6 Cargo workspace receipt is stale")
+        raise FullC6HostInputsError("artifact contract Cargo workspace receipt is stale")
     return workspace
 
 
@@ -1416,7 +1416,7 @@ def _collect_configured_toolchain_support_lock(
         or not expected_sha256
     ):
         raise FullC6HostInputsError(
-            "Full C6 toolchain support lock path and SHA-256 are required"
+            "artifact contract toolchain support lock path and SHA-256 are required"
         )
     path = _configured_project_path(root, relative)
     data, observed = _secure_read_regular(
@@ -1432,16 +1432,16 @@ def _collect_configured_toolchain_support_lock(
         )
     except ToolchainSupportLockError as exc:
         raise FullC6HostInputsError(
-            "Full C6 toolchain support lock failed closed"
+            "artifact contract toolchain support lock failed closed"
         ) from exc
     if support_lock.scope.target_triple != target_triple:
         raise FullC6HostInputsError(
-            "Full C6 toolchain support lock target differs from the host"
+            "artifact contract toolchain support lock target differs from the host"
         )
     binding = _file_binding_from_read(data, observed)
     if not _digest_equal(binding.sha256, expected_sha256):
         raise FullC6HostInputsError(
-            "Full C6 toolchain support lock SHA-256 differs from bytes"
+            "artifact contract toolchain support lock SHA-256 differs from bytes"
         )
     return support_lock, path, binding
 
@@ -1455,7 +1455,7 @@ def _validated_production_material(authority: object) -> _FullC6ProductionMateri
         or not production.validate_full_c6_production_authority(authority)
     ):
         raise FullC6HostInputsError(
-            "Full C6 publication requires valid production authority"
+            "artifact contract publication requires valid production authority"
         )
     return authority._material
 
@@ -1486,11 +1486,11 @@ def _validate_host_layout(root: Path, config: RextioConfig) -> None:
         for other in directories[index + 1 :]:
             if path == other or path in other.parents or other in path.parents:
                 raise FullC6HostInputsError(
-                    "Full C6 state, publication, and Cargo vendor paths must not overlap"
+                    "artifact contract state, publication, and Cargo vendor paths must not overlap"
                 )
     if any(lock_path == path or path in lock_path.parents or lock_path in path.parents for path in directories):
         raise FullC6HostInputsError(
-            "Full C6 Cargo.lock must not overlap state, publication, or vendor paths"
+            "artifact contract Cargo.lock must not overlap state, publication, or vendor paths"
         )
     if any(
         support_lock_path == path
@@ -1499,13 +1499,13 @@ def _validate_host_layout(root: Path, config: RextioConfig) -> None:
         for path in (*directories, lock_path)
     ):
         raise FullC6HostInputsError(
-            "Full C6 toolchain support lock must not overlap state, publication, "
+            "artifact contract toolchain support lock must not overlap state, publication, "
             "Cargo.lock, or vendor paths"
         )
 
 
 def _require_strict_rextioignore_absent(root: Path) -> None:
-    """Reject the unbound custom ignore channel in strict Full C6 analysis."""
+    """Reject the unbound custom ignore channel in strict artifact contract analysis."""
     descriptor = _open_absolute_directory_no_follow(
         root,
         label="strict project root",
@@ -1521,10 +1521,10 @@ def _require_strict_rextioignore_absent(root: Path) -> None:
             return
         except OSError as exc:
             raise FullC6HostInputsError(
-                "Full C6 could not verify the custom ignore policy"
+                "artifact contract could not verify the custom ignore policy"
             ) from exc
         raise FullC6HostInputsError(
-            "Full C6 forbids a custom .rextioignore because it is not build authority"
+            "artifact contract forbids a custom .rextioignore because it is not build authority"
         )
     finally:
         os.close(descriptor)
@@ -1560,7 +1560,7 @@ def _collect_toolchain(
         )
     except FullC6ToolchainSupportError as exc:
         raise FullC6HostInputsError(
-            "Full C6 linker or native inspector discovery failed closed"
+            "artifact contract linker or native inspector discovery failed closed"
         ) from exc
     actual_paths = (
         python_path,
@@ -1572,10 +1572,10 @@ def _collect_toolchain(
     try:
         if Path(sys.executable).resolve(strict=True) != python_path:
             raise FullC6HostInputsError(
-                "Full C6 configured Python differs from the running interpreter"
+                "artifact contract configured Python differs from the running interpreter"
             )
     except OSError as exc:
-        raise FullC6HostInputsError("Full C6 running Python is unavailable") from exc
+        raise FullC6HostInputsError("artifact contract running Python is unavailable") from exc
 
     preliminary_environment = _minimal_build_environment(cargo_path)
     probe_environment = {
@@ -1596,7 +1596,7 @@ def _collect_toolchain(
     if _probe_rustc_host(
         rustc_path, root=root, environment=probe_environment
     ) != target_triple:
-        raise FullC6HostInputsError("Full C6 rustc host differs from target triple")
+        raise FullC6HostInputsError("artifact contract rustc host differs from target triple")
     _require_version_pin("CPython", versions[0], config.toolchain.python_version)
     _require_version_pin("cargo", versions[1], config.toolchain.cargo_version)
     rextio_identity = _capture_installed_rextio_identity()
@@ -1630,13 +1630,13 @@ def _collect_toolchain(
         )
         if repeated_versions != versions:
             raise FullC6HostInputsError(
-                "Full C6 tool version changed during exact identity capture"
+                "artifact contract tool version changed during exact identity capture"
             )
         if _probe_rustc_host(
             rustc_path, root=root, environment=probe_environment
         ) != target_triple:
             raise FullC6HostInputsError(
-                "Full C6 rustc host changed during exact identity capture"
+                "artifact contract rustc host changed during exact identity capture"
             )
         for path, identity in zip(actual_paths, identities, strict=True):
             verify_tool_identity(path, identity)
@@ -1659,7 +1659,7 @@ def _collect_toolchain(
             support_lock,
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 toolchain support lock verification failed"
+                "artifact contract toolchain support lock verification failed"
             )
         base_environment = support_plan.base_environment
         final_probe_environment = {
@@ -1680,7 +1680,7 @@ def _collect_toolchain(
             environment=final_probe_environment,
         ) != target_triple:
             raise FullC6HostInputsError(
-                "Full C6 tool identity changed under the fixed support environment"
+                "artifact contract tool identity changed under the fixed support environment"
             )
         argv = capture_argv_identity(("cargo", *FULL_C6_CARGO_ARGUMENTS))
         environment_identity = capture_environment_identity(base_environment)
@@ -1705,7 +1705,7 @@ def _collect_toolchain(
         TypeError,
         ValueError,
     ) as exc:
-        raise FullC6HostInputsError("Full C6 toolchain identity failed closed") from exc
+        raise FullC6HostInputsError("artifact contract toolchain identity failed closed") from exc
     native_tools = FullC6NativeToolPaths(
         python=python_path,
         cargo=cargo_path,
@@ -1727,7 +1727,7 @@ def _resolve_python(config: RextioConfig) -> Path:
 def _resolve_required_tool(name: str, configured: str | None) -> Path:
     path, error = resolve_tool(name, configured)
     if path is None:
-        raise FullC6HostInputsError(error or f"Full C6 required {name} is unavailable")
+        raise FullC6HostInputsError(error or f"artifact contract required {name} is unavailable")
     return Path(path).absolute()
 
 
@@ -1737,7 +1737,7 @@ def _resolve_rustc(cargo: Path, inherited: Mapping[str, str]) -> Path:
         return sibling.absolute()
     found = shutil.which("rustc", path=inherited.get("PATH"))
     if found is None:
-        raise FullC6HostInputsError("Full C6 rustc could not be resolved beside Cargo or on PATH")
+        raise FullC6HostInputsError("artifact contract rustc could not be resolved beside Cargo or on PATH")
     return Path(found).absolute()
 
 
@@ -1753,13 +1753,13 @@ def _resolve_actual_rust_tools(
     if stat.S_ISLNK(selected_stat.st_mode):
         if _symlink_target_name(selected_cargo) != "rustup":
             raise FullC6HostInputsError(
-                "Full C6 rejects non-rustup Cargo executable symlinks"
+                "artifact contract rejects non-rustup Cargo executable symlinks"
             )
         rustup_proxy = selected_cargo.parent / "rustup"
         _lstat_selected_executable(rustup_proxy, label="selected rustup")
         if _resolve_executable(rustup_proxy) != resolved_selection:
             raise FullC6HostInputsError(
-                "Full C6 Cargo proxy does not share one verified rustup executable"
+                "artifact contract Cargo proxy does not share one verified rustup executable"
             )
         environment = _rustup_selection_environment(
             selected_cargo=selected_cargo,
@@ -1795,7 +1795,7 @@ def _resolve_actual_rust_tools(
             ),
         )
         if first != second or first[0] == first[1]:
-            raise FullC6HostInputsError("Full C6 rustup tool selection is ambiguous")
+            raise FullC6HostInputsError("artifact contract rustup tool selection is ambiguous")
         return first
 
     cargo = resolved_selection
@@ -1803,11 +1803,11 @@ def _resolve_actual_rust_tools(
     rustc_stat = _lstat_selected_executable(selected_rustc, label="selected rustc")
     if stat.S_ISLNK(rustc_stat.st_mode):
         raise FullC6HostInputsError(
-            "Full C6 rejects rustc symlinks outside a verified rustup selection"
+            "artifact contract rejects rustc symlinks outside a verified rustup selection"
         )
     rustc = _resolve_executable(selected_rustc)
     if cargo == rustc:
-        raise FullC6HostInputsError("Full C6 Cargo and rustc executables are ambiguous")
+        raise FullC6HostInputsError("artifact contract Cargo and rustc executables are ambiguous")
     return cargo, rustc
 
 
@@ -1816,9 +1816,9 @@ def _resolve_executable(path: Path) -> Path:
         resolved = path.resolve(strict=True)
         observed = _lstat_selected_executable(resolved, label="native tool")
     except OSError as exc:
-        raise FullC6HostInputsError("Full C6 native tool is unavailable") from exc
+        raise FullC6HostInputsError("artifact contract native tool is unavailable") from exc
     if not stat.S_ISREG(observed.st_mode) or not os.access(resolved, os.X_OK):
-        raise FullC6HostInputsError("Full C6 native tool is not an executable file")
+        raise FullC6HostInputsError("artifact contract native tool is not an executable file")
     return resolved
 
 
@@ -1832,13 +1832,13 @@ def _lstat_selected_executable(path: Path, *, label: str) -> os.stat_result:
     try:
         observed = os.stat(lexical.name, dir_fd=parent_fd, follow_symlinks=False)
     except OSError as exc:
-        raise FullC6HostInputsError(f"Full C6 {label} is unavailable") from exc
+        raise FullC6HostInputsError(f"artifact contract {label} is unavailable") from exc
     finally:
         os.close(parent_fd)
     if not (stat.S_ISREG(observed.st_mode) or stat.S_ISLNK(observed.st_mode)):
-        raise FullC6HostInputsError(f"Full C6 {label} is not an executable file")
+        raise FullC6HostInputsError(f"artifact contract {label} is not an executable file")
     if not os.access(lexical, os.X_OK):
-        raise FullC6HostInputsError(f"Full C6 {label} is not executable")
+        raise FullC6HostInputsError(f"artifact contract {label} is not executable")
     return observed
 
 
@@ -1849,16 +1849,16 @@ def _symlink_target_name(path: Path) -> str:
     try:
         before = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         if not stat.S_ISLNK(before.st_mode):
-            raise FullC6HostInputsError("Full C6 selected executable is not a symlink")
+            raise FullC6HostInputsError("artifact contract selected executable is not a symlink")
         target = os.readlink(path.name, dir_fd=parent_fd)
         after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         if _stat_key(before) != _stat_key(after):
-            raise FullC6HostInputsError("Full C6 selected executable symlink changed")
+            raise FullC6HostInputsError("artifact contract selected executable symlink changed")
     except FullC6HostInputsError:
         raise
     except OSError as exc:
         raise FullC6HostInputsError(
-            "Full C6 selected executable symlink could not be read"
+            "artifact contract selected executable symlink could not be read"
         ) from exc
     finally:
         os.close(parent_fd)
@@ -1895,7 +1895,7 @@ def _rustup_which(
     environment: Mapping[str, str],
 ) -> Path:
     if tool not in {"cargo", "rustc"}:
-        raise FullC6HostInputsError("Full C6 rustup tool selection is invalid")
+        raise FullC6HostInputsError("artifact contract rustup tool selection is invalid")
     completed = run_build_tool(
         [os.fspath(rustup), "which", tool],
         cwd=root,
@@ -1910,11 +1910,11 @@ def _rustup_which(
         if line.strip()
     ]
     if completed.returncode != 0 or len(lines) != 1:
-        raise FullC6HostInputsError(f"Full C6 rustup which {tool} failed closed")
+        raise FullC6HostInputsError(f"artifact contract rustup which {tool} failed closed")
     selected = _lexical_absolute_path(lines[0], label=f"rustup {tool}")
     observed = _lstat_selected_executable(selected, label=f"rustup {tool}")
     if stat.S_ISLNK(observed.st_mode):
-        raise FullC6HostInputsError(f"Full C6 rustup which {tool} returned a symlink")
+        raise FullC6HostInputsError(f"artifact contract rustup which {tool} returned a symlink")
     return _resolve_executable(selected)
 
 
@@ -1935,14 +1935,14 @@ def _probe_version(
     output = (completed.stdout or "").strip() or (completed.stderr or "").strip()
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if completed.returncode != 0 or not lines:
-        raise FullC6HostInputsError(f"Full C6 {path.name} version probe failed")
+        raise FullC6HostInputsError(f"artifact contract {path.name} version probe failed")
     reported = lines[0]
     if (
         len(reported) > 512
         or reported != unicodedata.normalize("NFC", reported)
         or any(ord(character) < 32 for character in reported)
     ):
-        raise FullC6HostInputsError(f"Full C6 {path.name} version output is invalid")
+        raise FullC6HostInputsError(f"artifact contract {path.name} version output is invalid")
     return reported
 
 
@@ -1968,7 +1968,7 @@ def _probe_rustc_host(
         or not hosts[0]
         or any(ord(character) < 33 or ord(character) > 126 for character in hosts[0])
     ):
-        raise FullC6HostInputsError("Full C6 rustc verbose host probe failed closed")
+        raise FullC6HostInputsError("artifact contract rustc verbose host probe failed closed")
     return hosts[0]
 
 
@@ -1976,7 +1976,7 @@ def _require_version_pin(display: str, reported: str, pin: str | None) -> None:
     match = _VERSION_RE.search(reported)
     numeric = match.group(0) if match is not None else None
     if numeric is None:
-        raise FullC6HostInputsError(f"Full C6 {display} version is not parseable")
+        raise FullC6HostInputsError(f"artifact contract {display} version is not parseable")
     error = check_version_pin(display, [], pin, reported=numeric)
     if error is not None:
         raise FullC6HostInputsError(error)
@@ -2138,11 +2138,11 @@ def _secure_read_optional_regular(
         except FileNotFoundError:
             return None
         if not stat.S_ISREG(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
-            raise FullC6HostInputsError(f"Full C6 {label} is not a regular file")
+            raise FullC6HostInputsError(f"artifact contract {label} is not a regular file")
     except FullC6HostInputsError:
         raise
     except OSError as exc:
-        raise FullC6HostInputsError(f"Full C6 {label} could not be inspected") from exc
+        raise FullC6HostInputsError(f"artifact contract {label} could not be inspected") from exc
     finally:
         os.close(parent_fd)
     data, _opened = _secure_read_regular(
@@ -2568,17 +2568,17 @@ def _record_sha256(value: str) -> str:
 def _ensure_state_directory(root: Path, config: RextioConfig) -> Path:
     request = config.build.artifact_signing_request_output
     if type(request) is not str or not request:
-        raise FullC6HostInputsError("Full C6 signing-request output path is required")
+        raise FullC6HostInputsError("artifact contract signing-request output path is required")
     request_path = _configured_project_path(root, request)
     if request_path.name != CURRENT.filename(AUTHORIZATION_REQUEST_FILENAME):
-        raise FullC6HostInputsError("Full C6 signing-request filename is not canonical")
+        raise FullC6HostInputsError("artifact contract signing-request filename is not canonical")
     state = request_path.parent
     if state == root:
-        raise FullC6HostInputsError("Full C6 state directory must be below project root")
+        raise FullC6HostInputsError("artifact contract state directory must be below project root")
     _create_project_directory_chain(root, state, final_mode=0o700)
     observed = _require_secure_directory(state, label="state")
     if observed.uid != _current_uid() or observed.mode != 0o700:
-        raise FullC6HostInputsError("Full C6 state directory must be owner-owned mode 0700")
+        raise FullC6HostInputsError("artifact contract state directory must be owner-owned mode 0700")
     return state
 
 
@@ -2587,7 +2587,7 @@ def _ensure_publication_root(root: Path) -> Path:
     _create_project_directory_chain(root, publication, final_mode=0o755)
     observed = _require_secure_directory(publication, label="publication root")
     if observed.uid != _current_uid() or observed.mode & 0o022:
-        raise FullC6HostInputsError("Full C6 publication root is not owner-controlled")
+        raise FullC6HostInputsError("artifact contract publication root is not owner-controlled")
     return publication
 
 
@@ -2595,12 +2595,12 @@ def _create_project_directory_chain(root: Path, target: Path, *, final_mode: int
     try:
         relative = target.relative_to(root)
     except ValueError as exc:
-        raise FullC6HostInputsError("Full C6 derived directory escaped project root") from exc
+        raise FullC6HostInputsError("artifact contract derived directory escaped project root") from exc
     descriptor = _open_absolute_directory_no_follow(root, label="project root")
     try:
         for index, component in enumerate(relative.parts):
             if component in {"", ".", ".."}:
-                raise FullC6HostInputsError("Full C6 derived directory path is invalid")
+                raise FullC6HostInputsError("artifact contract derived directory path is invalid")
             last = index == len(relative.parts) - 1
             mode = final_mode if last else 0o700
             try:
@@ -2609,13 +2609,13 @@ def _create_project_directory_chain(root: Path, target: Path, *, final_mode: int
                 os.mkdir(component, mode=mode, dir_fd=descriptor)
                 before = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
             if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
-                raise FullC6HostInputsError("Full C6 derived path is not a real directory")
+                raise FullC6HostInputsError("artifact contract derived path is not a real directory")
             child = os.open(component, _directory_flags(), dir_fd=descriptor)
             try:
                 opened = os.fstat(child)
                 named = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
                 if _stat_key(before) != _stat_key(opened) or _stat_key(opened) != _stat_key(named):
-                    raise FullC6HostInputsError("Full C6 derived directory changed during open")
+                    raise FullC6HostInputsError("artifact contract derived directory changed during open")
             except Exception:
                 os.close(child)
                 raise
@@ -2630,7 +2630,7 @@ def _create_quarantine_lease(
 ) -> tuple[Path, _DirectoryBinding, Path, _DirectoryBinding, Path, _DirectoryBinding]:
     temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
     _require_secure_directory(temp_root, label="temporary root")
-    container = Path(tempfile.mkdtemp(prefix="rextio-full-c6-", dir=temp_root))
+    container = Path(tempfile.mkdtemp(prefix="rextio-artifact-", dir=temp_root))
     os.chmod(container, 0o700)
     container_binding = _require_secure_directory(
         container, label="quarantine container"
@@ -2638,7 +2638,7 @@ def _create_quarantine_lease(
     try:
         if container_binding.uid != _current_uid() or container_binding.mode != 0o700:
             raise FullC6HostInputsError(
-                "Full C6 quarantine container must be owner-owned mode 0700"
+                "artifact contract quarantine container must be owner-owned mode 0700"
             )
         first = container / "build-one"
         second = container / "build-two"
@@ -2657,7 +2657,7 @@ def _create_quarantine_lease(
             or first_binding.device == second_binding.device
             and first_binding.inode == second_binding.inode
         ):
-            raise FullC6HostInputsError("Full C6 quarantine roots are not disjoint")
+            raise FullC6HostInputsError("artifact contract quarantine roots are not disjoint")
         return (
             container,
             container_binding,
@@ -2683,18 +2683,18 @@ def _remove_private_quarantine_container(
         try:
             opened = os.fstat(root_fd)
             if _DirectoryBinding.from_stat(opened) != expected:
-                raise FullC6HostInputsError("Full C6 quarantine container changed")
+                raise FullC6HostInputsError("artifact contract quarantine container changed")
             _remove_directory_contents(root_fd)
         finally:
             os.close(root_fd)
         named = os.stat(container.name, dir_fd=parent_fd, follow_symlinks=False)
         if _DirectoryBinding.from_stat(named) != expected:
-            raise FullC6HostInputsError("Full C6 quarantine container name changed")
+            raise FullC6HostInputsError("artifact contract quarantine container name changed")
         os.rmdir(container.name, dir_fd=parent_fd)
     except FullC6HostInputsError:
         raise
     except OSError as exc:
-        raise FullC6HostInputsError("Full C6 quarantine cleanup failed closed") from exc
+        raise FullC6HostInputsError("artifact contract quarantine cleanup failed closed") from exc
     finally:
         os.close(parent_fd)
 
@@ -2709,30 +2709,30 @@ def _remove_directory_contents(directory_fd: int) -> None:
             try:
                 opened = os.fstat(child_fd)
                 if _stat_key(opened) != _stat_key(observed):
-                    raise FullC6HostInputsError("Full C6 quarantine child changed")
+                    raise FullC6HostInputsError("artifact contract quarantine child changed")
                 _remove_directory_contents(child_fd)
             finally:
                 os.close(child_fd)
             named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             if _stat_key(named) != _stat_key(observed):
-                raise FullC6HostInputsError("Full C6 quarantine child name changed")
+                raise FullC6HostInputsError("artifact contract quarantine child name changed")
             os.rmdir(name, dir_fd=directory_fd)
         else:
             named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             if _stat_key(named) != _stat_key(observed):
-                raise FullC6HostInputsError("Full C6 quarantine member changed")
+                raise FullC6HostInputsError("artifact contract quarantine member changed")
             os.unlink(name, dir_fd=directory_fd)
 
 
 def _require_private_empty_directory(path: Path, *, label: str) -> _DirectoryBinding:
     binding = _require_secure_directory(path, label=label)
     if binding.uid != _current_uid() or binding.mode != 0o700:
-        raise FullC6HostInputsError(f"Full C6 {label} must be owner-owned mode 0700")
+        raise FullC6HostInputsError(f"artifact contract {label} must be owner-owned mode 0700")
     descriptor = _open_absolute_directory_no_follow(path, label=label)
     try:
         with os.scandir(descriptor) as iterator:
             if next(iterator, None) is not None:
-                raise FullC6HostInputsError(f"Full C6 {label} must be empty")
+                raise FullC6HostInputsError(f"artifact contract {label} must be empty")
     finally:
         os.close(descriptor)
     return binding
@@ -2776,7 +2776,7 @@ def _capture_namespace_directory_binding(
     try:
         observed = os.fstat(descriptor)
         if not stat.S_ISDIR(observed.st_mode):
-            raise FullC6HostInputsError(f"Full C6 {label} is not a directory")
+            raise FullC6HostInputsError(f"artifact contract {label} is not a directory")
         return _NamespaceDirectoryBinding.from_stat(observed)
     finally:
         os.close(descriptor)
@@ -2785,7 +2785,7 @@ def _capture_namespace_directory_binding(
 def _verify_file_binding(path: Path, expected: _FileBinding, *, label: str) -> None:
     observed = _capture_file_binding(path, label=label)
     if observed != expected:
-        raise FullC6HostInputsError(f"Full C6 {label} changed")
+        raise FullC6HostInputsError(f"artifact contract {label} changed")
 
 
 def _secure_read_regular(
@@ -2805,7 +2805,7 @@ def _secure_read_regular(
             or before.st_size < 0
             or before.st_size > max_bytes
         ):
-            raise FullC6HostInputsError(f"Full C6 {label} is not an unaliased regular file")
+            raise FullC6HostInputsError(f"artifact contract {label} is not an unaliased regular file")
         descriptor = os.open(
             path.name,
             os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -2814,7 +2814,7 @@ def _secure_read_regular(
         try:
             opened = os.fstat(descriptor)
             if _regular_stat_key(opened) != _regular_stat_key(before):
-                raise FullC6HostInputsError(f"Full C6 {label} changed during open")
+                raise FullC6HostInputsError(f"artifact contract {label} changed during open")
             chunks: list[bytes] = []
             remaining = max_bytes + 1
             while remaining:
@@ -2830,17 +2830,17 @@ def _secure_read_regular(
                 or len(data) != final.st_size
                 or len(data) > max_bytes
             ):
-                raise FullC6HostInputsError(f"Full C6 {label} changed during read")
+                raise FullC6HostInputsError(f"artifact contract {label} changed during read")
         finally:
             os.close(descriptor)
         named = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         if _regular_stat_key(named) != _regular_stat_key(final):
-            raise FullC6HostInputsError(f"Full C6 {label} name changed during read")
+            raise FullC6HostInputsError(f"artifact contract {label} name changed during read")
         return data, final
     except FullC6HostInputsError:
         raise
     except OSError as exc:
-        raise FullC6HostInputsError(f"Full C6 {label} could not be read safely") from exc
+        raise FullC6HostInputsError(f"artifact contract {label} could not be read safely") from exc
     finally:
         os.close(parent_fd)
 
@@ -2850,7 +2850,7 @@ def _require_secure_directory(path: Path, *, label: str) -> _DirectoryBinding:
     try:
         observed = os.fstat(descriptor)
         if not stat.S_ISDIR(observed.st_mode):
-            raise FullC6HostInputsError(f"Full C6 {label} is not a directory")
+            raise FullC6HostInputsError(f"artifact contract {label} is not a directory")
         return _DirectoryBinding.from_stat(observed)
     finally:
         os.close(descriptor)
@@ -2862,18 +2862,18 @@ def _open_absolute_directory_no_follow(path: Path, *, label: str) -> int:
     try:
         descriptor = os.open(os.path.sep, flags)
     except OSError as exc:
-        raise FullC6HostInputsError("Full C6 filesystem root could not be opened") from exc
+        raise FullC6HostInputsError("artifact contract filesystem root could not be opened") from exc
     try:
         for component in lexical.parts[1:]:
             before = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
             if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
-                raise FullC6HostInputsError(f"Full C6 {label} contains a symlink")
+                raise FullC6HostInputsError(f"artifact contract {label} contains a symlink")
             child = os.open(component, flags, dir_fd=descriptor)
             try:
                 opened = os.fstat(child)
                 named = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
                 if _stat_key(before) != _stat_key(opened) or _stat_key(opened) != _stat_key(named):
-                    raise FullC6HostInputsError(f"Full C6 {label} changed during no-follow walk")
+                    raise FullC6HostInputsError(f"artifact contract {label} changed during no-follow walk")
             except Exception:
                 os.close(child)
                 raise
@@ -2885,13 +2885,13 @@ def _open_absolute_directory_no_follow(path: Path, *, label: str) -> int:
         raise
     except OSError as exc:
         os.close(descriptor)
-        raise FullC6HostInputsError(f"Full C6 {label} could not be opened safely") from exc
+        raise FullC6HostInputsError(f"artifact contract {label} could not be opened safely") from exc
 
 
 def _verify_directory_binding(path: Path, expected: _DirectoryBinding, *, label: str) -> None:
     observed = _directory_binding(path)
     if observed != expected:
-        raise FullC6HostInputsError(f"Full C6 {label} directory changed")
+        raise FullC6HostInputsError(f"artifact contract {label} directory changed")
 
 
 def _directory_binding(path: Path) -> _DirectoryBinding:
@@ -2905,22 +2905,22 @@ def _directory_binding(path: Path) -> _DirectoryBinding:
 def _directory_flags() -> int:
     required = getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0):
-        raise FullC6HostInputsError("Full C6 no-follow directory operations are unavailable")
+        raise FullC6HostInputsError("artifact contract no-follow directory operations are unavailable")
     return os.O_RDONLY | os.O_CLOEXEC | required
 
 
 def _configured_project_path(root: Path, value: object) -> Path:
     if type(value) is not str or not value or "\\" in value or "\0" in value:
-        raise FullC6HostInputsError("Full C6 configured project path is invalid")
+        raise FullC6HostInputsError("artifact contract configured project path is invalid")
     path = PurePosixPath(value)
     if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
-        raise FullC6HostInputsError("Full C6 configured project path is not canonical")
+        raise FullC6HostInputsError("artifact contract configured project path is not canonical")
     return root.joinpath(*path.parts)
 
 
 def _lexical_absolute_path(value: Path | str, *, label: str) -> Path:
     if not (type(value) is str or isinstance(value, Path)):
-        raise FullC6HostInputsError(f"Full C6 {label} must be a string or Path")
+        raise FullC6HostInputsError(f"artifact contract {label} must be a string or Path")
     raw = os.fspath(value)
     if (
         type(raw) is not str
@@ -2932,7 +2932,7 @@ def _lexical_absolute_path(value: Path | str, *, label: str) -> Path:
         or (raw != os.path.sep and raw.endswith(os.path.sep))
     ):
         raise FullC6HostInputsError(
-            f"Full C6 {label} must be raw lexical absolute NFC path"
+            f"artifact contract {label} must be raw lexical absolute NFC path"
         )
     return Path(raw)
 
@@ -2942,14 +2942,14 @@ def _validate_inherited_environment(
 ) -> dict[str, str]:
     source: Mapping[str, str] = os.environ if value is None else value
     if not isinstance(source, Mapping):
-        raise FullC6HostInputsError("Full C6 inherited environment must be a mapping")
+        raise FullC6HostInputsError("artifact contract inherited environment must be a mapping")
     result: dict[str, str] = {}
     for name in ("PATH", "RUSTUP_HOME"):
         item = source.get(name)
         if item is None:
             continue
         if type(item) is not str or not item or "\0" in item or len(item.encode()) > 65536:
-            raise FullC6HostInputsError("Full C6 inherited environment value is invalid")
+            raise FullC6HostInputsError("artifact contract inherited environment value is invalid")
         result[name] = item
     return result
 

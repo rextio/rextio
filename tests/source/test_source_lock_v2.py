@@ -16,6 +16,12 @@ import pytest
 
 import rextio.source.source_lock_v2 as source_lock_module
 from rextio.artifacts import ArtifactProvenance
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    LEGACY_0_1_7,
+    ArtifactContractDialect,
+    SOURCE_LOCK_SIGNED_MESSAGE,
+)
 from rextio.source.authorization import ExternalSourceAuthorization
 from rextio.source.external import AuthorityFile, ExternalSourcePlan
 from rextio.source.external_analysis import (
@@ -29,6 +35,7 @@ from rextio.source.source_lock_v2 import (
     SourceLockV2Signature,
     SourceLockV2VerifiedContext,
     build_source_lock_v2_manifest,
+    require_current_source_lock_v2_verification,
     validate_source_lock_v2_verified_context,
     verify_source_lock_v2,
     verify_source_lock_v2_with_context,
@@ -269,6 +276,7 @@ def _write_signed(
     *,
     wrong_prefix: bool = False,
     installed_record: bytes | None = None,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> _SignedFixture:
     tmp_path.mkdir(parents=True, exist_ok=True)
     plan, wheel, analyses, wheel_path, wheel_sha256 = _inputs(
@@ -284,8 +292,12 @@ def _write_signed(
         owner="Acme Engineering",
         trusted_public_key_sha256=key_hash,
     )
+    if dialect is not CURRENT:
+        source_lock_module._apply_source_lock_dialect(manifest, dialect)
     prefix = (
-        b"REXTIO-FULL-C6-ED25519-V1\0" if wrong_prefix else SOURCE_LOCK_V2_SIGNED_MESSAGE_PREFIX
+        b"REXTIO-FULL-C6-ED25519-V1\0"
+        if wrong_prefix
+        else dialect.byte_value(SOURCE_LOCK_SIGNED_MESSAGE)
     )
     public_key, signature = _sign(
         SIGNING_SEED,
@@ -297,6 +309,8 @@ def _write_signed(
         manifest_sha256=manifest.manifest_sha256,
         signature=signature,
     )
+    if dialect is not CURRENT:
+        source_lock_module._apply_source_lock_signature_dialect(envelope, dialect)
     lock_path = tmp_path / "rextio.external-source.lock.v2.json"
     signature_path = tmp_path / "rextio.external-source.lock.v2.sig.json"
     key_path = tmp_path / "source-lock-owner.ed25519.pub"
@@ -618,6 +632,7 @@ def test_verified_context_is_same_transaction_sealed_and_nonserializing(
     context = verification.context
     assert context is not None
     assert validate_source_lock_v2_verified_context(context) is True
+    require_current_source_lock_v2_verification(verification)
 
     with pytest.raises(TypeError, match="verification transaction"):
         SourceLockV2VerifiedContext(
@@ -681,11 +696,7 @@ def test_exact_legacy_sourcelock_verifies_and_rejects_hybrid_or_v3_prefix(
     tmp_path: Path,
 ) -> None:
     from rextio.artifacts.contract_dialects import (
-        CURRENT,
-        LEGACY_0_1_7,
-        SOURCE_LOCK_INDEPENDENT_DETECTION,
         SOURCE_LOCK_MANIFEST,
-        SOURCE_LOCK_SIGNATURE,
         SOURCE_LOCK_SIGNED_MESSAGE,
     )
     from rextio.source.source_lock_v2 import (
@@ -694,54 +705,22 @@ def test_exact_legacy_sourcelock_verifies_and_rejects_hybrid_or_v3_prefix(
         parse_source_lock_v2_signature,
     )
 
-    fixture = _write_signed(tmp_path)
-    legacy_manifest_identity = LEGACY_0_1_7.identity(SOURCE_LOCK_MANIFEST)
-    manifest_document = fixture.manifest.to_dict()
-    manifest_document.update(
-        {
-            "kind": legacy_manifest_identity.kind,
-            "schema_version": legacy_manifest_identity.schema_version,
-            "domain": legacy_manifest_identity.domain,
-        }
-    )
-    license_document = manifest_document["license"]
-    assert isinstance(license_document, dict)
-    license_document["independent_detection"] = LEGACY_0_1_7.string_value(
-        SOURCE_LOCK_INDEPENDENT_DETECTION
-    )
-    manifest_bytes = json.dumps(
-        manifest_document,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    manifest = parse_source_lock_v2_manifest(manifest_bytes)
-    assert manifest.canonical_json_bytes == manifest_bytes
-
-    public_key, signature = _sign(
-        SIGNING_SEED,
-        LEGACY_0_1_7.byte_value(SOURCE_LOCK_SIGNED_MESSAGE) + manifest_bytes,
-    )
-    key_hash = hashlib.sha256(public_key).hexdigest()
-    legacy_signature_identity = LEGACY_0_1_7.identity(SOURCE_LOCK_SIGNATURE)
-    signature_document = {
-        "kind": legacy_signature_identity.kind,
-        "schema_version": legacy_signature_identity.schema_version,
-        "algorithm": "ed25519",
-        "domain": legacy_signature_identity.domain,
-        "public_key_sha256": key_hash,
-        "manifest_sha256": manifest.manifest_sha256,
-        "signature": base64.b64encode(signature).decode(),
-    }
-    signature_bytes = json.dumps(
-        signature_document,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
+    fixture = _write_signed(tmp_path, dialect=LEGACY_0_1_7)
+    manifest = fixture.manifest
+    manifest_document = manifest.to_dict()
+    manifest_bytes = fixture.lock_path.read_bytes()
+    signature_bytes = fixture.signature_path.read_bytes()
+    signature_document = json.loads(signature_bytes)
+    assert parse_source_lock_v2_manifest(manifest_bytes) == manifest
     envelope = parse_source_lock_v2_signature(signature_bytes)
     assert envelope.canonical_json_bytes == signature_bytes
-    fixture.lock_path.write_bytes(manifest_bytes)
-    fixture.signature_path.write_bytes(signature_bytes)
-    assert _verify(replace(fixture, manifest=manifest)).prebuild_admitted is True
+    verification = _verify_context(fixture)
+    assert verification.admission.prebuild_admitted is True
+    with pytest.raises(
+        SourceLockV2Error,
+        match="production requires current SourceLock",
+    ):
+        require_current_source_lock_v2_verification(verification)
 
     hybrid_document = dict(manifest_document)
     hybrid_document["domain"] = CURRENT.identity(SOURCE_LOCK_MANIFEST).domain

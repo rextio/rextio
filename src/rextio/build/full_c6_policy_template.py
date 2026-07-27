@@ -1,4 +1,4 @@
-"""Exact non-authorizing technical template for Full C6 owner policy.
+"""Exact non-authorizing technical template for the artifact policy.
 
 The production collector may serialize this value across the bootstrap process
 boundary.  It intentionally contains the exact technical universe required to
@@ -15,8 +15,14 @@ import re
 from typing import Literal
 
 from rextio.artifacts.contract_dialects import (
+    ARTIFACT_COMPONENT_URN_PREFIX,
+    ARTIFACT_CONTRACT_DIALECTS,
     CURRENT,
+    EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
+    EXTERNAL_LICENSE_OBSERVATION_DOMAIN,
+    INTERNAL_LICENSE_OBSERVATION_DOMAIN,
     POLICY_TEMPLATE,
+    TECHNICAL_TRANSFORMATION_SET_DOMAIN,
     ArtifactContractDialect,
     resolve_artifact_contract_dialect,
 )
@@ -75,31 +81,42 @@ class FullC6TechnicalPolicyRow:
         "not-applicable",
     ]
     license_observation_sha256: str | None
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
+        dialect = _contract_dialect(self._artifact_contract_dialect)
         if type(self.class_id) is not str or self.class_id not in FULL_C6_POLICY_CLASS_IDS:
-            raise FullC6PolicyTemplateError("Full C6 technical row class is invalid")
+            raise FullC6PolicyTemplateError("artifact policy technical row class is invalid")
         _require_identity(self.canonical_identity, "technical row canonical identity")
         _require_identity(self.authority_identity, "technical row authority identity")
         prefix = (
-            f"urn:rextio:artifact-component:{self.class_id}:"
+            f"{dialect.string_value(ARTIFACT_COMPONENT_URN_PREFIX)}{self.class_id}:"
             if self.class_id in ARTIFACT_POLICY_COVERAGE_CLASS_IDS
-            else f"urn:rextio:full-c6-external-authority-component:v1:{self.class_id}:"
+            else (f"{dialect.string_value(EXTERNAL_AUTHORITY_IDENTITY_SCHEME)}:{self.class_id}:")
         )
         if not self.authority_identity.startswith(prefix) or not _is_sha256(
             self.authority_identity.removeprefix(prefix)
         ):
-            raise FullC6PolicyTemplateError("Full C6 technical row authority is invalid")
+            raise FullC6PolicyTemplateError("artifact policy technical row authority is invalid")
         if self.identity_mode != full_c6_policy_identity_mode(self.class_id):
-            raise FullC6PolicyTemplateError("Full C6 technical row identity mode is invalid")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical row identity mode is invalid"
+            )
         expected_license = full_c6_policy_license_disposition(self.class_id)
         if self.required_license_disposition != expected_license:
-            raise FullC6PolicyTemplateError("Full C6 technical row license requirement is invalid")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical row license requirement is invalid"
+            )
         if self.transformation_disposition != full_c6_policy_transformation_disposition(
             self.class_id
         ):
             raise FullC6PolicyTemplateError(
-                "Full C6 technical row transformation disposition is invalid"
+                "artifact policy technical row transformation disposition is invalid"
             )
         expected_origin = (
             "not-applicable"
@@ -111,27 +128,37 @@ class FullC6TechnicalPolicyRow:
             )
         )
         if self.license_evidence_origin != expected_origin:
-            raise FullC6PolicyTemplateError("Full C6 technical row evidence origin is invalid")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical row evidence origin is invalid"
+            )
         if expected_origin == "not-applicable":
             if self.license_observation_sha256 is not None:
                 raise FullC6PolicyTemplateError(
-                    "Full C6 non-applicable row cannot bind a license observation"
+                    "artifact policy non-applicable row cannot bind a license observation"
                 )
         elif not _is_sha256(self.license_observation_sha256):
             raise FullC6PolicyTemplateError(
-                "Full C6 technical row license observation is invalid"
+                "artifact policy technical row license observation is invalid"
             )
         if self.identity_mode == "content-sha256":
             if not _is_sha256(self.sha256) or type(self.size) is not int or self.size < 0:
-                raise FullC6PolicyTemplateError("Full C6 technical content identity is invalid")
+                raise FullC6PolicyTemplateError(
+                    "artifact policy technical content identity is invalid"
+                )
         elif self.identity_mode in {"cargo-registry-checksum", "source-tree-sha256"}:
             if not _is_sha256(self.sha256) or self.size is not None:
-                raise FullC6PolicyTemplateError("Full C6 technical package identity is invalid")
+                raise FullC6PolicyTemplateError(
+                    "artifact policy technical package identity is invalid"
+                )
         elif self.identity_mode == "logical-system-leaf":
             if self.sha256 is not None or self.size is not None:
-                raise FullC6PolicyTemplateError("Full C6 logical leaf cannot claim file bytes")
+                raise FullC6PolicyTemplateError(
+                    "artifact policy logical leaf cannot claim file bytes"
+                )
         else:  # pragma: no cover - frozen policy vocabulary protects this branch
-            raise FullC6PolicyTemplateError("Full C6 technical identity mode is unsupported")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical identity mode is unsupported"
+            )
 
     @property
     def canonical_identity_sha256(self) -> str:
@@ -165,33 +192,43 @@ class FullC6ExternalLicenseObservation:
     source_detector_receipt_sha256: str
     detector_payload_sha256: str
     license_files: tuple[FullC6PolicyFileIdentity, ...]
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
+        _contract_dialect(self._artifact_contract_dialect)
         if (
             type(self.declared_spdx) is not str
             or not self.declared_spdx
             or type(self.detected_spdx) is not str
             or not self.detected_spdx
         ):
-            raise FullC6PolicyTemplateError("Full C6 external SPDX observation is missing")
+            raise FullC6PolicyTemplateError("external-source partition SPDX observation is missing")
         if not _is_sha256(self.source_detector_receipt_sha256):
-            raise FullC6PolicyTemplateError("Full C6 external detector receipt is invalid")
+            raise FullC6PolicyTemplateError("external-source partition detector receipt is invalid")
         if type(self.license_files) is not tuple or not self.license_files:
-            raise FullC6PolicyTemplateError("Full C6 external license files are missing")
+            raise FullC6PolicyTemplateError("external-source partition license files are missing")
         if len(self.license_files) > MAX_FULL_C6_LICENSE_FILES_PER_ROW or any(
             type(item) is not FullC6PolicyFileIdentity for item in self.license_files
         ):
-            raise FullC6PolicyTemplateError("Full C6 external license files are invalid")
+            raise FullC6PolicyTemplateError("external-source partition license files are invalid")
         canonical = tuple(sorted(self.license_files, key=lambda item: item.logical_path.casefold()))
         if canonical != self.license_files:
-            raise FullC6PolicyTemplateError("Full C6 external license files are noncanonical")
+            raise FullC6PolicyTemplateError(
+                "external-source partition license files are noncanonical"
+            )
         expected = full_c6_license_detector_payload_digest(
             self.detected_spdx,
             self.license_files,
             source_detector_receipt_sha256=self.source_detector_receipt_sha256,
+            _artifact_contract_dialect=self._artifact_contract_dialect,
         )
         if self.detector_payload_sha256 != expected:
-            raise FullC6PolicyTemplateError("Full C6 external detector payload is stale")
+            raise FullC6PolicyTemplateError("external-source partition detector payload is stale")
 
     def to_dict(self) -> dict[str, object]:
         """Return the byte-free external observation."""
@@ -212,12 +249,12 @@ class FullC6ExternalLicenseObservation:
         """Return the exact technical identity of the external observation."""
         return _digest(
             {
-                "domain": FULL_C6_EXTERNAL_LICENSE_OBSERVATION_DOMAIN,
+                "domain": _contract_dialect(self._artifact_contract_dialect).string_value(
+                    EXTERNAL_LICENSE_OBSERVATION_DOMAIN
+                ),
                 "declared_spdx": self.declared_spdx,
                 "detected_spdx": self.detected_spdx,
-                "source_detector_receipt_sha256": (
-                    self.source_detector_receipt_sha256
-                ),
+                "source_detector_receipt_sha256": (self.source_detector_receipt_sha256),
                 "detector_payload_sha256": self.detector_payload_sha256,
                 "license_files": [item.to_dict() for item in self.license_files],
             }
@@ -235,10 +272,17 @@ class FullC6InternalLicenseObservation:
     source_detector_receipt_sha256: str
     detector_payload_sha256: str
     license_files: tuple[FullC6PolicyFileIdentity, ...]
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
+        _contract_dialect(self._artifact_contract_dialect)
         if self.subject_kind not in {"project", "cargo-registry-package"}:
-            raise FullC6PolicyTemplateError("Full C6 internal license subject is invalid")
+            raise FullC6PolicyTemplateError("artifact coverage license subject is invalid")
         _require_identity(
             self.subject_canonical_identity,
             "internal license subject identity",
@@ -250,42 +294,34 @@ class FullC6InternalLicenseObservation:
             or not self.detected_spdx
             or not _is_sha256(self.source_detector_receipt_sha256)
         ):
-            raise FullC6PolicyTemplateError(
-                "Full C6 internal license observation is incomplete"
-            )
+            raise FullC6PolicyTemplateError("artifact coverage license observation is incomplete")
         if (
             type(self.license_files) is not tuple
             or not self.license_files
             or len(self.license_files) > MAX_FULL_C6_LICENSE_FILES_PER_ROW
-            or any(
-                type(item) is not FullC6PolicyFileIdentity
-                for item in self.license_files
-            )
+            or any(type(item) is not FullC6PolicyFileIdentity for item in self.license_files)
         ):
-            raise FullC6PolicyTemplateError("Full C6 internal license files are invalid")
-        canonical = tuple(
-            sorted(self.license_files, key=lambda item: item.logical_path.casefold())
-        )
+            raise FullC6PolicyTemplateError("artifact coverage license files are invalid")
+        canonical = tuple(sorted(self.license_files, key=lambda item: item.logical_path.casefold()))
         if canonical != self.license_files:
-            raise FullC6PolicyTemplateError(
-                "Full C6 internal license files are noncanonical"
-            )
+            raise FullC6PolicyTemplateError("artifact coverage license files are noncanonical")
         expected = full_c6_license_detector_payload_digest(
             self.detected_spdx,
             self.license_files,
             source_detector_receipt_sha256=self.source_detector_receipt_sha256,
+            _artifact_contract_dialect=self._artifact_contract_dialect,
         )
         if self.detector_payload_sha256 != expected:
-            raise FullC6PolicyTemplateError(
-                "Full C6 internal license detector payload is stale"
-            )
+            raise FullC6PolicyTemplateError("artifact coverage license detector payload is stale")
 
     @property
     def observation_sha256(self) -> str:
         """Return the exact byte-observation identity referenced by policy rows."""
         return _digest(
             {
-                "domain": FULL_C6_INTERNAL_LICENSE_OBSERVATION_DOMAIN,
+                "domain": _contract_dialect(self._artifact_contract_dialect).string_value(
+                    INTERNAL_LICENSE_OBSERVATION_DOMAIN
+                ),
                 **self._payload(),
             }
         )
@@ -337,28 +373,37 @@ class FullC6TechnicalPolicyTemplate:
     )
     _artifact_contract_dialect: str = field(
         default=CURRENT.name,
-        init=False,
         repr=False,
         compare=False,
+        kw_only=True,
     )
 
     def __post_init__(self) -> None:
+        dialect = _contract_dialect(self._artifact_contract_dialect)
         if type(self.artifact_coverage) is not ArtifactPolicyCoverageInventory:
-            raise FullC6PolicyTemplateError("Full C6 technical C6.14 coverage is invalid")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical artifact coverage is invalid"
+            )
         if type(self.external_authority) is not FullC6ExternalAuthorityPartition:
-            raise FullC6PolicyTemplateError("Full C6 technical C5.2 partition is invalid")
-        if type(self.rows) is not tuple or len(self.rows) > MAX_FULL_C6_POLICY_ROWS or any(
-            type(item) is not FullC6TechnicalPolicyRow for item in self.rows
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical external-source partition is invalid"
+            )
+        if (
+            type(self.rows) is not tuple
+            or len(self.rows) > MAX_FULL_C6_POLICY_ROWS
+            or any(type(item) is not FullC6TechnicalPolicyRow for item in self.rows)
         ):
-            raise FullC6PolicyTemplateError("Full C6 technical rows are invalid")
-        if type(self.transformations) is not tuple or len(
-            self.transformations
-        ) > MAX_FULL_C6_POLICY_TRANSFORMATIONS or any(
-            type(item) is not FullC6TransformationRecord for item in self.transformations
+            raise FullC6PolicyTemplateError("artifact policy technical rows are invalid")
+        if (
+            type(self.transformations) is not tuple
+            or len(self.transformations) > MAX_FULL_C6_POLICY_TRANSFORMATIONS
+            or any(type(item) is not FullC6TransformationRecord for item in self.transformations)
         ):
-            raise FullC6PolicyTemplateError("Full C6 technical transformations are invalid")
+            raise FullC6PolicyTemplateError("artifact policy technical transformations are invalid")
         if type(self.external_license_observation) is not FullC6ExternalLicenseObservation:
-            raise FullC6PolicyTemplateError("Full C6 external license observation is invalid")
+            raise FullC6PolicyTemplateError(
+                "external-source partition license observation is invalid"
+            )
         if (
             type(self.internal_license_observations) is not tuple
             or not self.internal_license_observations
@@ -368,8 +413,19 @@ class FullC6TechnicalPolicyTemplate:
                 for item in self.internal_license_observations
             )
         ):
+            raise FullC6PolicyTemplateError("artifact coverage license observations are invalid")
+        if (
+            self.external_authority._artifact_contract_dialect != dialect.name
+            or self.external_license_observation._artifact_contract_dialect != dialect.name
+            or any(item._artifact_contract_dialect != dialect.name for item in self.rows)
+            or any(item._artifact_contract_dialect != dialect.name for item in self.transformations)
+            or any(
+                item._artifact_contract_dialect != dialect.name
+                for item in self.internal_license_observations
+            )
+        ):
             raise FullC6PolicyTemplateError(
-                "Full C6 internal license observations are invalid"
+                "artifact policy template contains a mixed nested contract dialect"
             )
         canonical_observations = tuple(
             sorted(
@@ -384,15 +440,19 @@ class FullC6TechnicalPolicyTemplate:
         observation_digests = tuple(
             item.observation_sha256 for item in self.internal_license_observations
         )
-        if (
-            canonical_observations != self.internal_license_observations
-            or len(observation_digests) != len(set(observation_digests))
-        ):
+        if canonical_observations != self.internal_license_observations or len(
+            observation_digests
+        ) != len(set(observation_digests)):
             raise FullC6PolicyTemplateError(
-                "Full C6 internal license observations are noncanonical"
+                "artifact coverage license observations are noncanonical"
             )
         _require_owner_identity(self.observed_owner_identity)
-        _validate_rows_and_partitions(self.rows, self.artifact_coverage, self.external_authority)
+        _validate_rows_and_partitions(
+            self.rows,
+            self.artifact_coverage,
+            self.external_authority,
+            dialect_name=dialect.name,
+        )
         _validate_license_observation_bindings(
             self.rows,
             self.internal_license_observations,
@@ -400,14 +460,17 @@ class FullC6TechnicalPolicyTemplate:
         )
         _validate_transformations(self.rows, self.transformations, self.authority_partition_sha256)
         if len(canonical_json_bytes(self._payload())) > MAX_FULL_C6_POLICY_TEMPLATE_BYTES:
-            raise FullC6PolicyTemplateError("Full C6 technical template exceeds byte bound")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical template exceeds the byte bound"
+            )
 
     @property
     def authority_partition_sha256(self) -> str:
-        """Return the exact combined C6.14 plus C5.2 partition identity."""
+        """Return the combined artifact-coverage and external-source identity."""
         return full_c6_authority_partition_digest(
             self.artifact_coverage,
             self.external_authority,
+            _artifact_contract_dialect=self._artifact_contract_dialect,
         )
 
     @property
@@ -415,7 +478,9 @@ class FullC6TechnicalPolicyTemplate:
         """Return the exact technical transformation-set identity."""
         return _digest(
             {
-                "domain": FULL_C6_TECHNICAL_TRANSFORMATION_SET_DOMAIN,
+                "domain": _contract_dialect(self._artifact_contract_dialect).string_value(
+                    TECHNICAL_TRANSFORMATION_SET_DOMAIN
+                ),
                 "transformations": [item.to_dict() for item in self.transformations],
             }
         )
@@ -426,12 +491,11 @@ class FullC6TechnicalPolicyTemplate:
         return _digest(self._payload())
 
     def _payload(self) -> dict[str, object]:
+        identity = _contract_dialect(self._artifact_contract_dialect).identity(POLICY_TEMPLATE)
         return {
-            "kind": _template_dialect(self).identity(POLICY_TEMPLATE).kind,
-            "schema_version": (
-                _template_dialect(self).identity(POLICY_TEMPLATE).schema_version
-            ),
-            "domain": _template_dialect(self).identity(POLICY_TEMPLATE).domain,
+            "kind": identity.kind,
+            "schema_version": identity.schema_version,
+            "domain": identity.domain,
             "authority": "non-authorizing-technical-observation",
             "artifact_coverage": self.artifact_coverage.to_dict(),
             "external_authority": self.external_authority.to_dict(),
@@ -477,7 +541,7 @@ def parse_full_c6_technical_policy_template(
         )
     except ValueError as exc:
         raise FullC6PolicyTemplateError(
-            "Full C6 technical template claims invalid authority"
+            "artifact policy technical template claims invalid authority"
         ) from exc
     if (
         data["authority"] != "non-authorizing-technical-observation"
@@ -486,7 +550,9 @@ def parse_full_c6_technical_policy_template(
         or data["signed"] is not False
         or data["distribution_authorized"] is not False
     ):
-        raise FullC6PolicyTemplateError("Full C6 technical template claims invalid authority")
+        raise FullC6PolicyTemplateError(
+            "artifact policy technical template claims invalid authority"
+        )
     requirements = _exact_dict(
         data["owner_completion_requirements"],
         _OWNER_REQUIREMENT_FIELDS,
@@ -494,7 +560,9 @@ def parse_full_c6_technical_policy_template(
     )
     for requirement_field in _OWNER_REQUIREMENT_BOOLEAN_FIELDS:
         if requirements[requirement_field] is not True:
-            raise FullC6PolicyTemplateError("Full C6 owner completion requirement is weakened")
+            raise FullC6PolicyTemplateError(
+                "artifact policy owner-completion requirement is weakened"
+            )
     rows_value = _exact_list(data["rows"], "technical rows")
     transformations_value = _exact_list(data["transformations"], "transformations")
     internal_observations_value = _exact_list(
@@ -504,22 +572,26 @@ def parse_full_c6_technical_policy_template(
     template = FullC6TechnicalPolicyTemplate(
         artifact_coverage=parse_full_c6_artifact_coverage_document(data["artifact_coverage"]),
         external_authority=parse_full_c6_external_authority_document(
-            data["external_authority"]
+            data["external_authority"],
+            dialect=dialect,
         ),
-        rows=tuple(_parse_row(item) for item in rows_value),
+        rows=tuple(_parse_row(item, dialect=dialect) for item in rows_value),
         transformations=tuple(
-            parse_full_c6_transformation_document(item) for item in transformations_value
+            parse_full_c6_transformation_document(item, dialect=dialect)
+            for item in transformations_value
         ),
         internal_license_observations=tuple(
-            _parse_internal_license_observation(item)
+            _parse_internal_license_observation(item, dialect=dialect)
             for item in internal_observations_value
         ),
         external_license_observation=_parse_external_license_observation(
-            data["external_license_observation"]
+            data["external_license_observation"],
+            dialect=dialect,
         ),
         observed_owner_identity=_string(
             requirements["observed_owner_identity"], "observed owner identity"
         ),
+        _artifact_contract_dialect=dialect.name,
     )
     _apply_template_dialect(template, dialect)
     if (
@@ -528,7 +600,9 @@ def parse_full_c6_technical_policy_template(
         or data["template_sha256"] != template.template_sha256
         or canonical_json_bytes(template.to_dict()) != canonical_json_bytes(data)
     ):
-        raise FullC6PolicyTemplateError("Full C6 technical template is stale or noncanonical")
+        raise FullC6PolicyTemplateError(
+            "artifact policy technical template is stale or noncanonical"
+        )
     return template
 
 
@@ -561,6 +635,8 @@ def _validate_rows_and_partitions(
     rows: tuple[FullC6TechnicalPolicyRow, ...],
     artifact: ArtifactPolicyCoverageInventory,
     external: FullC6ExternalAuthorityPartition,
+    *,
+    dialect_name: str,
 ) -> None:
     order = {class_id: index for index, class_id in enumerate(FULL_C6_POLICY_CLASS_IDS)}
     canonical = tuple(
@@ -575,13 +651,13 @@ def _validate_rows_and_partitions(
     )
     aliases = tuple(_alias(item.canonical_identity) for item in rows)
     authorities = tuple(item.authority_identity for item in rows)
-    if rows != canonical or len(aliases) != len(set(aliases)) or len(authorities) != len(
-        set(authorities)
+    if (
+        rows != canonical
+        or len(aliases) != len(set(aliases))
+        or len(authorities) != len(set(authorities))
     ):
-        raise FullC6PolicyTemplateError("Full C6 technical rows are noncanonical")
-    by_class: dict[str, list[str]] = {
-        class_id: [] for class_id in FULL_C6_POLICY_CLASS_IDS
-    }
+        raise FullC6PolicyTemplateError("artifact policy technical rows are noncanonical")
+    by_class: dict[str, list[str]] = {class_id: [] for class_id in FULL_C6_POLICY_CLASS_IDS}
     for row in rows:
         by_class[row.class_id].append(row.authority_identity)
     for item in artifact.classes:
@@ -589,19 +665,27 @@ def _validate_rows_and_partitions(
         if item.observed_count != len(
             identities
         ) or item.canonical_identity_set_sha256 != artifact_policy_identity_set_digest(
-            item.class_id, identities
+            item.class_id,
+            identities,
+            _artifact_contract_dialect=dialect_name,
         ):
-            raise FullC6PolicyTemplateError("Full C6 technical rows differ from C6.14")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical rows differ from artifact coverage"
+            )
     for external_item in external.classes:
         identities = tuple(sorted(by_class[external_item.class_id]))
         if external_item.observed_count != len(
             identities
         ) or external_item.canonical_identity_set_sha256 != (
             full_c6_external_authority_identity_set_digest(
-                external_item.class_id, identities
+                external_item.class_id,
+                identities,
+                _artifact_contract_dialect=dialect_name,
             )
         ):
-            raise FullC6PolicyTemplateError("Full C6 technical rows differ from C5.2")
+            raise FullC6PolicyTemplateError(
+                "artifact policy technical rows differ from the external-source partition"
+            )
 
 
 def _validate_license_observation_bindings(
@@ -618,17 +702,13 @@ def _validate_license_observation_bindings(
     if len(project) != 1 or len(cargo) != sum(
         item.subject_kind == "cargo-registry-package" for item in internal
     ):
-        raise FullC6PolicyTemplateError(
-            "Full C6 internal license subject coverage is ambiguous"
-        )
+        raise FullC6PolicyTemplateError("artifact coverage license-subject mapping is ambiguous")
     required_cargo = {
-        row.canonical_identity
-        for row in rows
-        if row.class_id == "cargo-component:registry-package"
+        row.canonical_identity for row in rows if row.class_id == "cargo-component:registry-package"
     }
     if set(cargo) != required_cargo:
         raise FullC6PolicyTemplateError(
-            "Full C6 Cargo license observations differ from technical rows"
+            "artifact coverage Cargo license observations differ from technical rows"
         )
     for row in rows:
         if row.required_license_disposition != "owner-approved-allow":
@@ -637,14 +717,12 @@ def _validate_license_observation_bindings(
             expected = external.observation_sha256
         elif row.class_id == "cargo-component:registry-package":
             observation = cargo.get(row.canonical_identity)
-            expected = (
-                observation.observation_sha256 if observation is not None else None
-            )
+            expected = observation.observation_sha256 if observation is not None else None
         else:
             expected = project[0].observation_sha256
         if row.license_observation_sha256 != expected:
             raise FullC6PolicyTemplateError(
-                "Full C6 policy row binds a stale license-material observation"
+                "artifact policy row binds a stale license-material observation"
             )
 
 
@@ -676,29 +754,36 @@ def _validate_transformations(
     used_outputs: set[str] = set()
     for record in transformations:
         if record.authority_partition_sha256 != authority_partition_sha256:
-            raise FullC6PolicyTemplateError("Full C6 transformation partition is stale")
-        if record.output_identity not in output_by_authority or output_by_authority[
-            record.output_identity
-        ] != record.output_identity_sha256:
-            raise FullC6PolicyTemplateError("Full C6 transformation output is stale")
+            raise FullC6PolicyTemplateError("artifact policy transformation partition is stale")
+        if (
+            record.output_identity not in output_by_authority
+            or output_by_authority[record.output_identity] != record.output_identity_sha256
+        ):
+            raise FullC6PolicyTemplateError("artifact policy transformation output is stale")
         if record.output_identity in used_outputs:
-            raise FullC6PolicyTemplateError("Full C6 transformation output is duplicated")
+            raise FullC6PolicyTemplateError("artifact policy transformation output is duplicated")
         for identity, digest in zip(
             record.source_identities,
             record.source_identity_sha256s,
             strict=True,
         ):
             if source_by_authority.get(identity) != digest:
-                raise FullC6PolicyTemplateError("Full C6 transformation source is stale")
+                raise FullC6PolicyTemplateError("artifact policy transformation source is stale")
         used_outputs.add(record.output_identity)
     if used_outputs != set(output_by_authority):
-        raise FullC6PolicyTemplateError("Full C6 transformation coverage is incomplete")
+        raise FullC6PolicyTemplateError("artifact policy transformation coverage is incomplete")
 
 
-def _parse_row(value: object) -> FullC6TechnicalPolicyRow:
+def _parse_row(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6TechnicalPolicyRow:
     data = _exact_dict(value, _ROW_FIELDS, "technical row")
     if data["owner_decision"] is not None:
-        raise FullC6PolicyTemplateError("Full C6 technical row cannot contain owner decision")
+        raise FullC6PolicyTemplateError(
+            "artifact policy technical row cannot contain an owner decision"
+        )
     row = FullC6TechnicalPolicyRow(
         class_id=_string(data["class_id"], "technical row class"),
         canonical_identity=_string(data["canonical_identity"], "canonical identity"),
@@ -712,27 +797,30 @@ def _parse_row(value: object) -> FullC6TechnicalPolicyRow:
         transformation_disposition=_string(
             data["transformation_disposition"], "transformation disposition"
         ),
-        license_evidence_origin=_string(
-            data["license_evidence_origin"], "license evidence origin"
-        ),  # type: ignore[arg-type]
+        license_evidence_origin=_string(data["license_evidence_origin"], "license evidence origin"),  # type: ignore[arg-type]
         license_observation_sha256=_optional_string(
             data["license_observation_sha256"],
             "license observation SHA-256",
         ),
+        _artifact_contract_dialect=dialect.name,
     )
     if data["canonical_identity_sha256"] != row.canonical_identity_sha256:
-        raise FullC6PolicyTemplateError("Full C6 technical row digest is stale")
+        raise FullC6PolicyTemplateError("artifact policy technical row digest is stale")
     return row
 
 
-def _parse_external_license_observation(value: object) -> FullC6ExternalLicenseObservation:
+def _parse_external_license_observation(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6ExternalLicenseObservation:
     data = _exact_dict(value, _EXTERNAL_LICENSE_FIELDS, "external license observation")
     if (
         data["authority"] != "independent-exact-wheel-byte-observation"
         or data["legal_approval_inferred"] is not False
         or data["distribution_authorized"] is not False
     ):
-        raise FullC6PolicyTemplateError("Full C6 external observation claims authority")
+        raise FullC6PolicyTemplateError("external-source partition observation claims authority")
     files = _exact_list(data["license_files"], "external license files")
     observation = FullC6ExternalLicenseObservation(
         declared_spdx=_string(data["declared_spdx"], "external declared SPDX"),
@@ -744,14 +832,17 @@ def _parse_external_license_observation(value: object) -> FullC6ExternalLicenseO
             data["detector_payload_sha256"], "external detector payload"
         ),
         license_files=tuple(_parse_policy_file(item) for item in files),
+        _artifact_contract_dialect=dialect.name,
     )
     if data["observation_sha256"] != observation.observation_sha256:
-        raise FullC6PolicyTemplateError("Full C6 external observation digest is stale")
+        raise FullC6PolicyTemplateError("external-source partition observation digest is stale")
     return observation
 
 
 def _parse_internal_license_observation(
     value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6InternalLicenseObservation:
     data = _exact_dict(value, _INTERNAL_LICENSE_FIELDS, "internal license observation")
     if (
@@ -759,12 +850,10 @@ def _parse_internal_license_observation(
         or data["legal_approval_inferred"] is not False
         or data["distribution_authorized"] is not False
     ):
-        raise FullC6PolicyTemplateError("Full C6 internal observation claims authority")
+        raise FullC6PolicyTemplateError("artifact coverage observation claims authority")
     files = _exact_list(data["license_files"], "internal license files")
     observation = FullC6InternalLicenseObservation(
-        subject_kind=_string(
-            data["subject_kind"], "internal license subject kind"
-        ),  # type: ignore[arg-type]
+        subject_kind=_string(data["subject_kind"], "internal license subject kind"),  # type: ignore[arg-type]
         subject_canonical_identity=_string(
             data["subject_canonical_identity"],
             "internal license subject identity",
@@ -780,9 +869,10 @@ def _parse_internal_license_observation(
             "internal detector payload",
         ),
         license_files=tuple(_parse_policy_file(item) for item in files),
+        _artifact_contract_dialect=dialect.name,
     )
     if data["observation_sha256"] != observation.observation_sha256:
-        raise FullC6PolicyTemplateError("Full C6 internal observation digest is stale")
+        raise FullC6PolicyTemplateError("artifact coverage observation digest is stale")
     return observation
 
 
@@ -798,19 +888,19 @@ def _parse_policy_file(value: object) -> FullC6PolicyFileIdentity:
 
 def _exact_dict(value: object, fields: set[str], label: str) -> dict[str, object]:
     if type(value) is not dict or set(value) != fields:
-        raise FullC6PolicyTemplateError(f"Full C6 {label} schema is invalid")
+        raise FullC6PolicyTemplateError(f"artifact policy {label} schema is invalid")
     return value
 
 
 def _exact_list(value: object, label: str) -> list[object]:
     if type(value) is not list:
-        raise FullC6PolicyTemplateError(f"Full C6 {label} must be an array")
+        raise FullC6PolicyTemplateError(f"artifact policy {label} must be an array")
     return value
 
 
 def _string(value: object, label: str) -> str:
     if type(value) is not str:
-        raise FullC6PolicyTemplateError(f"Full C6 {label} must be a string")
+        raise FullC6PolicyTemplateError(f"artifact policy {label} must be a string")
     return value
 
 
@@ -820,7 +910,7 @@ def _optional_string(value: object, label: str) -> str | None:
 
 def _integer(value: object, label: str) -> int:
     if type(value) is not int:
-        raise FullC6PolicyTemplateError(f"Full C6 {label} must be an integer")
+        raise FullC6PolicyTemplateError(f"artifact policy {label} must be an integer")
     return value
 
 
@@ -836,7 +926,7 @@ def _require_owner_identity(value: object) -> None:
         or unicodedata.normalize("NFC", value) != value
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .,_+@:-]*", value) is None
     ):
-        raise FullC6PolicyTemplateError("Full C6 observed owner identity is invalid")
+        raise FullC6PolicyTemplateError("artifact policy observed owner identity is invalid")
 
 
 def _require_identity(value: object, label: str) -> None:
@@ -851,7 +941,7 @@ def _require_identity(value: object, label: str) -> None:
         or ".." in PurePosixPath(value).parts
         or PureWindowsPath(value).drive
     ):
-        raise FullC6PolicyTemplateError(f"Full C6 {label} is invalid")
+        raise FullC6PolicyTemplateError(f"artifact policy {label} is invalid")
 
 
 def _alias(value: str) -> str:
@@ -866,21 +956,30 @@ def _digest(value: object) -> str:
     try:
         return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
     except (TypeError, ValueError, RecursionError, FullC6PolicyError) as exc:
-        raise FullC6PolicyTemplateError("Full C6 technical template cannot be hashed") from exc
+        raise FullC6PolicyTemplateError(
+            "artifact policy technical template cannot be hashed"
+        ) from exc
+
+
+def _contract_dialect(name: str) -> ArtifactContractDialect:
+    try:
+        return ARTIFACT_CONTRACT_DIALECTS[name]
+    except KeyError as exc:
+        raise FullC6PolicyTemplateError("artifact policy template dialect is invalid") from exc
 
 
 _CURRENT_TEMPLATE_IDENTITY = CURRENT.identity(POLICY_TEMPLATE)
 FULL_C6_TECHNICAL_POLICY_TEMPLATE_KIND = _CURRENT_TEMPLATE_IDENTITY.kind
 FULL_C6_TECHNICAL_POLICY_TEMPLATE_DOMAIN = _CURRENT_TEMPLATE_IDENTITY.domain
-FULL_C6_TECHNICAL_POLICY_TEMPLATE_SCHEMA_VERSION = (
-    _CURRENT_TEMPLATE_IDENTITY.schema_version
+FULL_C6_TECHNICAL_POLICY_TEMPLATE_SCHEMA_VERSION = _CURRENT_TEMPLATE_IDENTITY.schema_version
+FULL_C6_TECHNICAL_TRANSFORMATION_SET_DOMAIN = CURRENT.string_value(
+    TECHNICAL_TRANSFORMATION_SET_DOMAIN
 )
-FULL_C6_TECHNICAL_TRANSFORMATION_SET_DOMAIN = "rextio.full-c6-transformation-set.v1"
-FULL_C6_INTERNAL_LICENSE_OBSERVATION_DOMAIN = (
-    "rextio.full-c6-internal-license-observation.v1"
+FULL_C6_INTERNAL_LICENSE_OBSERVATION_DOMAIN = CURRENT.string_value(
+    INTERNAL_LICENSE_OBSERVATION_DOMAIN
 )
-FULL_C6_EXTERNAL_LICENSE_OBSERVATION_DOMAIN = (
-    "rextio.full-c6-external-license-observation.v1"
+FULL_C6_EXTERNAL_LICENSE_OBSERVATION_DOMAIN = CURRENT.string_value(
+    EXTERNAL_LICENSE_OBSERVATION_DOMAIN
 )
 MAX_FULL_C6_POLICY_TEMPLATE_BYTES = MAX_FULL_C6_POLICY_SERIALIZED_BYTES + 512 * 1024
 

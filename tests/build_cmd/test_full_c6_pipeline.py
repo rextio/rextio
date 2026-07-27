@@ -1,4 +1,4 @@
-"""Vertical-slice tests for strict C5.2 and Full C6 pipeline coordination."""
+"""Vertical-slice tests for strict external-source native linkage and artifact contract pipeline coordination."""
 
 from __future__ import annotations
 
@@ -571,7 +571,7 @@ def test_configured_signed_publication_reuses_exact_unsigned_request(
         authority=signed_authority,
         state_directory=state,
         publication_root=publication_root,
-        bundle_name=f"{subject_path.name.removesuffix('.whl')}.full-c6",
+        bundle_name=f"{subject_path.name.removesuffix('.whl')}.artifact-bundle",
         subject_path=subject_path,
         final_signature_path=signature_path,
         public_key_path=key_path,
@@ -754,7 +754,7 @@ def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: 
         authority=signed_authority,
     )
     subject_path = Path(arguments["subject_path"])
-    bundle_name = f"{subject_path.name.removesuffix('.whl')}.full-c6"
+    bundle_name = f"{subject_path.name.removesuffix('.whl')}.artifact-bundle"
     adapter = _full_c6_atomic_publication_adapter(
         authority=signed_authority,
         state_directory=state,
@@ -824,14 +824,14 @@ def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: 
         authority=signed_authority,
         state_directory=state,
         publication_root=publication_root,
-        bundle_name="alternate-name.full-c6",
+        bundle_name="alternate-name.artifact-bundle",
         subject_path=subject_path,
         final_signature_path=signature_path,
         public_key_path=key_path,
     )
     with pytest.raises(FullC6PipelineError, match="publication paths"):
         wrong_name_adapter(signed_authority, result.request, result.gate)
-    assert not (publication_root / "alternate-name.full-c6").exists()
+    assert not (publication_root / "alternate-name.artifact-bundle").exists()
 
     mutated_name_adapter = _full_c6_atomic_publication_adapter(
         authority=signed_authority,
@@ -842,7 +842,7 @@ def test_signed_pipeline_passes_sealed_gate_then_atomically_publishes(tmp_path: 
         final_signature_path=signature_path,
         public_key_path=key_path,
     )
-    object.__setattr__(mutated_name_adapter, "bundle_name", "mutated.full-c6")
+    object.__setattr__(mutated_name_adapter, "bundle_name", "mutated.artifact-bundle")
     with pytest.raises(FullC6PipelineError, match="adapter seal"):
         mutated_name_adapter(signed_authority, result.request, result.gate)
 

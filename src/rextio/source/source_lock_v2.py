@@ -21,6 +21,7 @@ from typing import SupportsIndex
 
 from rextio.artifacts import ArtifactProvenance
 from rextio.artifacts.contract_dialects import (
+    ARTIFACT_CONTRACT_DIALECTS,
     CURRENT,
     LEGACY_0_1_7,
     SOURCE_LOCK_INDEPENDENT_DETECTION,
@@ -29,6 +30,7 @@ from rextio.artifacts.contract_dialects import (
     SOURCE_LOCK_SIGNED_MESSAGE,
     SOURCE_LOCK_VERIFICATION_RECEIPT,
     ArtifactContractDialect,
+    require_current_dialect,
     resolve_artifact_contract_dialect,
 )
 from rextio.build.signing import verify_ed25519_signature
@@ -396,6 +398,7 @@ class SourceLockV2VerifiedContext:
     wheel: VerifiedSourceWheel
     analyses: tuple[ExternalSourceNativePlan, ...]
     manifest: SourceLockV2Manifest
+    _signature_contract_dialect: str
     _transaction_seal: bytes
     _frozen: bool
 
@@ -405,6 +408,7 @@ class SourceLockV2VerifiedContext:
         "wheel",
         "analyses",
         "manifest",
+        "_signature_contract_dialect",
         "_transaction_seal",
         "_frozen",
     )
@@ -417,6 +421,7 @@ class SourceLockV2VerifiedContext:
         wheel: VerifiedSourceWheel,
         analyses: tuple[ExternalSourceNativePlan, ...],
         manifest: SourceLockV2Manifest,
+        _signature_contract_dialect: str | None = None,
         _transaction_seal: bytes | None = None,
     ) -> None:
         if type(_transaction_seal) is not bytes:
@@ -426,6 +431,11 @@ class SourceLockV2VerifiedContext:
         object.__setattr__(self, "wheel", wheel)
         object.__setattr__(self, "analyses", analyses)
         object.__setattr__(self, "manifest", manifest)
+        object.__setattr__(
+            self,
+            "_signature_contract_dialect",
+            _signature_contract_dialect,
+        )
         object.__setattr__(self, "_transaction_seal", _transaction_seal)
         object.__setattr__(self, "_frozen", True)
         self._validate_bindings()
@@ -435,6 +445,7 @@ class SourceLockV2VerifiedContext:
             wheel=wheel,
             analyses=analyses,
             manifest=manifest,
+            signature_contract_dialect=_signature_contract_dialect,
         )
         if not hmac.compare_digest(_transaction_seal, expected_seal):
             raise ValueError("SourceLock v2 verified context seal is invalid")
@@ -466,10 +477,21 @@ class SourceLockV2VerifiedContext:
             transform=self.manifest.transform,
         )
         manifest_dialect = _source_lock_dialect(self.manifest)
+        try:
+            signature_dialect = ARTIFACT_CONTRACT_DIALECTS[
+                self._signature_contract_dialect
+            ]
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                "SourceLock signature dialect marker is inconsistent"
+            ) from exc
         if manifest_dialect is not CURRENT:
             _apply_source_lock_dialect(expected, manifest_dialect)
         if (
-            expected != self.manifest
+            signature_dialect is not manifest_dialect
+            or self.admission.domain
+            != signature_dialect.string_value(SOURCE_LOCK_VERIFICATION_RECEIPT)
+            or expected != self.manifest
             or self.admission.manifest_sha256 != self.manifest.manifest_sha256
             or self.admission.public_key_sha256 != self.manifest.trusted_public_key_sha256
         ):
@@ -518,6 +540,7 @@ def _source_lock_context_seal(
     wheel: VerifiedSourceWheel,
     analyses: tuple[ExternalSourceNativePlan, ...],
     manifest: SourceLockV2Manifest,
+    signature_contract_dialect: str | None,
 ) -> bytes:
     """Bind a context to safe semantic identities with a process-local MAC."""
     payload = {
@@ -526,6 +549,7 @@ def _source_lock_context_seal(
         "wheel_authority_sha256": wheel.semantic_sha256,
         "analysis_semantic_sha256": [item.semantic_sha256 for item in analyses],
         "manifest_sha256": manifest.manifest_sha256,
+        "signature_contract_dialect": signature_contract_dialect,
     }
     return hmac.new(_VERIFIED_CONTEXT_KEY, _canonical_json(payload), hashlib.sha256).digest()
 
@@ -537,6 +561,7 @@ def _create_source_lock_v2_verified_context(
     wheel: VerifiedSourceWheel,
     analyses: tuple[ExternalSourceNativePlan, ...],
     manifest: SourceLockV2Manifest,
+    signature_dialect: ArtifactContractDialect,
 ) -> SourceLockV2VerifiedContext:
     seal = _source_lock_context_seal(
         admission=admission,
@@ -544,6 +569,7 @@ def _create_source_lock_v2_verified_context(
         wheel=wheel,
         analyses=analyses,
         manifest=manifest,
+        signature_contract_dialect=signature_dialect.name,
     )
     return SourceLockV2VerifiedContext(
         admission=admission,
@@ -551,6 +577,7 @@ def _create_source_lock_v2_verified_context(
         wheel=wheel,
         analyses=analyses,
         manifest=manifest,
+        _signature_contract_dialect=signature_dialect.name,
         _transaction_seal=seal,
     )
 
@@ -569,6 +596,7 @@ def validate_source_lock_v2_verified_context(
             wheel=value.wheel,
             analyses=value.analyses,
             manifest=value.manifest,
+            signature_contract_dialect=value._signature_contract_dialect,
         )
         return hmac.compare_digest(value._transaction_seal, expected)
     except Exception:
@@ -603,6 +631,37 @@ class SourceLockV2Verification:
         }
 
 
+def require_current_source_lock_v2_verification(
+    value: SourceLockV2Verification,
+) -> None:
+    """Require a sealed verification whose manifest and signature are current."""
+    if (
+        type(value) is not SourceLockV2Verification
+        or value.admission.status != "admitted"
+        or type(value.context) is not SourceLockV2VerifiedContext
+        or not validate_source_lock_v2_verified_context(value.context)
+    ):
+        raise SourceLockV2Error(
+            "current SourceLock contract requires an admitted verification context"
+        )
+    manifest_dialect = _source_lock_dialect(value.context.manifest)
+    try:
+        signature_dialect = ARTIFACT_CONTRACT_DIALECTS[
+            value.context._signature_contract_dialect
+        ]
+    except (KeyError, TypeError) as exc:
+        raise SourceLockV2Error(
+            "SourceLock signature dialect marker is inconsistent"
+        ) from exc
+    try:
+        require_current_dialect(manifest_dialect)
+        require_current_dialect(signature_dialect)
+    except ValueError as exc:
+        raise SourceLockV2Error(
+            "production requires current SourceLock manifest and signature dialects"
+        ) from exc
+
+
 def build_source_lock_v2_manifest(
     *,
     plan: ExternalSourcePlan,
@@ -632,7 +691,9 @@ def build_source_lock_v2_manifest(
         or not wheel.license_entry_paths
         or not any(item.role == "license-file" for item in plan.metadata_files)
     ):
-        raise SourceLockV2Error("SourceLock v2 inputs do not match the C5.1 plan")
+        raise SourceLockV2Error(
+            "SourceLock v2 inputs do not match the external-source plan"
+        )
     if (
         type(analyses) is not tuple
         or not analyses
@@ -978,6 +1039,7 @@ def verify_source_lock_v2_with_context(
             wheel=wheel,
             analyses=analyses,
             manifest=manifest,
+            signature_dialect=signature_dialect,
         )
         return SourceLockV2Verification(admission=admission, context=context)
     except Exception:
@@ -1368,6 +1430,7 @@ __all__ = [
     "build_source_lock_v2_manifest",
     "parse_source_lock_v2_manifest",
     "parse_source_lock_v2_signature",
+    "require_current_source_lock_v2_verification",
     "validate_source_lock_v2_verified_context",
     "verify_source_lock_v2",
     "verify_source_lock_v2_with_context",

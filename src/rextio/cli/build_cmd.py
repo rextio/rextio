@@ -118,19 +118,19 @@ _FULL_C6_UNCLASSIFIED_REASON = "production-authority-unclassified"
 _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     (
         FullC6ProductionError,
-        "Full C6 production authority collection failed closed",
+        "artifact build production authority collection failed closed",
     ): "production-collection-failed",
     (
         FullC6ProductionError,
-        "Full C6 production toolchain support authority is invalid",
+        "artifact build production toolchain support authority is invalid",
     ): "production-toolchain-support-invalid",
     (
         FullC6ProductionError,
-        "Full C6 production toolchain support authority failed closed",
+        "artifact build production toolchain support authority failed closed",
     ): "production-toolchain-support",
     (
         FullC6ProductionError,
-        "Full C6 production prerequisites are invalid",
+        "artifact build production prerequisites are invalid",
     ): "production-prerequisites-invalid",
     (
         FullC6ProductionError,
@@ -138,19 +138,19 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     ): "production-cargo-workspace-mismatch",
     (
         FullC6ProductionError,
-        "Full C6 production toolchain support authority was replaced",
+        "artifact build production toolchain support authority was replaced",
     ): "production-toolchain-support-replaced",
     (
         FullC6ProductionError,
-        "Full C6 effective config is not canonical",
+        "artifact build effective config is not canonical",
     ): "production-config-noncanonical",
     (
         FullC6ProductionError,
-        "Full C6 production lifecycle is disabled",
+        "artifact build production lifecycle is disabled",
     ): "production-lifecycle-disabled",
     (
         FullC6ProductionError,
-        "Full C6 production requires exact preflight",
+        "artifact build production requires exact preflight",
     ): "production-preflight-invalid",
     (
         FullC6ProductionError,
@@ -166,31 +166,31 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     ): "external-reanalysis-mismatch",
     (
         FullC6ExecutorError,
-        "Full C6 toolchain support closure failed closed",
+        "artifact build toolchain support closure failed closed",
     ): "executor-toolchain-support",
     (
         FullC6ExecutorError,
-        "Full C6 critical toolchain support binding failed closed",
+        "artifact build critical toolchain support binding failed closed",
     ): "executor-toolchain-support",
     (
         FullC6ExecutorError,
-        "Full C6 native execution requires the fixed CPython 3.11 PyO3 profile",
+        "artifact build native execution requires the fixed CPython 3.11 PyO3 profile",
     ): "executor-pyo3-profile",
     (
         FullC6ExecutorError,
-        "Full C6 native read-sandbox plan failed closed",
+        "artifact build native read-sandbox plan failed closed",
     ): "executor-sandbox-plan",
     (
         FullC6ExecutorError,
-        "Full C6 Linux seccomp lease failed closed",
+        "artifact build Linux seccomp lease failed closed",
     ): "executor-seccomp-setup",
     (
         FullC6ExecutorError,
-        "Full C6 Linux read sandbox failed closed",
+        "artifact build Linux read sandbox failed closed",
     ): "executor-sandbox-launch",
     (
         FullC6ExecutorError,
-        "Full C6 native read sandbox failed closed",
+        "artifact build native read sandbox failed closed",
     ): "executor-sandbox-execution",
     (
         FullC6ExecutorError,
@@ -258,31 +258,31 @@ _FULL_C6_FAILURE_REASON_CODES: dict[tuple[type[BaseException], str], str] = {
     ): "linux-launcher-exit-125",
     (
         FullC6ReadSandboxError,
-        "Full C6 bubblewrap is unavailable",
+        "artifact build bubblewrap is unavailable",
     ): "sandbox-bubblewrap-unavailable",
     (
         FullC6ReadSandboxError,
-        "Full C6 bubblewrap executable is unsafe",
+        "artifact build bubblewrap executable is unsafe",
     ): "sandbox-bubblewrap-unsafe",
     (
         FullC6ReadSandboxError,
-        "Full C6 Linux seccomp memfd is unavailable on this host",
+        "artifact build Linux seccomp memfd is unavailable on this host",
     ): "sandbox-seccomp-unavailable",
     (
         FullC6ReadSandboxError,
-        "Full C6 Linux sandbox path is unavailable",
+        "artifact build Linux sandbox path is unavailable",
     ): "sandbox-path-unavailable",
     (
         FullC6Pyo3ConfigError,
-        "Full C6 PyO3 config target differs from the running host",
+        "artifact build PyO3 config target differs from the running host",
     ): "pyo3-target-mismatch",
     (
         FullC6Pyo3ConfigError,
-        "Full C6 PyO3 config requires CPython 3.11",
+        "artifact build PyO3 config requires CPython 3.11",
     ): "pyo3-cpython-version-mismatch",
     (
         FullC6ToolchainSupportError,
-        "Full C6 critical support path changed",
+        "artifact build critical support path changed",
     ): "toolchain-critical-path-changed",
 }
 _FULL_C6_FAILURE_REASON_CODES.update(

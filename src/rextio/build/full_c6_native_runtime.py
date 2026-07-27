@@ -1,4 +1,4 @@
-"""Process-sealed native runtime authority for the bounded Full C6 profile.
+"""Process-sealed native runtime authority for the bounded artifact build profile.
 
 The public factory accepts only an exact, already validated native-output
 transaction.  Paths, wheel members, static observations, loader snapshots,
@@ -24,6 +24,10 @@ import threading
 from types import ModuleType
 from typing import SupportsIndex
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    NATIVE_RUNTIME_AUTHORITY_DOMAIN,
+)
 from rextio.artifacts.evidence import (
     NativeRuntimeInventory,
     NativeRuntimeTransitiveClosureInventory,
@@ -75,7 +79,9 @@ from rextio.build.toolchain_identity import (
 )
 
 
-FULL_C6_NATIVE_RUNTIME_AUTHORITY_DOMAIN = "rextio.full-c6-native-runtime.v1"
+FULL_C6_NATIVE_RUNTIME_AUTHORITY_DOMAIN = CURRENT.string_value(
+    NATIVE_RUNTIME_AUTHORITY_DOMAIN
+)
 FULL_C6_NATIVE_RUNTIME_MODULE_NAME = "_rextio_native"
 _SUPPORTED_TARGETS = frozenset(
     {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}
@@ -163,28 +169,28 @@ class FullC6NativeRuntimeAuthority:
     _transaction_seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 native runtime authority requires the sealed factory")
+        raise TypeError("artifact build native runtime authority requires the sealed factory")
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 native runtime authority is immutable")
+        raise TypeError("artifact build native runtime authority is immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 native runtime authority is immutable")
+        raise TypeError("artifact build native runtime authority is immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 native runtime authority cannot be copied")
+        raise TypeError("artifact build native runtime authority cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 native runtime authority cannot be copied")
+        raise TypeError("artifact build native runtime authority cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 native runtime authority cannot be serialized")
+        raise TypeError("artifact build native runtime authority cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 native runtime authority cannot be serialized")
+        raise TypeError("artifact build native runtime authority cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 native runtime authority cannot be serialized")
+        raise TypeError("artifact build native runtime authority cannot be serialized")
 
     def __repr__(self) -> str:
         return "FullC6NativeRuntimeAuthority(material=<sealed>)"
@@ -303,7 +309,7 @@ class _UndefinedImport:
                 )
             )
         ):
-            raise ValueError("Full C6 imported symbol is invalid")
+            raise ValueError("artifact build imported symbol is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,7 +359,7 @@ class _SymbolProviderBinding:
                 )
             )
         ):
-            raise ValueError("Full C6 symbol-provider binding is invalid")
+            raise ValueError("artifact build symbol-provider binding is invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -410,7 +416,7 @@ class _PythonAbiIdentity:
             )
             or not self.soabi.startswith("cpython-311-")
         ):
-            raise ValueError("Full C6 Python ABI identity is invalid")
+            raise ValueError("artifact build Python ABI identity is invalid")
 
     @property
     def digest(self) -> str:
@@ -436,7 +442,7 @@ class _SymbolProviderObservation:
 
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.toolchain_sha256) is None:
-            raise ValueError("Full C6 symbol-provider toolchain identity is invalid")
+            raise ValueError("artifact build symbol-provider toolchain identity is invalid")
         if (
             type(self.python_abi) is not _PythonAbiIdentity
             or type(self.python_images) is not tuple
@@ -445,7 +451,7 @@ class _SymbolProviderObservation:
             or self.python_images
             != tuple(sorted(self.python_images, key=lambda image: image.path))
         ):
-            raise ValueError("Full C6 Python runtime image set is invalid")
+            raise ValueError("artifact build Python runtime image set is invalid")
         if (
             type(self.bindings) is not tuple
             or not self.bindings
@@ -455,7 +461,7 @@ class _SymbolProviderObservation:
             != tuple(sorted(self.bindings, key=lambda binding: binding.symbol))
             or len({binding.symbol for binding in self.bindings}) != len(self.bindings)
         ):
-            raise ValueError("Full C6 symbol-provider bindings are invalid")
+            raise ValueError("artifact build symbol-provider bindings are invalid")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -498,7 +504,7 @@ class _StaticRuntimeObservations:
 
 @dataclass(frozen=True, slots=True)
 class _FullC6NativeRuntimeMaterial:
-    """Validated private material for a later aggregate Full C6 gate."""
+    """Validated private material for a later aggregate artifact build gate."""
 
     output_transaction: FullC6NativeOutputTransaction
     runtime_inventory: NativeRuntimeInventory
@@ -534,7 +540,7 @@ def create_full_c6_native_runtime_authority(
             )
     except Exception:
         raise FullC6NativeRuntimeError(
-            "Full C6 native runtime authority could not be established"
+            "artifact build native runtime authority could not be established"
         ) from None
 
 
@@ -802,7 +808,7 @@ def _validated_full_c6_native_runtime_material(
     authority: FullC6NativeRuntimeAuthority,
 ) -> _FullC6NativeRuntimeMaterial:
     if not validate_full_c6_native_runtime_authority(authority):
-        raise FullC6NativeRuntimeError("Full C6 native runtime authority is stale")
+        raise FullC6NativeRuntimeError("artifact build native runtime authority is stale")
     return _FullC6NativeRuntimeMaterial(
         output_transaction=authority._output_transaction,
         runtime_inventory=authority._runtime_inventory,
@@ -827,13 +833,13 @@ def _derive_output_context(
         or target not in _SUPPORTED_TARGETS
         or toolchain_sha256 != receipt.toolchain_sha256
     ):
-        raise FullC6NativeRuntimeError("Full C6 native runtime target is unsupported")
+        raise FullC6NativeRuntimeError("artifact build native runtime target is unsupported")
     root = full_c6_native_output_python_root(transaction)
     extension = full_c6_native_output_extension_path(transaction)
     if extension.parent != root or extension.name.split(".", 1)[0] != (
         FULL_C6_NATIVE_RUNTIME_MODULE_NAME
     ):
-        raise FullC6NativeRuntimeError("Full C6 native extension identity is invalid")
+        raise FullC6NativeRuntimeError("artifact build native extension identity is invalid")
     return _NativeOutputContext(
         output_digest=transaction.digest,
         target_triple=target,
@@ -862,7 +868,7 @@ def _collect_static_observations(
         target_triple=context.target_triple,
     )
     if path_resolution is None:
-        raise FullC6NativeRuntimeError("Full C6 native path resolution is unavailable")
+        raise FullC6NativeRuntimeError("artifact build native path resolution is unavailable")
     transitive_closure = collect_native_runtime_transitive_closure(
         installed_path=context.extension_path,
         expected_python_root=context.python_root,
@@ -876,14 +882,14 @@ def _collect_static_observations(
         expected_python_root=context.python_root,
     )
     if transitive_closure is None or refreshed is None:
-        raise FullC6NativeRuntimeError("Full C6 native closure is unavailable")
+        raise FullC6NativeRuntimeError("artifact build native closure is unavailable")
     observations = _StaticRuntimeObservations(
         runtime_inventory=runtime_inventory,
         path_resolution=refreshed,
         transitive_closure=transitive_closure,
     )
     if not _validate_static_bindings(context, observations):
-        raise FullC6NativeRuntimeError("Full C6 native observations are stale")
+        raise FullC6NativeRuntimeError("artifact build native observations are stale")
     return observations
 
 
@@ -942,14 +948,14 @@ def _validate_static_bindings(
 def _validated_toolchain_digest(toolchain: BuildToolchainIdentity) -> str:
     try:
         if type(toolchain) is not BuildToolchainIdentity:
-            raise FullC6NativeRuntimeError("Full C6 toolchain identity is invalid")
+            raise FullC6NativeRuntimeError("artifact build toolchain identity is invalid")
         digest = toolchain.digest
         if type(digest) is not str or _SHA256.fullmatch(digest) is None:
-            raise FullC6NativeRuntimeError("Full C6 toolchain digest is invalid")
+            raise FullC6NativeRuntimeError("artifact build toolchain digest is invalid")
         return digest
     except (AttributeError, TypeError, ValueError):
         raise FullC6NativeRuntimeError(
-            "Full C6 toolchain identity is invalid"
+            "artifact build toolchain identity is invalid"
         ) from None
 
 
@@ -968,14 +974,14 @@ def _verify_runtime_inspector_identity(context: _NativeOutputContext) -> None:
     )
     if expected_name is None or len(matches) != 1:
         raise FullC6NativeRuntimeError(
-            "Full C6 runtime inspector identity is unavailable"
+            "artifact build runtime inspector identity is unavailable"
         )
     path = Path(f"/usr/bin/{expected_name}")
     try:
         verify_tool_identity(path, matches[0])
     except (OSError, ToolchainIdentityError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 runtime inspector differs from the sealed toolchain"
+            "artifact build runtime inspector differs from the sealed toolchain"
         ) from exc
 
 
@@ -994,13 +1000,13 @@ def _collect_symbol_provider_observation(
         or type(declared_system_images) is not tuple
         or type(declared_system_platform_images) is not tuple
     ):
-        raise FullC6NativeRuntimeError("Full C6 symbol-provider inputs are invalid")
+        raise FullC6NativeRuntimeError("artifact build symbol-provider inputs are invalid")
     toolchain_sha256 = _validated_toolchain_digest(context.toolchain)
     if (
         toolchain_sha256 != context.toolchain_sha256
         or runtime_receipt.final_snapshot_sha256 != final_snapshot.digest
     ):
-        raise FullC6NativeRuntimeError("Full C6 symbol-provider inputs are stale")
+        raise FullC6NativeRuntimeError("artifact build symbol-provider inputs are stale")
     _verify_runtime_inspector_identity(context)
     python_executable, python_abi, python_images = _collect_toolchain_python_images(
         context=context,
@@ -1023,7 +1029,7 @@ def _collect_symbol_provider_observation(
         != runtime_receipt.imported_symbols_sha256
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 imported-symbol observations disagree"
+            "artifact build imported-symbol observations disagree"
         )
     bindings = _bind_symbol_providers(
         imports=imports,
@@ -1040,7 +1046,7 @@ def _collect_symbol_provider_observation(
         context
     )
     if (fresh_main, fresh_abi) != (python_executable, python_abi):
-        raise FullC6NativeRuntimeError("Full C6 Python ABI identity changed")
+        raise FullC6NativeRuntimeError("artifact build Python ABI identity changed")
     try:
         observation = _SymbolProviderObservation(
             toolchain_sha256=toolchain_sha256,
@@ -1050,11 +1056,11 @@ def _collect_symbol_provider_observation(
         )
     except (TypeError, ValueError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 symbol-provider observation is invalid"
+            "artifact build symbol-provider observation is invalid"
         ) from exc
     if collect_loaded_runtime_images(context.target_triple) != final_snapshot:
         raise FullC6NativeRuntimeError(
-            "Full C6 loader changed during provider collection"
+            "artifact build loader changed during provider collection"
         )
     return observation
 
@@ -1068,20 +1074,20 @@ def _verify_toolchain_python_identity(
         or type(sys.executable) is not str
         or not sys.executable
     ):
-        raise FullC6NativeRuntimeError("Full C6 requires the frozen CPython 3.11 ABI")
+        raise FullC6NativeRuntimeError("artifact build requires the frozen CPython 3.11 ABI")
     try:
         python = Path(sys.executable).resolve(strict=True)
         verify_tool_identity(python, context.toolchain.python)
     except (OSError, AttributeError, ToolchainIdentityError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 current Python differs from the sealed toolchain"
+            "artifact build current Python differs from the sealed toolchain"
         ) from exc
     abi = _collect_python_abi_identity()
     if context.extension_path.name != (
         f"{FULL_C6_NATIVE_RUNTIME_MODULE_NAME}{abi.ext_suffix}"
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 extension ABI differs from the sealed Python toolchain"
+            "artifact build extension ABI differs from the sealed Python toolchain"
         )
     return python, abi
 
@@ -1091,7 +1097,7 @@ def _collect_python_abi_identity() -> _PythonAbiIdentity:
         value = sysconfig.get_config_var(name)
         if type(value) is not str or not value:
             raise FullC6NativeRuntimeError(
-                "Full C6 required Python ABI configuration is unavailable"
+                "artifact build required Python ABI configuration is unavailable"
             )
         return value
 
@@ -1101,7 +1107,7 @@ def _collect_python_abi_identity() -> _PythonAbiIdentity:
             return None
         if type(value) is not str:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python ABI configuration is invalid"
+                "artifact build Python ABI configuration is invalid"
             )
         return value
 
@@ -1117,20 +1123,20 @@ def _collect_python_abi_identity() -> _PythonAbiIdentity:
         )
     except ValueError as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 Python ABI configuration is invalid"
+            "artifact build Python ABI configuration is invalid"
         ) from exc
 
 
 def _darwin_main_executable_path() -> Path:
     """Return dyld's actual process main, not CPython's launcher path."""
     if sys.platform != "darwin":
-        raise FullC6NativeRuntimeError("Full C6 dyld main executable is unavailable")
+        raise FullC6NativeRuntimeError("artifact build dyld main executable is unavailable")
     process = ctypes.CDLL(None)
     try:
         get_executable = process._NSGetExecutablePath
     except AttributeError as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 dyld main executable API is unavailable"
+            "artifact build dyld main executable API is unavailable"
         ) from exc
     get_executable.argtypes = (
         ctypes.c_char_p,
@@ -1140,18 +1146,18 @@ def _darwin_main_executable_path() -> Path:
     size = ctypes.c_uint32(0)
     if get_executable(None, ctypes.byref(size)) != -1 or not 2 <= size.value <= 4096:
         raise FullC6NativeRuntimeError(
-            "Full C6 dyld main executable size is invalid"
+            "artifact build dyld main executable size is invalid"
         )
     buffer = ctypes.create_string_buffer(size.value)
     if get_executable(buffer, ctypes.byref(size)) != 0 or not buffer.value:
         raise FullC6NativeRuntimeError(
-            "Full C6 dyld main executable is unavailable"
+            "artifact build dyld main executable is unavailable"
         )
     try:
         return Path(os.fsdecode(buffer.value)).resolve(strict=True)
     except (OSError, RuntimeError, UnicodeError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 dyld main executable identity is invalid"
+            "artifact build dyld main executable identity is invalid"
         ) from exc
 
 
@@ -1170,12 +1176,12 @@ def _verify_toolchain_python_process_identity(
     if abi.framework is None:
         if any(value is not None for value in framework_fields[1:]) or main != launcher:
             raise FullC6NativeRuntimeError(
-                "Full C6 non-framework Python launcher differs from dyld main"
+                "artifact build non-framework Python launcher differs from dyld main"
             )
         return launcher, main, abi
     if any(value is None for value in framework_fields):
         raise FullC6NativeRuntimeError(
-            "Full C6 framework Python ABI identity is incomplete"
+            "artifact build framework Python ABI identity is incomplete"
         )
     assert abi.framework is not None
     assert abi.framework_prefix is not None
@@ -1198,7 +1204,7 @@ def _verify_toolchain_python_process_identity(
         ).resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 framework Python path identity is unavailable"
+            "artifact build framework Python path identity is unavailable"
         ) from exc
     if (
         install.name != f"{abi.framework}.framework"
@@ -1207,7 +1213,7 @@ def _verify_toolchain_python_process_identity(
         or main != expected_main
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 framework Python launcher/main relationship is invalid"
+            "artifact build framework Python launcher/main relationship is invalid"
         )
     return launcher, main, abi
 
@@ -1224,10 +1230,10 @@ def _collect_toolchain_python_images(
     )
     if len(executable_matches) != 1:
         raise FullC6NativeRuntimeError(
-            "Full C6 Python executable is not exact in the final loader snapshot"
+            "artifact build Python executable is not exact in the final loader snapshot"
         )
     if capture_runtime_loaded_image(python) != executable_matches[0]:
-        raise FullC6NativeRuntimeError("Full C6 Python executable image is stale")
+        raise FullC6NativeRuntimeError("artifact build Python executable image is stale")
 
     dependencies = _inspect_python_dependencies(python, context.target_triple)
     dependency_names = tuple(PurePosixPath(item).name for item in dependencies)
@@ -1257,7 +1263,7 @@ def _collect_toolchain_python_images(
     if selected_name is not None:
         if dependency_names.count(selected_name) != 1 or len(python_like) != 1:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python runtime dependency is ambiguous"
+                "artifact build Python runtime dependency is ambiguous"
             )
         selected_dependency = next(
             item
@@ -1283,18 +1289,18 @@ def _collect_toolchain_python_images(
         )
         if len(candidates) != 1:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python runtime dependency is not exact"
+                "artifact build Python runtime dependency is not exact"
             )
         images.append(candidates[0])
     elif python_like:
         raise FullC6NativeRuntimeError(
-            "Full C6 Python runtime dependency disagrees with the current ABI"
+            "artifact build Python runtime dependency disagrees with the current ABI"
         )
     _fresh_launcher, fresh_main, fresh_abi = (
         _verify_toolchain_python_process_identity(context)
     )
     if (fresh_main, fresh_abi) != (python, abi):
-        raise FullC6NativeRuntimeError("Full C6 Python ABI identity changed")
+        raise FullC6NativeRuntimeError("artifact build Python ABI identity changed")
     return python, abi, tuple(sorted(images, key=lambda image: image.path))
 
 
@@ -1311,19 +1317,19 @@ def _inspect_python_dependencies(
         )
         dependencies = parse_elf_load_plan(output).dependencies
     else:
-        raise FullC6NativeRuntimeError("Full C6 Python target is unsupported")
+        raise FullC6NativeRuntimeError("artifact build Python target is unsupported")
     if (
         type(dependencies) is not tuple
         or len(dependencies) > _MAX_IMPORTED_SYMBOLS
         or not all(type(item) is str and item for item in dependencies)
     ):
-        raise FullC6NativeRuntimeError("Full C6 Python dependencies are invalid")
+        raise FullC6NativeRuntimeError("artifact build Python dependencies are invalid")
     return dependencies
 
 
 def _parse_macho_direct_dependencies(output: str) -> tuple[str, ...]:
     if type(output) is not str or not output.strip():
-        raise FullC6NativeRuntimeError("Full C6 Python Mach-O output is invalid")
+        raise FullC6NativeRuntimeError("artifact build Python Mach-O output is invalid")
     blocks: list[list[str]] = []
     current: list[str] | None = None
     for line in output.splitlines():
@@ -1341,7 +1347,7 @@ def _parse_macho_direct_dependencies(output: str) -> tuple[str, ...]:
         )
         if len(commands) != 1:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python Mach-O load command is malformed"
+                "artifact build Python Mach-O load command is malformed"
             )
         if commands[0] in {
             "LC_LOAD_WEAK_DYLIB",
@@ -1350,7 +1356,7 @@ def _parse_macho_direct_dependencies(output: str) -> tuple[str, ...]:
             "LC_REEXPORT_DYLIB",
         }:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python Mach-O dependency is not strong and direct"
+                "artifact build Python Mach-O dependency is not strong and direct"
             )
         if commands[0] != "LC_LOAD_DYLIB":
             continue
@@ -1361,7 +1367,7 @@ def _parse_macho_direct_dependencies(output: str) -> tuple[str, ...]:
         )
         if len(names) != 1:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python Mach-O dependency is malformed"
+                "artifact build Python Mach-O dependency is malformed"
             )
         name = names[0]
         if (
@@ -1374,16 +1380,16 @@ def _parse_macho_direct_dependencies(output: str) -> tuple[str, ...]:
             )
         ):
             raise FullC6NativeRuntimeError(
-                "Full C6 Python Mach-O dependency path is invalid"
+                "artifact build Python Mach-O dependency path is invalid"
             )
         dependencies.append(name)
     if not blocks or len(dependencies) > _MAX_IMPORTED_SYMBOLS:
         raise FullC6NativeRuntimeError(
-            "Full C6 Python Mach-O dependencies are invalid"
+            "artifact build Python Mach-O dependencies are invalid"
         )
     if len(dependencies) != len(set(dependencies)):
         raise FullC6NativeRuntimeError(
-            "Full C6 Python Mach-O dependencies are ambiguous"
+            "artifact build Python Mach-O dependencies are ambiguous"
         )
     return tuple(dependencies)
 
@@ -1402,7 +1408,7 @@ def _inspect_undefined_imports(
         )
         imports = _parse_elf_undefined_imports(output)
     else:
-        raise FullC6NativeRuntimeError("Full C6 imported-symbol target is unsupported")
+        raise FullC6NativeRuntimeError("artifact build imported-symbol target is unsupported")
     if (
         not imports
         or len(imports) > _MAX_IMPORTED_SYMBOLS
@@ -1426,7 +1432,7 @@ def _inspect_undefined_imports(
         )
         != len(imports)
     ):
-        raise FullC6NativeRuntimeError("Full C6 imported symbols are ambiguous")
+        raise FullC6NativeRuntimeError("artifact build imported symbols are ambiguous")
     return imports
 
 
@@ -1437,18 +1443,18 @@ def _macho_imports_from_records(
     for record in records:
         if type(record) is not _runtime._MachoImportedSymbol or record.weak_reference:
             raise FullC6NativeRuntimeError(
-                "Full C6 weak or invalid Mach-O import is forbidden"
+                "artifact build weak or invalid Mach-O import is forbidden"
             )
         raw_name = record.symbol
         if record.library_ordinal == _runtime._MACHO_DYNAMIC_LOOKUP_ORDINAL:
             if not raw_name.startswith("_"):
                 raise FullC6NativeRuntimeError(
-                    "Full C6 flat Mach-O import name is invalid"
+                    "artifact build flat Mach-O import name is invalid"
                 )
             lookup = raw_name[1:]
             if not lookup.startswith(("Py", "_Py")):
                 raise FullC6NativeRuntimeError(
-                    "Full C6 flat Mach-O import is not a Python ABI symbol"
+                    "artifact build flat Mach-O import is not a Python ABI symbol"
                 )
             mode = "macho-flat-python"
             qualifier = "dynamically looked up"
@@ -1463,7 +1469,7 @@ def _macho_imports_from_records(
         else:
             if not raw_name.startswith("_") or record.library_name is None:
                 raise FullC6NativeRuntimeError(
-                    "Full C6 Mach-O import name is invalid"
+                    "artifact build Mach-O import name is invalid"
                 )
             lookup = raw_name[1:]
             mode = "macho-two-level"
@@ -1481,7 +1487,7 @@ def _macho_imports_from_records(
             )
         except ValueError as exc:
             raise FullC6NativeRuntimeError(
-                "Full C6 Mach-O import identity is invalid"
+                "artifact build Mach-O import identity is invalid"
             ) from exc
     return tuple(
         sorted(
@@ -1496,7 +1502,7 @@ def _parse_elf_undefined_imports(output: str) -> tuple[_UndefinedImport, ...]:
         records = _runtime._parse_elf_imported_symbols(output)
     except Exception as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 ELF import records are invalid"
+            "artifact build ELF import records are invalid"
         ) from exc
     imports: list[_UndefinedImport] = []
     versioned = re.compile(
@@ -1508,7 +1514,7 @@ def _parse_elf_undefined_imports(output: str) -> tuple[_UndefinedImport, ...]:
         if match is None:
             if "@" in record.symbol or record.version_index is not None:
                 raise FullC6NativeRuntimeError(
-                    "Full C6 versioned ELF import is noncanonical"
+                    "artifact build versioned ELF import is noncanonical"
                 )
             lookup_name = record.symbol
             version = None
@@ -1520,7 +1526,7 @@ def _parse_elf_undefined_imports(output: str) -> tuple[_UndefinedImport, ...]:
             version_index = record.version_index
             if version_index is None:
                 raise FullC6NativeRuntimeError(
-                    "Full C6 versioned ELF import lacks an exact index"
+                    "artifact build versioned ELF import lacks an exact index"
                 )
             mode = "elf-versioned"
         try:
@@ -1538,7 +1544,7 @@ def _parse_elf_undefined_imports(output: str) -> tuple[_UndefinedImport, ...]:
             )
         except ValueError as exc:
             raise FullC6NativeRuntimeError(
-                "Full C6 ELF import name is invalid"
+                "artifact build ELF import name is invalid"
             ) from exc
     return tuple(
         sorted(
@@ -1630,12 +1636,12 @@ def _open_noload_handle(process: ctypes.CDLL, extension_path: Path) -> int:
     if not (flags & getattr(os, "RTLD_NOLOAD", 0)) or not (
         flags & getattr(os, "RTLD_NOW", 0)
     ):
-        raise FullC6NativeRuntimeError("Full C6 RTLD_NOLOAD is unavailable")
+        raise FullC6NativeRuntimeError("artifact build RTLD_NOLOAD is unavailable")
     handle = dlopen(os.fsencode(extension_path), flags)
     error = dlerror()
     if error is not None or not handle:
         raise FullC6NativeRuntimeError(
-            "Full C6 extension is not present in the native loader"
+            "artifact build extension is not present in the native loader"
         )
     return int(handle)
 
@@ -1651,7 +1657,7 @@ def _close_noload_handle(process: ctypes.CDLL, handle: int) -> None:
     result = dlclose(ctypes.c_void_p(handle))
     error = dlerror()
     if result != 0 or error is not None:
-        raise FullC6NativeRuntimeError("Full C6 native loader handle close failed")
+        raise FullC6NativeRuntimeError("artifact build native loader handle close failed")
 
 
 def _bind_one_symbol_provider(
@@ -1699,7 +1705,7 @@ def _bind_one_symbol_provider(
             )
         if globally_visible is None or scoped is None:
             raise FullC6NativeRuntimeError(
-                "Full C6 weak imported symbol is one-sided"
+                "artifact build weak imported symbol is one-sided"
             )
     else:
         globally_visible = _resolve_import_address(
@@ -1713,7 +1719,7 @@ def _bind_one_symbol_provider(
             scoped = _resolve_import_address(process, handle, imported)
     if scoped != globally_visible:
         raise FullC6NativeRuntimeError(
-            "Full C6 imported symbol is ambiguous or interposed"
+            "artifact build imported symbol is ambiguous or interposed"
         )
     provider_path = _dladdr_provider(process, scoped)
     canonical_path, provider_image = _match_provider_to_final_snapshot(
@@ -1731,7 +1737,7 @@ def _bind_one_symbol_provider(
         )
         if provider_image is None:
             raise FullC6NativeRuntimeError(
-                "Full C6 Python provider lacks an exact file identity"
+                "artifact build Python provider lacks an exact file identity"
             )
         categories.append((kind, _digest(provider_image.to_dict())))
     declared_regular = {
@@ -1763,14 +1769,14 @@ def _bind_one_symbol_provider(
             categories.append(reexport)
     if len(categories) != 1:
         raise FullC6NativeRuntimeError(
-            "Full C6 symbol provider is outside or ambiguous in the allowed set"
+            "artifact build symbol provider is outside or ambiguous in the allowed set"
         )
     kind, identity = categories[0]
     if imported.mode == "macho-flat-python" and not kind.startswith(
         "toolchain-python-"
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 flat Python import resolved outside the sealed Python ABI"
+            "artifact build flat Python import resolved outside the sealed Python ABI"
         )
     try:
         return _SymbolProviderBinding(
@@ -1783,7 +1789,7 @@ def _bind_one_symbol_provider(
         )
     except ValueError as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 symbol-provider binding is invalid"
+            "artifact build symbol-provider binding is invalid"
         ) from exc
 
 
@@ -1805,7 +1811,7 @@ def _macho_dependency_provider_category(
         or _SAFE_MACHO_INSTALL_NAME.fullmatch(install_name) is None
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 Mach-O direct dependency identity is invalid"
+            "artifact build Mach-O direct dependency identity is invalid"
         )
     roots: list[tuple[str, str, str]] = []
     for image in python_images:
@@ -1829,7 +1835,7 @@ def _macho_dependency_provider_category(
             roots.append(("declared-system-platform", path, _digest_text(path)))
     if len(roots) != 1:
         raise FullC6NativeRuntimeError(
-            "Full C6 Mach-O direct dependency is outside or ambiguous"
+            "artifact build Mach-O direct dependency is outside or ambiguous"
         )
     kind, root_path, root_identity = roots[0]
     if provider_path == root_path:
@@ -1840,7 +1846,7 @@ def _macho_dependency_provider_category(
         )
         if expected_identity != root_identity:
             raise FullC6NativeRuntimeError(
-                "Full C6 Mach-O direct provider identity changed"
+                "artifact build Mach-O direct provider identity changed"
             )
         return kind, root_identity
     matches = tuple(
@@ -1850,17 +1856,17 @@ def _macho_dependency_provider_category(
     )
     if not matches:
         raise FullC6NativeRuntimeError(
-            "Full C6 Mach-O provider is not the direct dependency or its reexport"
+            "artifact build Mach-O provider is not the direct dependency or its reexport"
         )
     if len(matches) != 1:
         raise FullC6NativeRuntimeError(
-            "Full C6 libSystem reexport provider is ambiguous"
+            "artifact build libSystem reexport provider is ambiguous"
         )
     if not _runtime._is_trusted_system_image_path(
         provider_path, "aarch64-apple-darwin"
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 libSystem reexport provider is not system-owned"
+            "artifact build libSystem reexport provider is not system-owned"
         )
     matched_kind, matched_root, matched_identity = matches[0]
     if (matched_kind, matched_root, matched_identity) != (
@@ -1869,7 +1875,7 @@ def _macho_dependency_provider_category(
         root_identity,
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 Mach-O reexport root identity changed"
+            "artifact build Mach-O reexport root identity changed"
         )
     provider_identity = (
         _digest_text(provider_path)
@@ -1908,7 +1914,7 @@ def _collect_macho_dependency_reexports(
         )
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 Mach-O dependency reexport inputs are invalid"
+            "artifact build Mach-O dependency reexport inputs are invalid"
         )
     roots: list[tuple[str, str, str]] = []
     for image in declared_system_images:
@@ -1944,7 +1950,7 @@ def _collect_macho_dependency_reexports(
             )
             if not providers:
                 raise FullC6NativeRuntimeError(
-                    "Full C6 shared-cache libSystem providers are unavailable"
+                    "artifact build shared-cache libSystem providers are unavailable"
                 )
         else:
             providers = ()
@@ -1954,7 +1960,7 @@ def _collect_macho_dependency_reexports(
         )
     frozen = tuple(records)
     if len(frozen) > _MAX_IMPORTED_SYMBOLS or len(frozen) != len(set(frozen)):
-        raise FullC6NativeRuntimeError("Full C6 Mach-O reexports are ambiguous")
+        raise FullC6NativeRuntimeError("artifact build Mach-O reexports are ambiguous")
     return frozen
 
 
@@ -1988,7 +1994,7 @@ def _inspect_macho_reexports(path: str) -> tuple[str, ...]:
         )
         if len(commands) != 1:
             raise FullC6NativeRuntimeError(
-                "Full C6 Mach-O reexport load command is malformed"
+                "artifact build Mach-O reexport load command is malformed"
             )
         if commands != ("LC_REEXPORT_DYLIB",):
             continue
@@ -2004,17 +2010,17 @@ def _inspect_macho_reexports(path: str) -> tuple[str, ...]:
             )
         ):
             raise FullC6NativeRuntimeError(
-                "Full C6 libSystem reexport record is invalid"
+                "artifact build libSystem reexport record is invalid"
             )
         reexports.append(names[0])
     if not blocks or len(reexports) > _MAX_IMPORTED_SYMBOLS:
         raise FullC6NativeRuntimeError(
-            "Full C6 libSystem reexport set is invalid"
+            "artifact build libSystem reexport set is invalid"
         )
     canonical = tuple(sorted(set(reexports)))
     if len(canonical) != len(reexports):
         raise FullC6NativeRuntimeError(
-            "Full C6 libSystem reexport set is ambiguous"
+            "artifact build libSystem reexport set is ambiguous"
         )
     return canonical
 
@@ -2037,7 +2043,7 @@ def _bind_macho_stub_binder(
         }
     ):
         raise FullC6NativeRuntimeError(
-            "Full C6 dyld stub binder is not canonical"
+            "artifact build dyld stub binder is not canonical"
         )
     regular = tuple(
         image
@@ -2051,7 +2057,7 @@ def _bind_macho_stub_binder(
     )
     if len(regular) + len(platform) != 1:
         raise FullC6NativeRuntimeError(
-            "Full C6 dyld stub binder lacks one declared libSystem"
+            "artifact build dyld stub binder lacks one declared libSystem"
         )
     if regular:
         path = regular[0].path
@@ -2079,7 +2085,7 @@ def _resolve_import_address(
     if imported.mode == "elf-versioned":
         if imported.version is None:
             raise FullC6NativeRuntimeError(
-                "Full C6 versioned ELF import is incomplete"
+                "artifact build versioned ELF import is incomplete"
             )
         return _dlvsym_exact(
             process,
@@ -2096,11 +2102,11 @@ def _resolve_weak_import_address(
     imported: _UndefinedImport,
 ) -> int | None:
     if imported.elf_binding != "WEAK" or not imported.mode.startswith("elf-"):
-        raise FullC6NativeRuntimeError("Full C6 weak import metadata is invalid")
+        raise FullC6NativeRuntimeError("artifact build weak import metadata is invalid")
     if imported.mode == "elf-versioned":
         if imported.version is None:
             raise FullC6NativeRuntimeError(
-                "Full C6 versioned weak ELF import is incomplete"
+                "artifact build versioned weak ELF import is incomplete"
             )
         return _dlvsym_optional(
             process,
@@ -2126,7 +2132,7 @@ def _dlsym_exact(
     address = dlsym(ctypes.c_void_p(handle), symbol.encode("ascii"))
     error = dlerror()
     if error is not None or not address:
-        raise FullC6NativeRuntimeError("Full C6 imported symbol is unresolved")
+        raise FullC6NativeRuntimeError("artifact build imported symbol is unresolved")
     return int(address)
 
 
@@ -2146,13 +2152,13 @@ def _dlsym_optional(
         address = dlsym(ctypes.c_void_p(handle), symbol.encode("ascii"))
     except Exception as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 weak imported-symbol lookup failed"
+            "artifact build weak imported-symbol lookup failed"
         ) from exc
     error = dlerror()
     if address:
         if error is not None:
             raise FullC6NativeRuntimeError(
-                "Full C6 weak imported-symbol lookup is inconsistent"
+                "artifact build weak imported-symbol lookup is inconsistent"
             )
         return int(address)
     return None
@@ -2168,7 +2174,7 @@ def _dlvsym_exact(
         dlvsym = process.dlvsym
     except AttributeError as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 dlvsym is unavailable"
+            "artifact build dlvsym is unavailable"
         ) from exc
     dlerror = process.dlerror
     dlvsym.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p)
@@ -2184,7 +2190,7 @@ def _dlvsym_exact(
     error = dlerror()
     if error is not None or not address:
         raise FullC6NativeRuntimeError(
-            "Full C6 versioned imported symbol is unresolved"
+            "artifact build versioned imported symbol is unresolved"
         )
     return int(address)
 
@@ -2199,7 +2205,7 @@ def _dlvsym_optional(
         dlvsym = process.dlvsym
     except AttributeError as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 dlvsym is unavailable"
+            "artifact build dlvsym is unavailable"
         ) from exc
     dlerror = process.dlerror
     dlvsym.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p)
@@ -2215,13 +2221,13 @@ def _dlvsym_optional(
         )
     except Exception as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 weak versioned imported-symbol lookup failed"
+            "artifact build weak versioned imported-symbol lookup failed"
         ) from exc
     error = dlerror()
     if address:
         if error is not None:
             raise FullC6NativeRuntimeError(
-                "Full C6 weak versioned lookup is inconsistent"
+                "artifact build weak versioned lookup is inconsistent"
             )
         return int(address)
     return None
@@ -2236,17 +2242,17 @@ def _dladdr_provider(
     dladdr.restype = ctypes.c_int
     info = _DlInfo()
     if dladdr(ctypes.c_void_p(address), ctypes.byref(info)) != 1:
-        raise FullC6NativeRuntimeError("Full C6 symbol provider is unresolved")
+        raise FullC6NativeRuntimeError("artifact build symbol provider is unresolved")
     if (
         not info.filename
         or not info.image_base
     ):
-        raise FullC6NativeRuntimeError("Full C6 symbol provider is not identified")
+        raise FullC6NativeRuntimeError("artifact build symbol provider is not identified")
     try:
         provider = os.fsdecode(info.filename)
     except (UnicodeError, TypeError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 symbol provider identity is invalid"
+            "artifact build symbol provider identity is invalid"
         ) from exc
     return provider
 
@@ -2263,23 +2269,23 @@ def _match_provider_to_final_snapshot(
             or not _runtime._is_darwin_platform_image_path(provider_path)
         ):
             raise FullC6NativeRuntimeError(
-                "Full C6 platform provider path is invalid"
+                "artifact build platform provider path is invalid"
             )
         return provider_path, None
     if type(provider_path) is not str or not os.path.isabs(provider_path):
-        raise FullC6NativeRuntimeError("Full C6 provider path is not absolute")
+        raise FullC6NativeRuntimeError("artifact build provider path is not absolute")
     try:
         canonical = os.fspath(Path(provider_path).resolve(strict=True))
     except (OSError, RuntimeError) as exc:
         raise FullC6NativeRuntimeError(
-            "Full C6 provider path is unavailable"
+            "artifact build provider path is unavailable"
         ) from exc
     if canonical != provider_path:
-        raise FullC6NativeRuntimeError("Full C6 provider path is aliased")
+        raise FullC6NativeRuntimeError("artifact build provider path is aliased")
     matches = tuple(image for image in final_snapshot.images if image.path == canonical)
     if len(matches) != 1 or capture_runtime_loaded_image(canonical) != matches[0]:
         raise FullC6NativeRuntimeError(
-            "Full C6 provider is not exact in the final loader snapshot"
+            "artifact build provider is not exact in the final loader snapshot"
         )
     return canonical, matches[0]
 
@@ -2301,12 +2307,12 @@ def _resolve_system_images(
         or type(platform_base) is not RuntimeImageSnapshot
         or type(closure) is not NativeRuntimeTransitiveClosureInventory
     ):
-        raise FullC6NativeRuntimeError("Full C6 system image mapping is invalid")
+        raise FullC6NativeRuntimeError("artifact build system image mapping is invalid")
     names = tuple(
         sorted(node.name for node in closure.nodes if node.kind == "system-logical")
     )
     if len(names) != len(set(names)):
-        raise FullC6NativeRuntimeError("Full C6 system image mapping is ambiguous")
+        raise FullC6NativeRuntimeError("artifact build system image mapping is ambiguous")
     wanted = set(names)
     candidates: dict[str, list[tuple[str, RuntimeLoadedImage | str]]] = {
         name: [] for name in names
@@ -2320,13 +2326,13 @@ def _resolve_system_images(
         if _runtime._native_system_image_name(image, target_triple) == basename:
             candidates[basename].append(("regular", image))
     if target_triple != "aarch64-apple-darwin" and platform_base.platform_images:
-        raise FullC6NativeRuntimeError("Full C6 platform image mapping is invalid")
+        raise FullC6NativeRuntimeError("artifact build platform image mapping is invalid")
     for path in platform_base.platform_images:
         basename = PurePosixPath(path).name
         if basename in wanted and _runtime._is_darwin_platform_image_path(path):
             candidates[basename].append(("platform", path))
     if any(len(candidates[name]) != 1 for name in names):
-        raise FullC6NativeRuntimeError("Full C6 system image mapping is not exact")
+        raise FullC6NativeRuntimeError("artifact build system image mapping is not exact")
     regular = tuple(
         sorted(
             (
@@ -2347,23 +2353,23 @@ def _resolve_system_images(
         )
     )
     if len(regular) + len(platform) != len(names):
-        raise FullC6NativeRuntimeError("Full C6 system image mapping is incomplete")
+        raise FullC6NativeRuntimeError("artifact build system image mapping is incomplete")
     return regular, platform
 
 
 def _import_extension_module(extension_path: Path) -> ModuleType:
     """Import only the fixed generated extension name from its derived path."""
     if FULL_C6_NATIVE_RUNTIME_MODULE_NAME in sys.modules:
-        raise FullC6NativeRuntimeError("Full C6 native module name is already bound")
+        raise FullC6NativeRuntimeError("artifact build native module name is already bound")
     spec = importlib.util.spec_from_file_location(
         FULL_C6_NATIVE_RUNTIME_MODULE_NAME,
         extension_path,
     )
     if spec is None or spec.loader is None:
-        raise FullC6NativeRuntimeError("Full C6 native extension loader is unavailable")
+        raise FullC6NativeRuntimeError("artifact build native extension loader is unavailable")
     module = importlib.util.module_from_spec(spec)
     if type(module) is not ModuleType:
-        raise FullC6NativeRuntimeError("Full C6 native extension module is invalid")
+        raise FullC6NativeRuntimeError("artifact build native extension module is invalid")
     sys.modules[FULL_C6_NATIVE_RUNTIME_MODULE_NAME] = module
     try:
         spec.loader.exec_module(module)
@@ -2375,7 +2381,7 @@ def _import_extension_module(extension_path: Path) -> ModuleType:
         sys.modules.get(FULL_C6_NATIVE_RUNTIME_MODULE_NAME) is not module
         or getattr(module, "__file__", None) != os.fspath(extension_path)
     ):
-        raise FullC6NativeRuntimeError("Full C6 native module binding changed")
+        raise FullC6NativeRuntimeError("artifact build native module binding changed")
     return module
 
 
@@ -2488,7 +2494,7 @@ def _seal(authority: FullC6NativeRuntimeAuthority) -> bytes:
 
 def _require_valid_authority(authority: FullC6NativeRuntimeAuthority) -> None:
     if not validate_full_c6_native_runtime_authority(authority):
-        raise FullC6NativeRuntimeError("Full C6 native runtime authority is stale")
+        raise FullC6NativeRuntimeError("artifact build native runtime authority is stale")
 
 
 def _digest(value: object) -> str:

@@ -462,7 +462,7 @@ def test_full_c6_path_fields_reject_non_string_values(
         (
             'artifact_trusted_public_key = "keys/release.pub"\n'
             f'artifact_trusted_public_key_sha256 = "{_SHA_A}"\n',
-            "signed Full C6 inputs require",
+            "signed artifact-contract inputs require",
         ),
         (
             "artifact_signing_request_output = "
@@ -535,7 +535,7 @@ artifact_signing_request_output = "state/rextio.artifact-authorization-request.j
                     'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"',
                 )
             ),
-            "signed Full C6 inputs require",
+            "signed artifact-contract inputs require",
         ),
         (
             'artifact_trusted_public_key = "keys/release.pub"',
@@ -573,7 +573,7 @@ artifact_signing_request_output = "state/rextio.artifact-authorization-request.j
                     '"state/rextio.artifact-authorization-request.json"',
                 )
             ),
-            "signed Full C6 inputs require",
+            "signed artifact-contract inputs require",
         ),
         (
             '\n'.join(
@@ -738,7 +738,10 @@ version = "2.0"
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="exactly one source-native external package"):
+    with pytest.raises(
+        ConfigError,
+        match="source-native preview permits exactly one external package",
+    ):
         load_config(tmp_path)
 
 

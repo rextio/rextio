@@ -136,9 +136,10 @@ def kernel(x: float) -> float:
     data = analysis.to_dict()
 
     assert data["contract_version"] == TOOLING_CONTRACT_VERSION
-    # Contract 2.28.0 adds plugin function-scope RAII guard presence (API 1.7).
-    assert data["contract_version"] == "2.28.0"
-    assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "2"
+    # Contract 3.0.0 uses semantic artifact-contract vocabulary while retaining
+    # the ordinary diagnostic and promotion shapes.
+    assert data["contract_version"] == "3.0.0"
+    assert TOOLING_CONTRACT_VERSION.split(".", 1)[0] == "3"
 
     # Contract 2.1.0 always serializes logger_group_targets on each module.
     for module in data["modules"]:  # type: ignore[union-attr]

@@ -15,6 +15,7 @@ import pytest
 
 from rextio.analyzer.project_scanner import analyze_project
 from rextio.analyzer.models import ProjectAnalysis
+from rextio.artifacts.contract_dialects import CURRENT, LEGACY_0_1_7
 from rextio.build import full_c6_executor as executor
 from rextio.build import full_c6_external_execution as external_execution
 from rextio.build import full_c6_toolchain_support as support_closure
@@ -110,6 +111,7 @@ def _project_preflight(
     tmp_path: Path,
     *,
     build_overrides: dict[str, object] | None = None,
+    legacy_source_lock: bool = False,
 ) -> tuple[FullC6ExternalPreflightResult, RextioConfig]:
     project = tmp_path / "project"
     project.mkdir()
@@ -133,7 +135,10 @@ license-files = ["LICENSE"]
         encoding="utf-8",
     )
     (project / "LICENSE").write_text("MIT project license\n", encoding="utf-8")
-    signed = _SOURCE_TESTS["_write_signed"](project / "authority")
+    signed = _SOURCE_TESTS["_write_signed"](
+        project / "authority",
+        dialect=LEGACY_0_1_7 if legacy_source_lock else CURRENT,
+    )
     _scope_lock, scope_workspace = _cargo_workspace(project)
     build_values: dict[str, object] = {
         "artifact_evidence_policy": "required",
@@ -322,10 +327,12 @@ def _inputs(
     root_package: str = "rextio_generated_native",
     omitted_dependency: str | None = None,
     build_overrides: dict[str, object] | None = None,
+    legacy_source_lock: bool = False,
 ) -> _ExecutionInputs:
     preflight, config = _project_preflight(
         tmp_path,
         build_overrides=build_overrides,
+        legacy_source_lock=legacy_source_lock,
     )
     original_analyze = external_execution.analyze_project
     trusted_plan = preflight.analysis.external_source_plan

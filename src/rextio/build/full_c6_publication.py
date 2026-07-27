@@ -1,4 +1,4 @@
-"""Atomic, fail-closed publication primitives for the frozen Full C6 scope.
+"""Atomic, fail-closed publication primitives for the frozen artifact build scope.
 
 The signing request and the final distribution bundle deliberately form two
 separate phases.  This module never handles a private key and never mints
@@ -26,6 +26,11 @@ from typing import Final
 from rextio.artifacts.contract_dialects import (
     AUTHORIZATION_REQUEST_FILENAME,
     CURRENT,
+    DETACHED_SIGNATURE_FILENAME,
+    DISTRIBUTION_AUTHORIZATION_FILENAME,
+    FINAL_EVIDENCE_FILENAME,
+    PUBLICATION_MANIFEST,
+    PUBLICATION_MANIFEST_FILENAME,
 )
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import (
@@ -54,13 +59,18 @@ from rextio.build.signing import (
 )
 
 
-FULL_C6_PUBLICATION_DOMAIN: Final = "rextio.full-c6-atomic-publication.v1"
-FULL_C6_PUBLICATION_MANIFEST_KIND: Final = "full-c6-publication-manifest"
-FULL_C6_PUBLICATION_SCHEMA_VERSION: Final = 1
+_CURRENT_PUBLICATION_IDENTITY = CURRENT.identity(PUBLICATION_MANIFEST)
+FULL_C6_PUBLICATION_DOMAIN: Final = _CURRENT_PUBLICATION_IDENTITY.domain
+FULL_C6_PUBLICATION_MANIFEST_KIND: Final = _CURRENT_PUBLICATION_IDENTITY.kind
+FULL_C6_PUBLICATION_SCHEMA_VERSION: Final = (
+    _CURRENT_PUBLICATION_IDENTITY.schema_version
+)
 FULL_C6_SIGNING_REQUEST_FILENAME: Final = CURRENT.filename(
     AUTHORIZATION_REQUEST_FILENAME
 )
-FULL_C6_PUBLICATION_MANIFEST_FILENAME: Final = "rextio.full-c6-manifest.json"
+FULL_C6_PUBLICATION_MANIFEST_FILENAME: Final = CURRENT.filename(
+    PUBLICATION_MANIFEST_FILENAME
+)
 
 ROLE_WHEEL: Final = "wheel"
 ROLE_CYCLONEDX: Final = "cyclonedx"
@@ -80,9 +90,11 @@ FULL_C6_PUBLICATION_ROLES: Final = (
 _FIXED_ROLE_FILENAMES: Final = {
     ROLE_CYCLONEDX: "rextio.cyclonedx.json",
     ROLE_SLSA_PROVENANCE: "rextio.slsa-provenance.json",
-    ROLE_FINAL_EVIDENCE: "rextio.full-c6-evidence.json",
-    ROLE_DETACHED_SIGNATURE: "rextio.full-c6-signature.json",
-    ROLE_DISTRIBUTION_AUTHORIZATION: "rextio.full-c6-authorization.json",
+    ROLE_FINAL_EVIDENCE: CURRENT.filename(FINAL_EVIDENCE_FILENAME),
+    ROLE_DETACHED_SIGNATURE: CURRENT.filename(DETACHED_SIGNATURE_FILENAME),
+    ROLE_DISTRIBUTION_AUTHORIZATION: CURRENT.filename(
+        DISTRIBUTION_AUTHORIZATION_FILENAME
+    ),
 }
 _ROLE_MAX_BYTES: Final = {
     ROLE_WHEEL: 16 * 1024 * 1024,
@@ -117,11 +129,11 @@ class FullC6SigningRequestReceipt:
     def __post_init__(self) -> None:
         _require_sha256(self.request_sha256, "signing request")
         if type(self.request_size) is not int or not (1 <= self.request_size <= _MAX_REQUEST_BYTES):
-            raise ValueError("Full C6 signing-request size outside bound")
+            raise ValueError("artifact build signing-request size outside bound")
         if type(self.already_present) is not bool:
-            raise TypeError("Full C6 signing-request idempotence flag must be bool")
+            raise TypeError("artifact build signing-request idempotence flag must be bool")
         if self.domain != FULL_C6_PUBLICATION_DOMAIN:
-            raise ValueError("Full C6 signing-request receipt domain mismatch")
+            raise ValueError("artifact build signing-request receipt domain mismatch")
 
     @property
     def authorizes_distribution(self) -> bool:
@@ -150,12 +162,12 @@ class FullC6PublishedFile:
 
     def __post_init__(self) -> None:
         if type(self.role) is not str or self.role not in FULL_C6_PUBLICATION_ROLES:
-            raise ValueError("Full C6 publication role outside closed vocabulary")
+            raise ValueError("artifact build publication role outside closed vocabulary")
         _require_logical_filename(self.logical_name)
         _require_sha256(self.sha256, f"publication role {self.role}")
         maximum = _ROLE_MAX_BYTES[self.role]
         if type(self.size) is not int or not (1 <= self.size <= maximum):
-            raise ValueError("Full C6 publication member size outside bound")
+            raise ValueError("artifact build publication member size outside bound")
 
     def to_dict(self) -> dict[str, object]:
         """Return the canonical logical member identity."""
@@ -182,7 +194,7 @@ class FullC6PublicationReceipt:
 
     def __post_init__(self) -> None:
         if type(self.target_triple) is not str or not self.target_triple:
-            raise ValueError("Full C6 publication target triple invalid")
+            raise ValueError("artifact build publication target triple invalid")
         for label, value in (
             ("subject", self.subject_sha256),
             ("evidence", self.evidence_sha256),
@@ -196,9 +208,9 @@ class FullC6PublicationReceipt:
             or any(type(item) is not FullC6PublishedFile for item in self.files)
             or tuple(item.role for item in self.files) != FULL_C6_PUBLICATION_ROLES
         ):
-            raise ValueError("Full C6 publication receipt file set is not exact")
+            raise ValueError("artifact build publication receipt file set is not exact")
         if self.domain != FULL_C6_PUBLICATION_DOMAIN:
-            raise ValueError("Full C6 publication receipt domain mismatch")
+            raise ValueError("artifact build publication receipt domain mismatch")
 
     @property
     def publication_completed(self) -> bool:
@@ -255,7 +267,7 @@ def materialize_full_c6_signing_request(
     trusted_request = _rebuild_request(request)
     data = trusted_request.canonical_manifest_bytes
     if not (1 <= len(data) <= _MAX_REQUEST_BYTES):
-        raise FullC6PublicationError("Full C6 signing request exceeds byte bound")
+        raise FullC6PublicationError("artifact build signing request exceeds byte bound")
     state_path = Path(state_directory)
     directory_fd, directory_stat = _open_safe_directory(
         state_path,
@@ -273,7 +285,7 @@ def materialize_full_c6_signing_request(
         if existing is not None:
             if not hmac.compare_digest(existing.data, data):
                 raise FullC6PublicationError(
-                    "Full C6 signing request already exists with different bytes"
+                    "artifact build signing request already exists with different bytes"
                 )
             _revalidate_directory(state_path, directory_stat, label="state")
             return _signing_receipt(data, already_present=True)
@@ -291,7 +303,7 @@ def materialize_full_c6_signing_request(
         )
         if raced is not None:
             if not hmac.compare_digest(raced.data, data):
-                raise FullC6PublicationError("Full C6 signing request concurrently changed")
+                raise FullC6PublicationError("artifact build signing request concurrently changed")
             _unlink_owned_member(directory_fd, temporary_name)
             temporary_name = None
             return _signing_receipt(data, already_present=True)
@@ -311,7 +323,7 @@ def materialize_full_c6_signing_request(
             )
             if raced is None or not hmac.compare_digest(raced.data, data):
                 raise FullC6PublicationError(
-                    "Full C6 signing request concurrently changed"
+                    "artifact build signing request concurrently changed"
                 ) from None
             _unlink_owned_member(directory_fd, temporary_name)
             temporary_name = None
@@ -325,13 +337,13 @@ def materialize_full_c6_signing_request(
             missing_ok=False,
         )
         if final is None or not hmac.compare_digest(final.data, data):
-            raise FullC6PublicationError("Full C6 signing request final bytes changed")
+            raise FullC6PublicationError("artifact build signing request final bytes changed")
         _revalidate_directory(state_path, directory_stat, label="state")
         return _signing_receipt(data, already_present=False)
     except FullC6PublicationError:
         raise
     except OSError as exc:
-        raise FullC6PublicationError("Full C6 signing request could not be persisted") from exc
+        raise FullC6PublicationError("artifact build signing request could not be persisted") from exc
     finally:
         if temporary_name is not None:
             _unlink_owned_member(directory_fd, temporary_name, missing_ok=True)
@@ -347,7 +359,7 @@ def _publish_full_c6_bundle(
     gate_result: FullC6GateResult,
     public_key_path: Path | str,
 ) -> FullC6PublicationReceipt:
-    """Publish one exact six-file Full C6 payload with an atomic directory rename.
+    """Publish one exact six-file artifact build payload with an atomic directory rename.
 
     The inputs must already contain a detached final signature and the sealed
     hard-gate authorization.  Calling the signing-request primitive alone is
@@ -367,7 +379,7 @@ def _publish_full_c6_bundle(
         max_bytes=_RAW_ED25519_PUBLIC_KEY_BYTES,
     )
     if len(public_key.data) != _RAW_ED25519_PUBLIC_KEY_BYTES:
-        raise FullC6PublicationError("Full C6 public key must be exactly 32 raw bytes")
+        raise FullC6PublicationError("artifact build public key must be exactly 32 raw bytes")
     published_files = _verify_bundle_semantics(
         captured=captured,
         request=trusted_request,
@@ -413,7 +425,7 @@ def _publish_full_c6_bundle(
         label="publication root",
         require_mode_0700=False,
     )
-    staging_name = f".rextio-full-c6-stage-{secrets.token_hex(16)}"
+    staging_name = f".rextio-artifact-stage-{secrets.token_hex(16)}"
     staging_identity: tuple[int, int] | None = None
     staging_fd: int | None = None
     renamed = False
@@ -439,10 +451,10 @@ def _publish_full_c6_bundle(
         )
         observed_stage = os.fstat(staging_fd)
         if not stat.S_ISDIR(observed_stage.st_mode):
-            raise FullC6PublicationError("Full C6 staging object is not a directory")
+            raise FullC6PublicationError("artifact build staging object is not a directory")
         staging_identity = (observed_stage.st_dev, observed_stage.st_ino)
         if observed_stage.st_dev != root_stat.st_dev:
-            raise FullC6PublicationError("Full C6 staging crosses filesystem boundary")
+            raise FullC6PublicationError("artifact build staging crosses filesystem boundary")
         os.fchmod(staging_fd, 0o700)
         for item in published_files:
             _write_exclusive_file(
@@ -469,13 +481,13 @@ def _publish_full_c6_bundle(
         # metadata, and bytes must all be unchanged since initial capture.
         second_capture = _capture_sources(sources)
         if second_capture != captured:
-            raise FullC6PublicationError("Full C6 publication input changed during staging")
+            raise FullC6PublicationError("artifact build publication input changed during staging")
         second_public_key = _capture_path(
             public_key_source,
             max_bytes=_RAW_ED25519_PUBLIC_KEY_BYTES,
         )
         if second_public_key != public_key:
-            raise FullC6PublicationError("Full C6 public key changed during staging")
+            raise FullC6PublicationError("artifact build public key changed during staging")
         _revalidate_directory(root_path, root_stat, label="publication root")
         _require_directory_member_identity(
             root_fd,
@@ -538,7 +550,7 @@ def _publish_full_c6_bundle(
                 manifest_bytes=manifest_bytes,
             ):
                 raise FullC6PublicationError(
-                    "Full C6 publication target vanished during reconciliation"
+                    "artifact build publication target vanished during reconciliation"
                 ) from None
             return receipt
         renamed = True
@@ -546,7 +558,7 @@ def _publish_full_c6_bundle(
     except FullC6PublicationError:
         raise
     except OSError as exc:
-        raise FullC6PublicationError("Full C6 bundle publication failed closed") from exc
+        raise FullC6PublicationError("artifact build bundle publication failed closed") from exc
     finally:
         if staging_fd is not None:
             if renamed:
@@ -565,7 +577,7 @@ def _publish_full_c6_bundle(
 
 def _rebuild_request(value: FinalAuthorizationRequest) -> FinalAuthorizationRequest:
     if type(value) is not FinalAuthorizationRequest:
-        raise FullC6PublicationError("Full C6 signing request type invalid")
+        raise FullC6PublicationError("artifact build signing request type invalid")
     try:
         rebuilt = FinalAuthorizationRequest(
             target_triple=value.target_triple,
@@ -577,16 +589,16 @@ def _rebuild_request(value: FinalAuthorizationRequest) -> FinalAuthorizationRequ
             scope=value.scope,
         )
     except (TypeError, ValueError) as exc:
-        raise FullC6PublicationError("Full C6 signing request invalid") from exc
+        raise FullC6PublicationError("artifact build signing request invalid") from exc
     if rebuilt != value:
-        raise FullC6PublicationError("Full C6 signing request is not canonical")
+        raise FullC6PublicationError("artifact build signing request is not canonical")
     return rebuilt
 
 
 def _rebuild_gate_result(value: FullC6GateResult) -> FullC6GateResult:
     if type(value) is not FullC6GateResult:
         raise FullC6PublicationError(
-            "Full C6 publication requires a canonical hard-gate result"
+            "artifact build publication requires a canonical hard-gate result"
         )
     try:
         raw_pre = value.preauthorization_evidence
@@ -630,9 +642,9 @@ def _rebuild_gate_result(value: FullC6GateResult) -> FullC6GateResult:
     except FullC6PublicationError:
         raise
     except (AttributeError, TypeError, ValueError) as exc:
-        raise FullC6PublicationError("Full C6 hard-gate result is not canonical") from exc
+        raise FullC6PublicationError("artifact build hard-gate result is not canonical") from exc
     if rebuilt != value:
-        raise FullC6PublicationError("Full C6 hard-gate result is not canonical")
+        raise FullC6PublicationError("artifact build hard-gate result is not canonical")
     preauthorization_sha256 = full_c6_preauthorization_evidence_digest(
         preauthorization
     )
@@ -651,13 +663,13 @@ def _rebuild_gate_result(value: FullC6GateResult) -> FullC6GateResult:
         and signature.public_key_sha256 == preauthorization.trusted_public_key_sha256
         and authorization.evidence_sha256 == full_c6_evidence_digest(evidence)
     ):
-        raise FullC6PublicationError("Full C6 hard-gate evidence chain is inconsistent")
+        raise FullC6PublicationError("artifact build hard-gate evidence chain is inconsistent")
     return rebuilt
 
 
 def _rebuild_evidence(value: FullC6ArtifactEvidence) -> FullC6ArtifactEvidence:
     if type(value) is not FullC6ArtifactEvidence:
-        raise FullC6PublicationError("Full C6 final evidence type invalid")
+        raise FullC6PublicationError("artifact build final evidence type invalid")
     try:
         rebuilt = FullC6ArtifactEvidence(
             target_triple=value.target_triple,
@@ -676,9 +688,9 @@ def _rebuild_evidence(value: FullC6ArtifactEvidence) -> FullC6ArtifactEvidence:
             ),
         )
     except (TypeError, ValueError) as exc:
-        raise FullC6PublicationError("Full C6 final evidence invalid") from exc
+        raise FullC6PublicationError("artifact build final evidence invalid") from exc
     if rebuilt != value or tuple(item.id for item in rebuilt.receipts) != FULL_C6_RECEIPT_IDS:
-        raise FullC6PublicationError("Full C6 final evidence is not canonical")
+        raise FullC6PublicationError("artifact build final evidence is not canonical")
     return rebuilt
 
 
@@ -686,7 +698,7 @@ def _rebuild_authorization(
     value: FullC6DistributionAuthorization,
 ) -> FullC6DistributionAuthorization:
     if type(value) is not FullC6DistributionAuthorization:
-        raise FullC6PublicationError("Full C6 publication requires sealed hard-gate authorization")
+        raise FullC6PublicationError("artifact build publication requires sealed hard-gate authorization")
     try:
         checks = value.checks
         if (
@@ -706,7 +718,7 @@ def _rebuild_authorization(
         ):
             _require_sha256(digest, label)
     except (AttributeError, TypeError, ValueError) as exc:
-        raise FullC6PublicationError("Full C6 sealed authorization invalid") from exc
+        raise FullC6PublicationError("artifact build sealed authorization invalid") from exc
     return value
 
 
@@ -714,12 +726,12 @@ def _normalize_bundle_sources(
     value: Mapping[str, Path | str],
 ) -> dict[str, Path]:
     if type(value) is not dict or set(value) != set(FULL_C6_PUBLICATION_ROLES):
-        raise FullC6PublicationError("Full C6 bundle roles must be one exact closed six-file set")
+        raise FullC6PublicationError("artifact build bundle roles must be one exact closed six-file set")
     result: dict[str, Path] = {}
     for role in FULL_C6_PUBLICATION_ROLES:
         item = value[role]
         if type(item) is not str and not isinstance(item, Path):
-            raise FullC6PublicationError("Full C6 bundle source path type invalid")
+            raise FullC6PublicationError("artifact build bundle source path type invalid")
         result[role] = Path(item)
     return result
 
@@ -731,7 +743,7 @@ def _capture_sources(sources: dict[str, Path]) -> dict[str, _CapturedFile]:
         captured = _capture_path(sources[role], max_bytes=_ROLE_MAX_BYTES[role])
         key = captured.identity[:2]
         if key in inode_keys:
-            raise FullC6PublicationError("Full C6 bundle roles alias the same file")
+            raise FullC6PublicationError("artifact build bundle roles alias the same file")
         inode_keys.add(key)
         result[role] = captured
     return result
@@ -752,7 +764,7 @@ def _verify_bundle_semantics(
         or len(wheel.data) != evidence.subject.size
         or request.artifact_sha256 != evidence.subject.sha256
     ):
-        raise FullC6PublicationError("Full C6 wheel does not match authorized subject")
+        raise FullC6PublicationError("artifact build wheel does not match authorized subject")
 
     evidence_sha256 = full_c6_evidence_digest(evidence)
     if not (
@@ -764,17 +776,17 @@ def _verify_bundle_semantics(
         and request.evidence_sha256 == evidence.preauthorization_evidence_sha256
         and authorization.trusted_public_key_sha256 == evidence.trusted_public_key_sha256
     ):
-        raise FullC6PublicationError("Full C6 authorization bindings are inconsistent")
+        raise FullC6PublicationError("artifact build authorization bindings are inconsistent")
 
     expected_evidence = canonical_json_bytes(evidence.to_dict())
     if not hmac.compare_digest(captured[ROLE_FINAL_EVIDENCE].data, expected_evidence):
-        raise FullC6PublicationError("Full C6 final evidence JSON is not exact canonical bytes")
+        raise FullC6PublicationError("artifact build final evidence JSON is not exact canonical bytes")
     expected_authorization = canonical_json_bytes(authorization.to_dict())
     if not hmac.compare_digest(
         captured[ROLE_DISTRIBUTION_AUTHORIZATION].data,
         expected_authorization,
     ):
-        raise FullC6PublicationError("Full C6 authorization JSON is not exact canonical bytes")
+        raise FullC6PublicationError("artifact build authorization JSON is not exact canonical bytes")
 
     try:
         envelope = parse_detached_signature_envelope(captured[ROLE_DETACHED_SIGNATURE].data)
@@ -786,13 +798,13 @@ def _verify_bundle_semantics(
         )
     except Exception as exc:
         raise FullC6PublicationError(
-            "Full C6 detached Ed25519 signature verification failed"
+            "artifact build detached Ed25519 signature verification failed"
         ) from exc
     if signature_receipt != gate_result.signature_receipt:
-        raise FullC6PublicationError("Full C6 hard-gate signature receipt is stale")
+        raise FullC6PublicationError("artifact build hard-gate signature receipt is stale")
     receipts = {item.id: item.sha256 for item in evidence.receipts}
     if receipts.get("attestation-signature-verified") != signature_receipt.digest:
-        raise FullC6PublicationError("Full C6 signature receipt does not match envelope")
+        raise FullC6PublicationError("artifact build signature receipt does not match envelope")
 
     expected_final_output = hashlib.sha256(
         canonical_json_bytes(
@@ -804,7 +816,7 @@ def _verify_bundle_semantics(
         )
     ).hexdigest()
     if receipts.get("final-output-revalidated") != expected_final_output:
-        raise FullC6PublicationError("Full C6 final output receipt does not match wheel")
+        raise FullC6PublicationError("artifact build final output receipt does not match wheel")
 
     sbom = captured[ROLE_CYCLONEDX]
     provenance = captured[ROLE_SLSA_PROVENANCE]
@@ -818,12 +830,12 @@ def _verify_bundle_semantics(
             document_kind="provenance",
         )
     except Exception as exc:
-        raise FullC6PublicationError("Full C6 supply-chain document invalid") from exc
+        raise FullC6PublicationError("artifact build supply-chain document invalid") from exc
     if (
         receipts.get("sbom-composition-complete") != sbom.sha256
         or receipts.get("provenance-complete") != provenance.sha256
     ):
-        raise FullC6PublicationError("Full C6 supply-chain document digest mismatch")
+        raise FullC6PublicationError("artifact build supply-chain document digest mismatch")
 
     wheel_name = PurePosixPath(evidence.subject.logical_path).name
     _require_logical_filename(wheel_name)
@@ -867,7 +879,7 @@ def _capture_path(path: Path, *, max_bytes: int) -> _CapturedFile:
         before = os.lstat(path)
         _require_regular_single_link(before)
         if before.st_size <= 0 or before.st_size > max_bytes:
-            raise FullC6PublicationError("Full C6 bundle member exceeds byte bound")
+            raise FullC6PublicationError("artifact build bundle member exceeds byte bound")
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         if sys.platform == "win32":
             flags |= getattr(os, "O_BINARY", 0)
@@ -879,7 +891,7 @@ def _capture_path(path: Path, *, max_bytes: int) -> _CapturedFile:
             after = os.fstat(descriptor)
             _require_same_regular(opened, after)
             if len(data) != after.st_size:
-                raise FullC6PublicationError("Full C6 bundle member changed while reading")
+                raise FullC6PublicationError("artifact build bundle member changed while reading")
         finally:
             os.close(descriptor)
         final = os.lstat(path)
@@ -888,7 +900,7 @@ def _capture_path(path: Path, *, max_bytes: int) -> _CapturedFile:
     except FullC6PublicationError:
         raise
     except (OSError, ValueError) as exc:
-        raise FullC6PublicationError("Full C6 bundle member could not be captured safely") from exc
+        raise FullC6PublicationError("artifact build bundle member could not be captured safely") from exc
 
 
 def _capture_directory_member(
@@ -903,10 +915,10 @@ def _capture_directory_member(
     except FileNotFoundError:
         if missing_ok:
             return None
-        raise FullC6PublicationError("Full C6 required file is missing") from None
+        raise FullC6PublicationError("artifact build required file is missing") from None
     _require_regular_single_link(before)
     if before.st_size <= 0 or before.st_size > max_bytes:
-        raise FullC6PublicationError("Full C6 file exceeds byte bound")
+        raise FullC6PublicationError("artifact build file exceeds byte bound")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(name, flags, dir_fd=directory_fd)
     try:
@@ -918,11 +930,11 @@ def _capture_directory_member(
     finally:
         os.close(descriptor)
     if len(data) != final.st_size:
-        raise FullC6PublicationError("Full C6 file changed while reading")
+        raise FullC6PublicationError("artifact build file changed while reading")
     try:
         named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except OSError as exc:
-        raise FullC6PublicationError("Full C6 file name changed during capture") from exc
+        raise FullC6PublicationError("artifact build file name changed during capture") from exc
     _require_same_regular(final, named)
     return _CapturedFile(data=data, identity=_stat_identity(named))
 
@@ -937,14 +949,14 @@ def _open_safe_directory(
     try:
         before = os.lstat(path)
         if not stat.S_ISDIR(before.st_mode):
-            raise FullC6PublicationError(f"Full C6 {label} must be a directory")
+            raise FullC6PublicationError(f"artifact build {label} must be a directory")
         mode = stat.S_IMODE(before.st_mode)
         if require_mode_0700 and mode != 0o700:
-            raise FullC6PublicationError(f"Full C6 {label} must have mode 0700")
+            raise FullC6PublicationError(f"artifact build {label} must have mode 0700")
         if not require_mode_0700 and mode & 0o022:
-            raise FullC6PublicationError(f"Full C6 {label} must not be group/world writable")
+            raise FullC6PublicationError(f"artifact build {label} must not be group/world writable")
         if hasattr(os, "geteuid") and before.st_uid != os.geteuid():
-            raise FullC6PublicationError(f"Full C6 {label} must be owned by current user")
+            raise FullC6PublicationError(f"artifact build {label} must be owned by current user")
         descriptor = os.open(
             path,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -955,12 +967,12 @@ def _open_safe_directory(
             before.st_ino,
         ) != (opened.st_dev, opened.st_ino):
             os.close(descriptor)
-            raise FullC6PublicationError(f"Full C6 {label} changed during open")
+            raise FullC6PublicationError(f"artifact build {label} changed during open")
         return descriptor, opened
     except FullC6PublicationError:
         raise
     except OSError as exc:
-        raise FullC6PublicationError(f"Full C6 {label} could not be opened safely") from exc
+        raise FullC6PublicationError(f"artifact build {label} could not be opened safely") from exc
 
 
 def _require_directory_member_identity(
@@ -973,25 +985,25 @@ def _require_directory_member_identity(
     try:
         observed = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except OSError as exc:
-        raise FullC6PublicationError(f"Full C6 {label} name changed") from exc
+        raise FullC6PublicationError(f"artifact build {label} name changed") from exc
     if (
         not stat.S_ISDIR(observed.st_mode)
         or stat.S_ISLNK(observed.st_mode)
         or (observed.st_dev, observed.st_ino) != expected_identity
     ):
-        raise FullC6PublicationError(f"Full C6 {label} name-to-inode binding changed")
+        raise FullC6PublicationError(f"artifact build {label} name-to-inode binding changed")
 
 
 def _revalidate_directory(path: Path, expected: os.stat_result, *, label: str) -> None:
     try:
         observed = os.lstat(path)
     except OSError as exc:
-        raise FullC6PublicationError(f"Full C6 {label} changed during operation") from exc
+        raise FullC6PublicationError(f"artifact build {label} changed during operation") from exc
     if not stat.S_ISDIR(observed.st_mode) or (
         observed.st_dev,
         observed.st_ino,
     ) != (expected.st_dev, expected.st_ino):
-        raise FullC6PublicationError(f"Full C6 {label} changed during operation")
+        raise FullC6PublicationError(f"artifact build {label} changed during operation")
 
 
 def _write_exclusive_file(directory_fd: int, name: str, data: bytes, *, mode: int) -> None:
@@ -1003,13 +1015,13 @@ def _write_exclusive_file(directory_fd: int, name: str, data: bytes, *, mode: in
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
-                raise FullC6PublicationError("Full C6 file write made no progress")
+                raise FullC6PublicationError("artifact build file write made no progress")
             view = view[written:]
         os.fsync(descriptor)
         observed = os.fstat(descriptor)
         _require_regular_single_link(observed)
         if observed.st_size != len(data):
-            raise FullC6PublicationError("Full C6 written file size mismatch")
+            raise FullC6PublicationError("artifact build written file size mismatch")
     finally:
         os.close(descriptor)
 
@@ -1047,9 +1059,9 @@ def _verify_staging_directory(
     try:
         actual = set(os.listdir(directory_fd))
     except OSError as exc:
-        raise FullC6PublicationError("Full C6 staging directory cannot be enumerated") from exc
+        raise FullC6PublicationError("artifact build staging directory cannot be enumerated") from exc
     if actual != expected:
-        raise FullC6PublicationError("Full C6 staging directory contains missing or extra files")
+        raise FullC6PublicationError("artifact build staging directory contains missing or extra files")
     observed_members: dict[str, _CapturedFile] = {}
     for item in files:
         staged = _capture_directory_member(
@@ -1059,7 +1071,7 @@ def _verify_staging_directory(
             missing_ok=False,
         )
         if staged is None or not hmac.compare_digest(staged.data, captured[item.role].data):
-            raise FullC6PublicationError("Full C6 staged payload changed")
+            raise FullC6PublicationError("artifact build staged payload changed")
         observed_members[item.logical_name] = staged
     staged_manifest = _capture_directory_member(
         directory_fd,
@@ -1068,10 +1080,10 @@ def _verify_staging_directory(
         missing_ok=False,
     )
     if staged_manifest is None or not hmac.compare_digest(staged_manifest.data, manifest_bytes):
-        raise FullC6PublicationError("Full C6 staged manifest changed")
+        raise FullC6PublicationError("artifact build staged manifest changed")
     observed_members[FULL_C6_PUBLICATION_MANIFEST_FILENAME] = staged_manifest
     if expected_members is not None and observed_members != expected_members:
-        raise FullC6PublicationError("Full C6 staged member identity changed")
+        raise FullC6PublicationError("artifact build staged member identity changed")
     return observed_members
 
 
@@ -1100,7 +1112,7 @@ def _reconcile_existing_publication(
         return False
     except OSError as exc:
         raise FullC6PublicationError(
-            "Full C6 publication target cannot be inspected"
+            "artifact build publication target cannot be inspected"
         ) from exc
 
     descriptor: int | None = None
@@ -1113,7 +1125,7 @@ def _reconcile_existing_publication(
             or (hasattr(os, "geteuid") and named.st_uid != os.geteuid())
         ):
             raise FullC6PublicationError(
-                "Full C6 existing publication directory metadata differs"
+                "artifact build existing publication directory metadata differs"
             )
         descriptor = os.open(
             bundle_name,
@@ -1131,7 +1143,7 @@ def _reconcile_existing_publication(
             or (hasattr(os, "geteuid") and opened.st_uid != os.geteuid())
         ):
             raise FullC6PublicationError(
-                "Full C6 existing publication directory changed during open"
+                "artifact build existing publication directory changed during open"
             )
         observed_members = _verify_staging_directory(
             descriptor,
@@ -1162,11 +1174,11 @@ def _reconcile_existing_publication(
         return True
     except FullC6PublicationError as exc:
         raise _FullC6TargetExists(
-            "Full C6 publication target already exists with different or unsafe content"
+            "artifact build publication target already exists with different or unsafe content"
         ) from exc
     except OSError as exc:
         raise _FullC6TargetExists(
-            "Full C6 publication target already exists with different or unsafe content"
+            "artifact build publication target already exists with different or unsafe content"
         ) from exc
     finally:
         if descriptor is not None:
@@ -1207,7 +1219,7 @@ def _reconcile_existing_publication_transaction(
     second_capture = _capture_sources(sources)
     if second_capture != captured:
         raise FullC6PublicationError(
-            "Full C6 publication input changed during existing-target reconciliation"
+            "artifact build publication input changed during existing-target reconciliation"
         )
     second_public_key = _capture_path(
         public_key_source,
@@ -1215,14 +1227,14 @@ def _reconcile_existing_publication_transaction(
     )
     if second_public_key != public_key:
         raise FullC6PublicationError(
-            "Full C6 public key changed during existing-target reconciliation"
+            "artifact build public key changed during existing-target reconciliation"
         )
 
     # Recheck the target after recapturing inputs so neither side of the
     # equality claim is accepted solely from an earlier observation.
     if not reconcile_target():
         raise FullC6PublicationError(
-            "Full C6 publication target vanished during reconciliation"
+            "artifact build publication target vanished during reconciliation"
         )
     return True
 
@@ -1255,8 +1267,8 @@ def _require_missing_directory_member(directory_fd: int, name: str) -> None:
     except FileNotFoundError:
         return
     except OSError as exc:
-        raise FullC6PublicationError("Full C6 publication target cannot be inspected") from exc
-    raise _FullC6TargetExists("Full C6 publication target already exists")
+        raise FullC6PublicationError("artifact build publication target cannot be inspected") from exc
+    raise _FullC6TargetExists("artifact build publication target already exists")
 
 
 def _atomic_rename_noreplace(
@@ -1306,19 +1318,19 @@ def _atomic_rename_noreplace(
             )
         else:
             raise FullC6PublicationError(
-                "Full C6 atomic no-replace rename is unavailable on this platform"
+                "artifact build atomic no-replace rename is unavailable on this platform"
             )
     except AttributeError as exc:
-        raise FullC6PublicationError("Full C6 atomic no-replace rename API is unavailable") from exc
+        raise FullC6PublicationError("artifact build atomic no-replace rename API is unavailable") from exc
     if result == 0:
         return
     error_number = ctypes.get_errno()
     if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
-        raise _FullC6TargetExists("Full C6 publication target already exists")
+        raise _FullC6TargetExists("artifact build publication target already exists")
     if error_number == errno.EXDEV:
-        raise FullC6PublicationError("Full C6 publication crosses filesystem boundary")
+        raise FullC6PublicationError("artifact build publication crosses filesystem boundary")
     raise FullC6PublicationError(
-        f"Full C6 atomic no-replace rename failed with errno {error_number}"
+        f"artifact build atomic no-replace rename failed with errno {error_number}"
     )
 
 
@@ -1330,9 +1342,9 @@ def _reject_symlink_components(path: Path) -> None:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            raise FullC6PublicationError("Full C6 path component cannot be inspected") from exc
+            raise FullC6PublicationError("artifact build path component cannot be inspected") from exc
         if stat.S_ISLNK(observed.st_mode):
-            raise FullC6PublicationError("Full C6 path contains symlink component")
+            raise FullC6PublicationError("artifact build path contains symlink component")
 
 
 def _read_bounded(descriptor: int, *, max_bytes: int) -> bytes:
@@ -1342,26 +1354,26 @@ def _read_bounded(descriptor: int, *, max_bytes: int) -> bytes:
         try:
             chunk = os.read(descriptor, min(65536, remaining))
         except BlockingIOError as exc:
-            raise FullC6PublicationError("Full C6 file cannot be read safely") from exc
+            raise FullC6PublicationError("artifact build file cannot be read safely") from exc
         if not chunk:
             break
         chunks.append(chunk)
         remaining -= len(chunk)
     data = b"".join(chunks)
     if len(data) > max_bytes:
-        raise FullC6PublicationError("Full C6 file exceeds byte bound")
+        raise FullC6PublicationError("artifact build file exceeds byte bound")
     return data
 
 
 def _require_regular_single_link(value: os.stat_result) -> None:
     if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
-        raise FullC6PublicationError("Full C6 file must be regular and single-linked")
+        raise FullC6PublicationError("artifact build file must be regular and single-linked")
 
 
 def _require_same_regular(first: os.stat_result, second: os.stat_result) -> None:
     _require_regular_single_link(second)
     if _stat_identity(first) != _stat_identity(second):
-        raise FullC6PublicationError("Full C6 file changed during capture")
+        raise FullC6PublicationError("artifact build file changed during capture")
 
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -1406,7 +1418,7 @@ def _require_bundle_name(value: str) -> None:
         or value in {".", ".."}
         or any(ord(character) < 32 for character in value)
     ):
-        raise FullC6PublicationError("Full C6 publication bundle name invalid")
+        raise FullC6PublicationError("artifact build publication bundle name invalid")
 
 
 def _require_logical_filename(value: str) -> None:
@@ -1419,7 +1431,7 @@ def _require_logical_filename(value: str) -> None:
         or value in {".", ".."}
         or any(ord(character) < 32 for character in value)
     ):
-        raise ValueError("Full C6 logical filename invalid")
+        raise ValueError("artifact build logical filename invalid")
 
 
 def _require_sha256(value: object, label: str) -> None:
@@ -1428,7 +1440,7 @@ def _require_sha256(value: object, label: str) -> None:
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise ValueError(f"Full C6 {label} SHA-256 invalid")
+        raise ValueError(f"artifact build {label} SHA-256 invalid")
 
 
 __all__ = [

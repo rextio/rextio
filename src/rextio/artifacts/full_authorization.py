@@ -1,7 +1,7 @@
-"""Closed evidence models for the first strict Full C6 authorization gate.
+"""Closed evidence models for the first strict artifact build authorization gate.
 
 The final detached signature cannot sign a digest which already contains its
-own verification receipt.  Full C6 therefore has two deliberately different
+own verification receipt.  artifact build therefore has two deliberately different
 evidence records:
 
 * :class:`FullC6PreauthorizationEvidence` contains the exact twelve receipts
@@ -12,7 +12,7 @@ evidence records:
 
 Neither record is distribution authority.  The positive authorization model
 has a sealed constructor and is minted only by ``rextio.build.full_c6_gate``.
-The older C6.2--C6.15 preview models remain separate and non-authorizing.
+The older artifact-evidence preview models remain separate and non-authorizing.
 """
 
 from __future__ import annotations
@@ -21,22 +21,37 @@ from dataclasses import dataclass, field
 import re
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    ARTIFACT_AUTHORIZATION_AUTHORITY,
+    ARTIFACT_DISTRIBUTION_POLICY,
+    ARTIFACT_EVIDENCE_AUTHORITY,
+    ARTIFACT_EVIDENCE_KIND,
+    ARTIFACT_PREAUTHORIZATION_EVIDENCE_AUTHORITY,
+    ARTIFACT_PREAUTHORIZATION_EVIDENCE_KIND,
+    CURRENT,
+)
 from rextio.artifacts.evidence import EvidenceFileRef, canonical_json_bytes, sha256_hex
 
 
 FULL_C6_SCOPE = "host-extension-wheel-cpython-external-source-depth1-plugin-free-v1"
-FULL_C6_POLICY = "rextio-full-c6-distribution-v1"
-FULL_C6_POLICY_VERSION = 1
-FULL_C6_PREAUTHORIZATION_EVIDENCE_KIND = "full-c6-preauthorization-evidence"
+FULL_C6_POLICY = CURRENT.string_value(ARTIFACT_DISTRIBUTION_POLICY)
+FULL_C6_POLICY_VERSION = 2
+FULL_C6_PREAUTHORIZATION_EVIDENCE_KIND = CURRENT.string_value(
+    ARTIFACT_PREAUTHORIZATION_EVIDENCE_KIND
+)
 FULL_C6_PREAUTHORIZATION_EVIDENCE_STATUS = "unsigned-complete"
-FULL_C6_PREAUTHORIZATION_EVIDENCE_AUTHORITY = "full-c6-preauthorization-only"
-FULL_C6_EVIDENCE_KIND = "full-c6-artifact-evidence"
-FULL_C6_EVIDENCE_SCHEMA_VERSION = 1
+FULL_C6_PREAUTHORIZATION_EVIDENCE_AUTHORITY = CURRENT.string_value(
+    ARTIFACT_PREAUTHORIZATION_EVIDENCE_AUTHORITY
+)
+FULL_C6_EVIDENCE_KIND = CURRENT.string_value(ARTIFACT_EVIDENCE_KIND)
+FULL_C6_EVIDENCE_SCHEMA_VERSION = 2
 FULL_C6_EVIDENCE_STATUS = "complete"
-FULL_C6_EVIDENCE_AUTHORITY = "full-c6-verified-evidence"
+FULL_C6_EVIDENCE_AUTHORITY = CURRENT.string_value(ARTIFACT_EVIDENCE_AUTHORITY)
 FULL_C6_AUTHORIZATION_KIND = "artifact-distribution-authorization"
 FULL_C6_AUTHORIZATION_STATUS = "authorized"
-FULL_C6_AUTHORIZATION_AUTHORITY = "full-c6-hard-gate"
+FULL_C6_AUTHORIZATION_AUTHORITY = CURRENT.string_value(
+    ARTIFACT_AUTHORIZATION_AUTHORITY
+)
 FULL_C6_REPEAT_BUILD_COUNT = 2
 
 # This exact set exists before the final authorization request is signed.  It
@@ -117,50 +132,67 @@ def _validate_evidence_identity(
     trusted_public_key_sha256: str,
 ) -> tuple[EvidenceFileRef, EvidenceFileRef]:
     if type(target_triple) is not str or _TARGET_TRIPLE.fullmatch(target_triple) is None:
-        raise ValueError("Full C6 target triple is outside the frozen scope")
-    trusted_subject = _rebuild_file_ref(subject, label="Full C6 subject")
+        raise ValueError("artifact-evidence target triple is outside the frozen scope")
+    trusted_subject = _rebuild_file_ref(subject, label="artifact-evidence subject")
     if (
         trusted_subject.role != "host-extension-wheel"
         or trusted_subject.size <= 0
         or not trusted_subject.logical_path.endswith(".whl")
     ):
-        raise ValueError("Full C6 subject must be one non-empty host-extension wheel")
+        raise ValueError(
+            "artifact-evidence subject must be one non-empty host-extension wheel"
+        )
     trusted_source = _rebuild_file_ref(
         external_source_archive,
-        label="Full C6 external source archive",
+        label="artifact-evidence external source archive",
     )
     if (
         trusted_source.role != "external-source-wheel-archive"
         or trusted_source.size <= 0
         or not trusted_source.logical_path.endswith(".whl")
     ):
-        raise ValueError("Full C6 external source must be one non-empty wheel archive")
+        raise ValueError(
+            "artifact-evidence external source must be one non-empty wheel archive"
+        )
     subject_key = unicodedata.normalize("NFC", trusted_subject.logical_path).casefold()
     source_key = unicodedata.normalize("NFC", trusted_source.logical_path).casefold()
     if subject_key == source_key:
-        raise ValueError("Full C6 subject and source archive paths must not alias")
-    _require_identity(external_package, label="Full C6 external package", pattern=_PACKAGE)
+        raise ValueError(
+            "artifact-evidence subject and source archive paths must not alias"
+        )
+    _require_identity(
+        external_package,
+        label="artifact-evidence external package",
+        pattern=_PACKAGE,
+    )
     _require_identity(
         external_distribution,
-        label="Full C6 external distribution",
+        label="artifact-evidence external distribution",
         pattern=_DISTRIBUTION,
     )
-    _require_identity(external_version, label="Full C6 external version", pattern=_VERSION)
-    _require_sha256(trusted_public_key_sha256, "Full C6 trusted public key sha256")
+    _require_identity(
+        external_version,
+        label="artifact-evidence external version",
+        pattern=_VERSION,
+    )
+    _require_sha256(
+        trusted_public_key_sha256,
+        "artifact-evidence trusted public key sha256",
+    )
     return trusted_subject, trusted_source
 
 
 @dataclass(frozen=True, slots=True)
 class FullC6EvidenceReceipt:
-    """One exact, closed-vocabulary receipt consumed by the Full C6 gate."""
+    """One exact, closed-vocabulary receipt consumed by the authorization gate."""
 
     id: str
     sha256: str
 
     def __post_init__(self) -> None:
         if type(self.id) is not str or self.id not in FULL_C6_RECEIPT_IDS:
-            raise ValueError("Full C6 receipt id is not in the closed allowlist")
-        _require_sha256(self.sha256, "Full C6 receipt sha256")
+            raise ValueError("artifact-evidence receipt id is not in the closed allowlist")
+        _require_sha256(self.sha256, "artifact-evidence receipt sha256")
 
     def to_dict(self) -> dict[str, str]:
         """Return the deterministic receipt representation."""
@@ -202,10 +234,12 @@ class FullC6PreauthorizationEvidence:
         if type(self.receipts) is not tuple or any(
             type(item) is not FullC6EvidenceReceipt for item in self.receipts
         ):
-            raise TypeError("Full C6 preauthorization receipts must be an exact tuple")
+            raise TypeError(
+                "artifact preauthorization receipts must be an exact tuple"
+            )
         if tuple(item.id for item in self.receipts) != FULL_C6_PREAUTHORIZATION_RECEIPT_IDS:
             raise ValueError(
-                "Full C6 preauthorization receipts must have exact canonical coverage and order"
+                "artifact preauthorization receipts must have exact canonical coverage and order"
             )
 
     @property
@@ -282,18 +316,20 @@ class FullC6ArtifactEvidence:
         object.__setattr__(self, "external_source_archive", source)
         _require_sha256(
             self.preauthorization_evidence_sha256,
-            "Full C6 preauthorization evidence sha256",
+            "artifact preauthorization evidence sha256",
         )
         _require_sha256(
             self.authorization_request_sha256,
-            "Full C6 authorization request sha256",
+            "artifact authorization request sha256",
         )
         if type(self.receipts) is not tuple or any(
             type(item) is not FullC6EvidenceReceipt for item in self.receipts
         ):
-            raise TypeError("Full C6 receipts must be an exact tuple")
+            raise TypeError("artifact-evidence receipts must be an exact tuple")
         if tuple(item.id for item in self.receipts) != FULL_C6_RECEIPT_IDS:
-            raise ValueError("Full C6 receipts must have exact canonical coverage and order")
+            raise ValueError(
+                "artifact-evidence receipts must have exact canonical coverage and order"
+            )
 
     @property
     def complete(self) -> bool:
@@ -388,16 +424,16 @@ def _reconstruct_full_c6_preauthorization_evidence(
     value: FullC6PreauthorizationEvidence,
 ) -> FullC6PreauthorizationEvidence:
     if type(value) is not FullC6PreauthorizationEvidence:
-        raise TypeError("Full C6 gate requires exact preauthorization evidence")
+        raise TypeError("authorization gate requires exact preauthorization evidence")
     rebuilt = FullC6PreauthorizationEvidence(
         target_triple=value.target_triple,
-        subject=_rebuild_file_ref(value.subject, label="Full C6 subject"),
+        subject=_rebuild_file_ref(value.subject, label="artifact-evidence subject"),
         external_package=value.external_package,
         external_distribution=value.external_distribution,
         external_version=value.external_version,
         external_source_archive=_rebuild_file_ref(
             value.external_source_archive,
-            label="Full C6 external source archive",
+            label="artifact-evidence external source archive",
         ),
         trusted_public_key_sha256=value.trusted_public_key_sha256,
         receipts=tuple(
@@ -407,22 +443,22 @@ def _reconstruct_full_c6_preauthorization_evidence(
         ),
     )
     if rebuilt != value:
-        raise ValueError("Full C6 preauthorization evidence is not canonical")
+        raise ValueError("artifact preauthorization evidence is not canonical")
     return rebuilt
 
 
 def _reconstruct_full_c6_evidence(value: FullC6ArtifactEvidence) -> FullC6ArtifactEvidence:
     if type(value) is not FullC6ArtifactEvidence:
-        raise TypeError("Full C6 authorization requires exact final evidence")
+        raise TypeError("artifact authorization requires exact final evidence")
     rebuilt = FullC6ArtifactEvidence(
         target_triple=value.target_triple,
-        subject=_rebuild_file_ref(value.subject, label="Full C6 subject"),
+        subject=_rebuild_file_ref(value.subject, label="artifact-evidence subject"),
         external_package=value.external_package,
         external_distribution=value.external_distribution,
         external_version=value.external_version,
         external_source_archive=_rebuild_file_ref(
             value.external_source_archive,
-            label="Full C6 external source archive",
+            label="artifact-evidence external source archive",
         ),
         trusted_public_key_sha256=value.trusted_public_key_sha256,
         preauthorization_evidence_sha256=value.preauthorization_evidence_sha256,
@@ -434,7 +470,7 @@ def _reconstruct_full_c6_evidence(value: FullC6ArtifactEvidence) -> FullC6Artifa
         ),
     )
     if rebuilt != value:
-        raise ValueError("Full C6 evidence is not in canonical model form")
+        raise ValueError("artifact evidence is not in canonical model form")
     return rebuilt
 
 
@@ -461,7 +497,9 @@ class FullC6AuthorizationCheck:
 
     def __post_init__(self) -> None:
         if type(self.id) is not str or self.id not in FULL_C6_AUTHORIZATION_CHECK_IDS:
-            raise ValueError("Full C6 authorization check id is not in the closed allowlist")
+            raise ValueError(
+                "artifact authorization check id is not in the closed allowlist"
+            )
 
     def to_dict(self) -> dict[str, str]:
         """Return the deterministic final check shape."""
@@ -480,7 +518,7 @@ class FullC6DistributionAuthorization:
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError(
-            "Full C6 distribution authorization can only be created by the hard gate"
+            "artifact distribution authorization can only be created by the hard gate"
         )
 
     @property

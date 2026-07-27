@@ -1,17 +1,17 @@
-"""Bounded C6.2-C6.15 artifact-evidence models and sidecar helpers.
+"""Bounded artifact-evidence artifact-evidence models and sidecar helpers.
 
 This module is intentionally separate from :class:`ArtifactProvenance`, which
-remains planning metadata only. C6.2 emits preview-only, incomplete, unsigned
+remains planning metadata only. artifact-evidence emits preview-only, incomplete, unsigned
 supply-chain sidecars for ordinary successful host-extension+cpython wheels.
-C6.4 adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
-Linux ELF only) under the same evidence-only authority. C6.8 adds optional
-one-hop static packaged path observations. C6.9 adds a strictly bounded,
+artifact-evidence adds a sanitized direct native runtime linkage inventory (macOS Mach-O /
+Linux ELF only) under the same evidence-only authority. artifact-evidence adds optional
+one-hop static packaged path observations. artifact-evidence adds a strictly bounded,
 cycle-safe graph over recursively inspected packaged members and logical system
-leaves. C6.10 adds scoped source replay, C6.11 adds a scoped owner Cargo
-license-policy receipt, C6.12 adds an owner declaration for the exact
-C6.10 project-source/generated-Rust scope, C6.13 binds sibling-stub analysis
-inputs, C6.14 partitions the currently
-observed artifact universe into compact policy-coverage classes, and C6.15
+leaves. artifact-evidence adds scoped source replay, artifact-evidence adds a scoped owner Cargo
+license-policy receipt, artifact-evidence adds an owner declaration for the exact
+artifact-evidence project-source/generated-Rust scope, artifact-evidence binds sibling-stub analysis
+inputs, artifact-evidence partitions the currently
+observed artifact universe into compact policy-coverage classes, and artifact-evidence
 binds closed owner dispositions to that exact partition. None completes global
 transformation/license policy, signing, or distribution authorization.
 Evidence unavailability never changes ordinary build success.
@@ -38,8 +38,18 @@ from typing import Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 from rextio.__about__ import __version__ as REXTIO_VERSION
+from rextio.artifacts.contract_dialects import (
+    ANALYSIS_INPUT_VERIFICATION_SCOPE as ANALYSIS_INPUT_SCOPE_DIALECT_KEY,
+    ARTIFACT_CONTRACT_DIALECTS,
+    ARTIFACT_COMPONENT_URN_PREFIX,
+    ARTIFACT_INPUT_URN_PREFIX,
+    ARTIFACT_WHEEL_URN_PREFIX,
+    CURRENT,
+    SUPPLY_CHAIN_BUILDER_ID,
+    SUPPLY_CHAIN_BUILD_TYPE,
+)
 
-# Fixed bounds for the C6.2 preview path.
+# Fixed bounds for the artifact-evidence preview path.
 MAX_EVIDENCE_COMPONENTS = 512
 MAX_EVIDENCE_STRING_CHARS = 512
 MAX_EVIDENCE_FILE_BYTES = 16 * 1024 * 1024
@@ -126,7 +136,9 @@ PROJECT_SOURCE_LICENSE_POLICY_ACTION_SCOPES: tuple[str, ...] = (
 )
 ANALYSIS_INPUT_VERIFICATION_KIND = "analysis-input-verification"
 ANALYSIS_INPUT_VERIFICATION_SCHEMA_VERSION = 1
-ANALYSIS_INPUT_VERIFICATION_SCOPE = "c6.10-project-source-sibling-stubs-v1"
+ANALYSIS_INPUT_VERIFICATION_SCOPE = CURRENT.string_value(
+    ANALYSIS_INPUT_SCOPE_DIALECT_KEY
+)
 ANALYSIS_INPUT_SET_VERSION = 1
 SUPPORTED_SIGNATURE_PROJECTION_SET_VERSION = 1
 SUPPORTED_SIGNATURE_PROJECTION_VERSION = 1
@@ -389,7 +401,7 @@ class ArtifactEvidenceError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArtifactEvidenceGate:
-    """Immutable report for the opt-in C6.3 required evidence policy."""
+    """Immutable report for the opt-in artifact-evidence required evidence policy."""
 
     mode: str
     status: str
@@ -448,7 +460,7 @@ class ArtifactEvidenceGate:
 
     @classmethod
     def from_evidence(cls, evidence: ArtifactEvidence) -> ArtifactEvidenceGate:
-        """Evaluate one C6.2 evidence record without widening its authority."""
+        """Evaluate one artifact-evidence evidence record without widening its authority."""
         if evidence.status == ARTIFACT_EVIDENCE_REQUIRED_STATUS:
             return cls(
                 mode=ARTIFACT_EVIDENCE_POLICY_REQUIRED,
@@ -968,7 +980,7 @@ class NativeRuntimePathResolutionInventory:
 
 @dataclass(frozen=True, slots=True)
 class NativeRuntimeTransitiveClosureNode:
-    """One canonical node in the bounded C6.9 static runtime graph."""
+    """One canonical node in the bounded artifact-evidence static runtime graph."""
 
     kind: str  # wheel-member | system-logical
     format: str  # mach-o | elf
@@ -1671,7 +1683,7 @@ class SourceTransformationVerification:
 
 @dataclass(frozen=True, slots=True)
 class AnalysisInputRecord:
-    """One immutable C6.13 sibling-stub observation for a C6.10 source."""
+    """One immutable artifact-evidence sibling-stub observation for a artifact-evidence source."""
 
     source_path: str
     stub_path: str
@@ -1744,7 +1756,7 @@ class AnalysisInputRecord:
 
 @dataclass(frozen=True, slots=True)
 class AnalysisInputVerification:
-    """C6.13 evidence bound to one exact C6.10 source transformation receipt."""
+    """artifact-evidence evidence bound to one exact artifact-evidence source transformation receipt."""
 
     source_transformation_verification_sha256: str
     source_input_set_sha256: str
@@ -2039,7 +2051,7 @@ class ArtifactPolicyCoverageClass:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactPolicyCoverageInventory:
-    """C6.14 partition of exact components already observed by prior evidence."""
+    """artifact-evidence partition of exact components already observed by prior evidence."""
 
     classes: tuple[ArtifactPolicyCoverageClass, ...]
     observed_component_count: int
@@ -2139,7 +2151,7 @@ class ArtifactPolicyCoverageInventory:
 def artifact_policy_coverage_inventory_digest(
     value: ArtifactPolicyCoverageInventory,
 ) -> str:
-    """Hash one deeply reconstructed C6.14 semantic inventory."""
+    """Hash one deeply reconstructed artifact-evidence semantic inventory."""
     rebuilt = _reconstruct_artifact_policy_coverage_inventory(value)
     return sha256_hex(canonical_json_bytes(rebuilt.to_dict()))
 
@@ -2147,7 +2159,7 @@ def artifact_policy_coverage_inventory_digest(
 def artifact_class_policy_dispositions(
     coverage: ArtifactPolicyCoverageClass,
 ) -> tuple[str, str]:
-    """Return the sole closed C6.15 disposition pair for one C6.14 row."""
+    """Return the sole closed artifact-evidence disposition pair for one artifact-evidence row."""
     coverage = _reconstruct_artifact_policy_coverage_class(coverage)
     if coverage.license_policy_state != "unassessed":
         license_disposition = "prerequisite-receipt-bound"
@@ -2171,7 +2183,7 @@ def artifact_class_policy_dispositions(
 
 @dataclass(frozen=True, slots=True)
 class ArtifactClassPolicyDeclaration:
-    """Closed owner disposition for one exact C6.14 artifact class."""
+    """Closed owner disposition for one exact artifact-evidence artifact class."""
 
     coverage: ArtifactPolicyCoverageClass
     license_policy_disposition: str
@@ -2212,7 +2224,7 @@ class ArtifactClassPolicyDeclaration:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactClassPolicyVerification:
-    """One bounded owner policy receipt for the exact C6.14 class partition.
+    """One bounded owner policy receipt for the exact artifact-evidence class partition.
 
     The receipt records closed per-class dispositions only. It does not verify
     attestor identity, SPDX expressions, license obligations or files,
@@ -2428,7 +2440,12 @@ class ArtifactClassPolicyVerification:
         }
 
 
-def artifact_policy_identity_set_digest(class_id: str, identities: Sequence[str]) -> str:
+def artifact_policy_identity_set_digest(
+    class_id: str,
+    identities: Sequence[str],
+    *,
+    _artifact_contract_dialect: str = CURRENT.name,
+) -> str:
     """Hash one sorted unique set of opaque, domain-qualified identities."""
     if class_id not in ARTIFACT_POLICY_COVERAGE_CLASS_IDS:
         raise ValueError("artifact policy coverage identity class is invalid")
@@ -2439,7 +2456,11 @@ def artifact_policy_identity_set_digest(class_id: str, identities: Sequence[str]
     ):
         raise ValueError("artifact policy coverage identity count exceeds the bound")
     canonical = tuple(identities)
-    prefix = f"urn:rextio:artifact-component:{class_id}:"
+    try:
+        dialect = ARTIFACT_CONTRACT_DIALECTS[_artifact_contract_dialect]
+    except KeyError as exc:
+        raise ValueError("artifact policy coverage dialect is invalid") from exc
+    prefix = f"{dialect.string_value(ARTIFACT_COMPONENT_URN_PREFIX)}{class_id}:"
     if any(
         type(identity) is not str
         or len(identity) > MAX_EVIDENCE_STRING_CHARS
@@ -2489,7 +2510,7 @@ def artifact_policy_partition_digest(
 def _reconstruct_artifact_policy_coverage_class(
     value: ArtifactPolicyCoverageClass,
 ) -> ArtifactPolicyCoverageClass:
-    """Deeply rebuild one compact C6.14 row before trusting its claims."""
+    """Deeply rebuild one compact artifact-evidence row before trusting its claims."""
     if type(value) is not ArtifactPolicyCoverageClass:
         raise TypeError("artifact policy coverage class model is invalid")
     return ArtifactPolicyCoverageClass(
@@ -2509,7 +2530,7 @@ def _reconstruct_artifact_policy_coverage_class(
 def _reconstruct_artifact_policy_coverage_inventory(
     value: ArtifactPolicyCoverageInventory,
 ) -> ArtifactPolicyCoverageInventory:
-    """Deeply rebuild one complete C6.14 inventory before hashing/binding it."""
+    """Deeply rebuild one complete artifact-evidence inventory before hashing/binding it."""
     if type(value) is not ArtifactPolicyCoverageInventory:
         raise TypeError("artifact policy coverage inventory model is invalid")
     if type(value.classes) is not tuple or len(value.classes) != len(
@@ -2672,7 +2693,7 @@ class ComponentLicensePolicyVerification:
     """One owner-attested policy receipt for exact Cargo registry metadata.
 
     This receipt verifies only that a project-owned lock allowed the exact raw
-    C6.7 registry records. It neither authenticates the claimed owner nor
+    artifact-evidence registry records. It neither authenticates the claimed owner nor
     validates SPDX syntax, license files, legal compatibility, or obligations.
     """
 
@@ -2844,9 +2865,9 @@ class ComponentLicensePolicyVerification:
 
 @dataclass(frozen=True, slots=True)
 class ProjectSourceLicensePolicyVerification:
-    """One owner declaration for the exact C6.10 project/source-output scope.
+    """One owner declaration for the exact artifact-evidence project/source-output scope.
 
-    The receipt binds declarations to a complete plugin-free C6.10 replay
+    The receipt binds declarations to a complete plugin-free artifact-evidence replay
     receipt, but does not establish ownership, SPDX validity, legal approval,
     derivative-work rights, signing, or distribution authority.
     """
@@ -3137,7 +3158,7 @@ class SidecarArtifact:
 
 @dataclass(frozen=True)
 class ArtifactEvidence:
-    """Additive ``build.json.artifact_evidence`` record for C6.2-C6.15 preview."""
+    """Additive ``build.json.artifact_evidence`` record for artifact-evidence preview."""
 
     kind: str
     status: str  # preview-ready | unavailable
@@ -3424,7 +3445,7 @@ class ArtifactEvidence:
             if self.artifact_class_policy_verification is not None:
                 if self.artifact_policy_coverage_inventory is None:
                     raise ValueError(
-                        "artifact class policy verification requires C6.14 coverage"
+                        "artifact class policy verification requires artifact-evidence coverage"
                     )
                 occupied_policy_paths = [item.logical_path for item in self.inputs]
                 if self.analysis_input_verification is not None:
@@ -3627,7 +3648,7 @@ def _validate_component_license_policy_verification_binding(
     verification: ComponentLicensePolicyVerification,
     inventory: ComponentLicenseInventory,
 ) -> None:
-    """Bind one scoped owner receipt to the exact full C6.7 observation."""
+    """Bind one scoped owner receipt to the exact full artifact-evidence observation."""
     if type(verification) is not ComponentLicensePolicyVerification:
         raise TypeError("component license policy verification model is invalid")
     if type(inventory) is not ComponentLicenseInventory:
@@ -3674,13 +3695,13 @@ def _validate_project_source_license_policy_verification_binding(
     verification: ProjectSourceLicensePolicyVerification,
     transformation_verification: SourceTransformationVerification,
 ) -> None:
-    """Bind one C6.12 receipt to the exact present C6.10 replay receipt."""
+    """Bind one artifact-evidence receipt to the exact present artifact-evidence replay receipt."""
     verification = _reconstruct_project_source_license_policy_verification(verification)
     if type(transformation_verification) is not SourceTransformationVerification:
-        raise TypeError("project source license policy requires C6.10 verification")
+        raise TypeError("project source license policy requires artifact-evidence verification")
     transformation_digest = sha256_hex(canonical_json_bytes(transformation_verification.to_dict()))
     if verification.source_transformation_verification_sha256 != transformation_digest:
-        raise ValueError("project source license policy C6.10 digest differs")
+        raise ValueError("project source license policy artifact-evidence digest differs")
     if (
         verification.source_input_set_sha256 != transformation_verification.source_input_set_sha256
         or verification.source_inputs != transformation_verification.source_inputs
@@ -3699,7 +3720,7 @@ def _artifact_class_policy_snapshot(
     attestor_kind: str,
     attestor_relationship: str,
 ) -> dict[str, object]:
-    """Return the exact semantic C6.15 lock document used for its digest."""
+    """Return the exact semantic artifact-evidence lock document used for its digest."""
     return {
         "schema_version": ARTIFACT_CLASS_POLICY_LOCK_SCHEMA_VERSION,
         "kind": ARTIFACT_CLASS_POLICY_LOCK_KIND,
@@ -3722,7 +3743,7 @@ def _artifact_class_policy_snapshot(
 def _reconstruct_artifact_class_policy_verification(
     value: ArtifactClassPolicyVerification,
 ) -> ArtifactClassPolicyVerification:
-    """Deeply rebuild every C6.15 receipt field before trusting it."""
+    """Deeply rebuild every artifact-evidence receipt field before trusting it."""
     if type(value) is not ArtifactClassPolicyVerification:
         raise TypeError("artifact class policy verification model is invalid")
     if type(value.classes) is not tuple or type(value.action_scopes) is not tuple:
@@ -3797,12 +3818,12 @@ def _validate_artifact_class_policy_verification_binding(
     verification: ArtifactClassPolicyVerification,
     inventory: ArtifactPolicyCoverageInventory,
 ) -> None:
-    """Bind C6.15 to the exact complete C6.14 semantic partition."""
+    """Bind artifact-evidence to the exact complete artifact-evidence semantic partition."""
     verification = _reconstruct_artifact_class_policy_verification(verification)
     inventory = _reconstruct_artifact_policy_coverage_inventory(inventory)
     coverage_digest = artifact_policy_coverage_inventory_digest(inventory)
     if verification.artifact_policy_coverage_inventory_sha256 != coverage_digest:
-        raise ValueError("artifact class policy C6.14 digest differs")
+        raise ValueError("artifact class policy artifact-evidence digest differs")
     if verification.canonical_partition_sha256 != inventory.canonical_partition_sha256:
         raise ValueError("artifact class policy partition digest differs")
     if tuple(item.coverage for item in verification.classes) != inventory.classes:
@@ -3822,7 +3843,7 @@ def _validate_artifact_class_policy_verification_binding(
 def _reconstruct_project_source_license_policy_verification(
     value: ProjectSourceLicensePolicyVerification,
 ) -> ProjectSourceLicensePolicyVerification:
-    """Deeply rebuild one C6.12 receipt before trusting any serialized claim."""
+    """Deeply rebuild one artifact-evidence receipt before trusting any serialized claim."""
     if type(value) is not ProjectSourceLicensePolicyVerification:
         raise TypeError("project source license policy verification model is invalid")
     if type(value.source_inputs) is not tuple or type(value.action_scopes) is not tuple:
@@ -3879,7 +3900,7 @@ def _reconstruct_project_source_license_policy_verification(
 def _reconstruct_project_source_license_file_ref(
     value: EvidenceFileRef,
 ) -> EvidenceFileRef:
-    """Re-run one nested C6.12 file-reference model boundary."""
+    """Re-run one nested artifact-evidence file-reference model boundary."""
     if type(value) is not EvidenceFileRef:
         raise TypeError("project source license policy file binding is invalid")
     rebuilt = EvidenceFileRef(
@@ -3899,7 +3920,7 @@ def _validate_source_transformation_verification_binding(
     inventory: SourceTransformationInventory,
     inputs: tuple[EvidenceFileRef, ...],
 ) -> None:
-    """Bind the scoped replay receipt to the exact C6.6/input observations."""
+    """Bind the scoped replay receipt to the exact artifact-evidence/input observations."""
     if type(verification) is not SourceTransformationVerification:
         raise TypeError("source transformation verification model is invalid")
     inventory_digest = sha256_hex(canonical_json_bytes(inventory.to_dict()))
@@ -3935,7 +3956,7 @@ def _validate_source_transformation_verification_binding(
 
 
 def _reconstruct_analysis_input_file_ref(value: EvidenceFileRef) -> EvidenceFileRef:
-    """Re-run the nested C6.13 file-reference model boundary."""
+    """Re-run the nested artifact-evidence file-reference model boundary."""
     if type(value) is not EvidenceFileRef:
         raise TypeError("analysis input stub reference is invalid")
     rebuilt = EvidenceFileRef(
@@ -3952,7 +3973,7 @@ def _reconstruct_analysis_input_file_ref(value: EvidenceFileRef) -> EvidenceFile
 def _reconstruct_analysis_input_record(
     value: AnalysisInputRecord,
 ) -> AnalysisInputRecord:
-    """Deeply rebuild one C6.13 source/stub record before trusting it."""
+    """Deeply rebuild one artifact-evidence source/stub record before trusting it."""
     if type(value) is not AnalysisInputRecord:
         raise TypeError("analysis input record model is invalid")
     rebuilt = AnalysisInputRecord(
@@ -3971,7 +3992,7 @@ def _reconstruct_analysis_input_record(
 def _reconstruct_analysis_input_verification(
     value: AnalysisInputVerification,
 ) -> AnalysisInputVerification:
-    """Deeply rebuild the complete C6.13 receipt at the artifact boundary."""
+    """Deeply rebuild the complete artifact-evidence receipt at the artifact boundary."""
     if type(value) is not AnalysisInputVerification:
         raise TypeError("analysis input verification model is invalid")
     if type(value.source_paths) is not tuple or type(value.records) is not tuple:
@@ -4011,7 +4032,7 @@ def _reconstruct_analysis_input_verification(
 
 
 def _reject_analysis_input_path_aliases(paths: tuple[str, ...], label: str) -> None:
-    """Reject case- and normalization-insensitive aliases in C6.13 paths."""
+    """Reject case- and normalization-insensitive aliases in artifact-evidence paths."""
     aliases: set[str] = set()
     for path in paths:
         if type(path) is not str:
@@ -4028,13 +4049,13 @@ def _validate_analysis_input_verification_binding(
     transformation_verification: SourceTransformationVerification,
     inputs: tuple[EvidenceFileRef, ...] | Sequence[EvidenceFileRef],
 ) -> None:
-    """Bind C6.13 to the exact C6.10 receipt and project-source inputs."""
+    """Bind artifact-evidence to the exact artifact-evidence receipt and project-source inputs."""
     verification = _reconstruct_analysis_input_verification(verification)
     if type(transformation_verification) is not SourceTransformationVerification:
-        raise TypeError("analysis input verification requires C6.10 verification")
+        raise TypeError("analysis input verification requires artifact-evidence verification")
     transformation_digest = sha256_hex(canonical_json_bytes(transformation_verification.to_dict()))
     if verification.source_transformation_verification_sha256 != transformation_digest:
-        raise ValueError("analysis input verification C6.10 digest differs")
+        raise ValueError("analysis input verification artifact-evidence digest differs")
     source_inputs = tuple(
         sorted(
             (item for item in inputs if item.role == "project-python-source"),
@@ -4067,7 +4088,7 @@ def _reconstruct_policy_coverage_runtime(
     NativeRuntimePathResolutionInventory,
     NativeRuntimeTransitiveClosureInventory,
 ]:
-    """Deeply rebuild the C6.4/C6.8/C6.9 prerequisite chain."""
+    """Deeply rebuild the artifact-evidence/artifact-evidence/artifact-evidence prerequisite chain."""
     if type(runtime) is not NativeRuntimeInventory:
         raise TypeError("artifact policy coverage runtime inventory is invalid")
     if type(runtime.dependencies) is not tuple or len(runtime.dependencies) > MAX_RUNTIME_DEPS:
@@ -4181,7 +4202,7 @@ def _reconstruct_policy_coverage_source(
     inventory: SourceTransformationInventory,
     verification: SourceTransformationVerification,
 ) -> tuple[SourceTransformationInventory, SourceTransformationVerification]:
-    """Deeply rebuild C6.6/C6.10, including every nested file/range."""
+    """Deeply rebuild artifact-evidence/artifact-evidence, including every nested file/range."""
     if type(inventory) is not SourceTransformationInventory:
         raise TypeError("artifact policy coverage transformation inventory is invalid")
     if type(inventory.records) is not tuple or len(inventory.records) > MAX_SOURCE_TRANSFORMATIONS:
@@ -4261,7 +4282,7 @@ def _reconstruct_policy_coverage_license(
     inventory: ComponentLicenseInventory,
     verification: ComponentLicensePolicyVerification,
 ) -> tuple[ComponentLicenseInventory, ComponentLicensePolicyVerification]:
-    """Deeply rebuild the C6.7/C6.11 prerequisite chain."""
+    """Deeply rebuild the artifact-evidence/artifact-evidence prerequisite chain."""
     if type(inventory) is not ComponentLicenseInventory:
         raise TypeError("artifact policy coverage license inventory is invalid")
     if (
@@ -4349,10 +4370,10 @@ def derive_artifact_policy_coverage_inventory(
     component_license_policy_verification: ComponentLicensePolicyVerification,
     project_source_license_policy_verification: (ProjectSourceLicensePolicyVerification),
 ) -> ArtifactPolicyCoverageInventory:
-    """Derive the exact compact C6.14 partition from prerequisite evidence.
+    """Derive the exact compact artifact-evidence partition from prerequisite evidence.
 
     This inventory classifies only components already observed by the bounded
-    C6.2-C6.13 evidence path. Evidence sidecars and C6.14 itself are excluded,
+    artifact-evidence evidence path. Evidence sidecars and artifact-evidence itself are excluded,
     and no missing artifact or policy is inferred.
     """
     if type(subject) is not EvidenceFileRef or subject.role != "host-extension-wheel":
@@ -4520,7 +4541,10 @@ def derive_artifact_policy_coverage_inventory(
 
     def add_identity(class_id: str, value: object) -> None:
         digest = sha256_hex(canonical_json_bytes(value))
-        classes[class_id].append(f"urn:rextio:artifact-component:{class_id}:{digest}")
+        classes[class_id].append(
+            f"{CURRENT.string_value(ARTIFACT_COMPONENT_URN_PREFIX)}"
+            f"{class_id}:{digest}"
+        )
 
     file_paths: set[str] = set()
     file_path_aliases: set[str] = set()
@@ -4701,7 +4725,7 @@ def _validate_runtime_closure_evidence_binding(
     wheel_entries: tuple[WheelEntryRef, ...],
     target_triple: str,
 ) -> None:
-    """Cross-bind the C6.9 graph to C6.4 bytes and C6.8 root edges."""
+    """Cross-bind the artifact-evidence graph to artifact-evidence bytes and artifact-evidence root edges."""
     if type(closure) is not NativeRuntimeTransitiveClosureInventory:
         raise TypeError("native runtime closure model is invalid")
     if (
@@ -4756,7 +4780,7 @@ def _validate_runtime_closure_evidence_binding(
             raise ValueError("native runtime closure root system edge is inconsistent")
     if closure.format == "elf":
         # Imported lazily to avoid the build layer's evidence-model import
-        # cycle while still enforcing the same target-specific C6.4 allowlist.
+        # cycle while still enforcing the same target-specific artifact-evidence allowlist.
         from rextio.build.runtime_inventory import _allowed_elf_dependencies
 
         allowed_system_names = _allowed_elf_dependencies(target_triple)
@@ -6722,7 +6746,10 @@ def _validate_cargo_dependency_graph(
 
 def _wheel_entry_bom_ref(entry: WheelEntryRef) -> str:
     """Return the single canonical CycloneDX identity for a wheel member."""
-    return f"urn:rextio:wheel-entry:{entry.sha256}:{sha256_hex(entry.name.encode('utf-8'))[:16]}"
+    return (
+        f"{CURRENT.string_value(ARTIFACT_COMPONENT_URN_PREFIX)}wheel-entry:"
+        f"{entry.sha256}:{sha256_hex(entry.name.encode('utf-8'))[:16]}"
+    )
 
 
 def build_cyclonedx_document(
@@ -6739,7 +6766,7 @@ def build_cyclonedx_document(
 
     The primary component lives only in ``metadata.component`` (not duplicated
     in ``components``). Top-level ``dependencies`` describe the incomplete graph.
-    Direct native runtime linkage (C6.4) is optional additive inventory only and
+    Direct native runtime linkage (artifact-evidence) is optional additive inventory only and
     is never claimed as a transitive closure.
     """
     runtime_dep_count = (
@@ -6761,7 +6788,9 @@ def build_cyclonedx_document(
             reason=REASON_CARGO_GRAPH_INVALID,
         ) from exc
 
-    subject_ref = f"urn:rextio:wheel:{subject.sha256}"
+    subject_ref = (
+        f"{CURRENT.string_value(ARTIFACT_WHEEL_URN_PREFIX)}{subject.sha256}"
+    )
     wheel_version = parse_wheel_version(subject.logical_path)
     components: list[dict[str, object]] = []
     depends_on: list[str] = []
@@ -6788,7 +6817,7 @@ def build_cyclonedx_document(
     for item in sorted(inputs, key=lambda value: (value.role, value.logical_path, value.sha256)):
         # Include path and role in bom-ref identity so equal digests do not collide.
         identity = sha256_hex(f"{item.role}|{item.logical_path}|{item.sha256}".encode("utf-8"))
-        bom_ref = f"urn:rextio:input:{identity}"
+        bom_ref = f"{CURRENT.string_value(ARTIFACT_INPUT_URN_PREFIX)}{identity}"
         components.append(
             {
                 "type": "file",
@@ -7005,7 +7034,7 @@ def build_intoto_provenance_document(
 
     The SBOM is a second statement subject (an output), not a resolved input.
     ``invocationId`` is omitted so deterministic sidecars do not invent a unique
-    invocation identity from the wheel hash alone. C6.4 native linkage is an
+    invocation identity from the wheel hash alone. artifact-evidence native linkage is an
     observation of the produced binary, so it is metadata rather than a resolved
     build input/material.
     """
@@ -7023,7 +7052,7 @@ def build_intoto_provenance_document(
         )
     if analysis_input_verification is not None:
         if source_transformation_verification is None:
-            raise ValueError("analysis input verification requires C6.10 verification")
+            raise ValueError("analysis input verification requires artifact-evidence verification")
         _validate_analysis_input_verification_binding(
             verification=analysis_input_verification,
             transformation_verification=source_transformation_verification,
@@ -7085,7 +7114,7 @@ def build_intoto_provenance_document(
 
     if project_source_license_policy_verification is not None:
         if source_transformation_verification is None:
-            raise ValueError("project source license policy provenance requires C6.10 verification")
+            raise ValueError("project source license policy provenance requires artifact-evidence verification")
         _validate_project_source_license_policy_verification_binding(
             verification=project_source_license_policy_verification,
             transformation_verification=source_transformation_verification,
@@ -7114,7 +7143,7 @@ def build_intoto_provenance_document(
             or component_license_policy_verification is None
             or project_source_license_policy_verification is None
         ):
-            raise ValueError("artifact policy coverage provenance requires C6.9-C6.13 evidence")
+            raise ValueError("artifact policy coverage provenance requires artifact-evidence evidence")
         expected_policy_coverage = derive_artifact_policy_coverage_inventory(
             target_triple=target_triple,
             subject=subject,
@@ -7136,7 +7165,7 @@ def build_intoto_provenance_document(
 
     if artifact_class_policy_verification is not None:
         if artifact_policy_coverage_inventory is None:
-            raise ValueError("artifact class policy provenance requires C6.14 coverage")
+            raise ValueError("artifact class policy provenance requires artifact-evidence coverage")
         _validate_artifact_class_policy_verification_binding(
             verification=artifact_class_policy_verification,
             inventory=artifact_policy_coverage_inventory,
@@ -7287,7 +7316,7 @@ def build_intoto_provenance_document(
         "predicateType": "https://slsa.dev/provenance/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": "https://rextio.dev/buildtypes/host-extension-wheel/v1-preview",
+                "buildType": CURRENT.string_value(SUPPLY_CHAIN_BUILD_TYPE),
                 "externalParameters": {
                     "artifact_kind": "host-extension",
                     "packaging_backend": "wheel",
@@ -7299,7 +7328,7 @@ def build_intoto_provenance_document(
             },
             "runDetails": {
                 "builder": {
-                    "id": "https://rextio.dev/builder/host-extension-wheel/v1-preview",
+                    "id": CURRENT.string_value(SUPPLY_CHAIN_BUILDER_ID),
                     "version": {"rextio": REXTIO_VERSION},
                 },
                 "metadata": run_metadata,

@@ -48,9 +48,7 @@ _LINUX_UNMAPPED_RAW_TARGETS = {
     "libclang-cpp.so.17": "../llvm-17/lib/libclang-cpp.so.17",
     "libclang-cpp.so.18": "../llvm-18/lib/libclang-cpp.so.18.1",
     "libclang-cpp.so.18.1": "../llvm-18/lib/libclang-cpp.so.18.1",
-    "libpython3.12.a": (
-        "../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
-    ),
+    "libpython3.12.a": ("../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"),
 }
 _LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS = frozenset(
     {
@@ -75,7 +73,7 @@ def _evaluate_seccomp(
     args: tuple[int, ...] = (),
     arch: int = _AUDIT_ARCH_X86_64,
 ) -> int:
-    """Evaluate the small classic-BPF subset emitted by the Full C6 filter."""
+    """Evaluate the small classic-BPF subset emitted by the artifact-build filter."""
     if len(args) > 6:
         raise ValueError("seccomp_data only contains six syscall arguments")
     padded_args = (*args, *((0,) * (6 - len(args))))
@@ -218,12 +216,8 @@ def _environment() -> dict[str, str]:
         "CARGO_HOME": "/rextio/build/cargo-home",
         "CARGO_NET_OFFLINE": "true",
         "CARGO_TARGET_DIR": "/rextio/build/target",
-        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
-            "/rextio/toolchain/bin/linker"
-        ),
-        "COMPILER_PATH": (
-            "/rextio/toolchain/bin:/rextio/support/gcc-toolchain"
-        ),
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": ("/rextio/toolchain/bin/linker"),
+        "COMPILER_PATH": ("/rextio/toolchain/bin:/rextio/support/gcc-toolchain"),
         "HOME": "/rextio/build/home",
         "LANG": "C",
         "LC_ALL": "C",
@@ -233,9 +227,7 @@ def _environment() -> dict[str, str]:
             "/rextio/support/python-library-root:"
             "/x86_64-linux-gnu"
         ),
-        "LIBRARY_PATH": (
-            "/rextio/support/gcc-toolchain:/x86_64-linux-gnu"
-        ),
+        "LIBRARY_PATH": ("/rextio/support/gcc-toolchain:/x86_64-linux-gnu"),
         "PATH": "/rextio/toolchain/bin:/rextio/python/bin",
         "PYO3_CONFIG_FILE": FULL_C6_LINUX_PYO3_CONFIG,
         "PYO3_ENVIRONMENT_SIGNATURE": expected_linux_pyo3_environment_signature(),
@@ -299,7 +291,7 @@ def seccomp_lease(
     seccomp_kernel: _MockSealedMemfdKernel,
 ) -> Iterator[LinuxSeccompLease]:
     lease = create_linux_full_c6_seccomp_lease()
-    assert seccomp_kernel.create_calls == [("rextio-full-c6-seccomp", 0x0003)]
+    assert seccomp_kernel.create_calls == [("rextio-artifact-seccomp", 0x0003)]
     try:
         yield lease
     finally:
@@ -373,25 +365,15 @@ def test_linux_unmapped_runtime_symlink_targets_remain_outside_all_mappings(
         sandbox_module._LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS
         == _LINUX_UNMAPPED_FINAL_VIRTUAL_TARGETS
     )
-    assert all(
-        not target.startswith(f"{source_prefix}/")
-        for target in final_targets
-    )
-    assert all(
-        not target.startswith(f"{gcc_source_prefix}/")
-        for target in final_targets
-    )
+    assert all(not target.startswith(f"{source_prefix}/") for target in final_targets)
+    assert all(not target.startswith(f"{gcc_source_prefix}/") for target in final_targets)
     destinations = tuple(
         destination
         for rule in plan.rules
-        if (destination := sandbox_module._linux_rule_destination(rule))
-        is not None
+        if (destination := sandbox_module._linux_rule_destination(rule)) is not None
     )
     assert all(
-        not (
-            target == destination
-            or target.startswith(destination.rstrip("/") + "/")
-        )
+        not (target == destination or target.startswith(destination.rstrip("/") + "/"))
         for target in final_targets
         for destination in destinations
     )
@@ -466,9 +448,7 @@ def _prepare_linux(
         bubblewrap=bwrap,
         bubblewrap_verifier=lambda _path: bwrap_digest,
         linux_seccomp_lease=seccomp_lease,
-        linux_payload_environment=(
-            _environment() if environment is None else environment
-        ),
+        linux_payload_environment=(_environment() if environment is None else environment),
     )
 
 
@@ -513,9 +493,7 @@ def test_linux_launch_uses_bwrap_then_isolated_post_namespace_launcher(
     assert launch.command[-13:-11] == ("--seccomp", str(seccomp_fd))
     assert launch.command[-11] == "--"
     assert launch.pass_fds == (seccomp_fd,)
-    assert launch.seccomp_sha256 == hashlib.sha256(
-        linux_full_c6_seccomp_program()
-    ).hexdigest()
+    assert launch.seccomp_sha256 == hashlib.sha256(linux_full_c6_seccomp_program()).hexdigest()
     assert launch.seccomp_lease is seccomp_lease
     assert launch.preexec_fn is None
 
@@ -530,9 +508,7 @@ def test_linux_command_has_exact_mapping_order_and_launcher_support_is_hidden(
         target_triple="x86_64-unknown-linux-gnu",
         rules=(
             *rules,
-            SandboxPathRule(
-                launcher, "read-execute", "launcher-support-bwrap-libs"
-            ),
+            SandboxPathRule(launcher, "read-execute", "launcher-support-bwrap-libs"),
         ),
         platform_anchor_sha256=_SHA,
     )
@@ -869,11 +845,14 @@ def test_mock_linux_factory_seals_exact_filter_and_rejects_mutation(
 
     assert seccomp_lease.closed is False
     assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
-    assert os.pread(
-        descriptor,
-        len(linux_full_c6_seccomp_program()) + 1,
-        0,
-    ) == linux_full_c6_seccomp_program()
+    assert (
+        os.pread(
+            descriptor,
+            len(linux_full_c6_seccomp_program()) + 1,
+            0,
+        )
+        == linux_full_c6_seccomp_program()
+    )
     assert seccomp_kernel.seals[descriptor] == 0x000F
     with pytest.raises(OSError) as raised:
         sandbox_module._write_descriptor(descriptor, b"mutation")
@@ -891,11 +870,14 @@ def test_real_linux_seccomp_memfd_is_exact_and_immutable() -> None:
     with create_linux_full_c6_seccomp_lease() as lease:
         descriptor = lease.fileno()
         assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
-        assert os.pread(
-            descriptor,
-            len(linux_full_c6_seccomp_program()) + 1,
-            0,
-        ) == linux_full_c6_seccomp_program()
+        assert (
+            os.pread(
+                descriptor,
+                len(linux_full_c6_seccomp_program()) + 1,
+                0,
+            )
+            == linux_full_c6_seccomp_program()
+        )
         with pytest.raises(OSError) as raised:
             os.write(descriptor, b"mutation")
         assert raised.value.errno == errno.EPERM
@@ -1104,9 +1086,7 @@ def test_launch_dataclass_rejects_mismatched_seccomp_receipt_or_descriptor(
 
 
 def test_linux_seccomp_filter_rejects_x32_network_and_ipc_syscalls() -> None:
-    rows = tuple(
-        struct.iter_unpack("=HBBI", linux_full_c6_seccomp_program())
-    )
+    rows = tuple(struct.iter_unpack("=HBBI", linux_full_c6_seccomp_program()))
 
     assert (0x35, 0, 1, 0x40000000) in rows
     assert (0x15, 0, 1, 41) in rows  # socket
@@ -1119,10 +1099,7 @@ def test_linux_seccomp_allows_only_rust_process_socketpair_shape() -> None:
     program = linux_full_c6_seccomp_program()
     rust_process_socketpair = (1, 5 | 0x00080000, 0)
 
-    assert (
-        _evaluate_seccomp(program, syscall=53, args=rust_process_socketpair)
-        == _SECCOMP_ALLOW
-    )
+    assert _evaluate_seccomp(program, syscall=53, args=rust_process_socketpair) == _SECCOMP_ALLOW
     denied_socketpairs = (
         (2, rust_process_socketpair[1], 0),  # AF_INET
         (10, rust_process_socketpair[1], 0),  # AF_INET6
@@ -1141,10 +1118,7 @@ def test_linux_seccomp_allows_only_rust_process_socketpair_shape() -> None:
     assert _evaluate_seccomp(program, syscall=41, args=(1, 5, 0)) == _SECCOMP_EPERM
     assert _evaluate_seccomp(program, syscall=42, args=(0, 0, 0)) == _SECCOMP_EPERM
     assert _evaluate_seccomp(program, syscall=0) == _SECCOMP_ALLOW
-    assert (
-        _evaluate_seccomp(program, syscall=0, arch=0xC00000B7)
-        == _SECCOMP_KILL_PROCESS
-    )
+    assert _evaluate_seccomp(program, syscall=0, arch=0xC00000B7) == _SECCOMP_KILL_PROCESS
 
 
 def test_linux_rejects_nonzero_seccomp_offset(
@@ -1186,9 +1160,7 @@ def test_linux_profile_binds_bwrap_and_virtual_semantics_not_host_paths(
         platform_anchor_sha256=_SHA,
     )
 
-    def launch(
-        plan: FullC6ReadSandboxPlan, root: Path, digest: str
-    ) -> FullC6SandboxLaunch:
+    def launch(plan: FullC6ReadSandboxPlan, root: Path, digest: str) -> FullC6SandboxLaunch:
         return _prepare_linux(
             plan,
             bwrap=_bwrap(root),
@@ -1229,9 +1201,7 @@ def test_bubblewrap_path_missing_alias_or_untrusted_file_fails_closed(
 
 def test_linux_rejects_unknown_roles_and_unmapped_payload(tmp_path: Path) -> None:
     rules = list(_rules(tmp_path))
-    rules[-1] = SandboxPathRule(
-        rules[-1].path, "read-execute", "unknown-loader"
-    )
+    rules[-1] = SandboxPathRule(rules[-1].path, "read-execute", "unknown-loader")
     with pytest.raises(FullC6ReadSandboxError, match="unknown semantic role"):
         build_full_c6_sandbox_plan(
             target_triple="x86_64-unknown-linux-gnu",
@@ -1245,9 +1215,7 @@ def test_linux_rejects_rust_and_python_leaves_outside_fixed_parent_roots(
 ) -> None:
     rules = list(_rules(tmp_path))
     cargo_index = next(
-        index
-        for index, rule in enumerate(rules)
-        if rule.logical_role == "toolchain-cargo"
+        index for index, rule in enumerate(rules) if rule.logical_role == "toolchain-cargo"
     )
     outside_cargo = tmp_path / "outside-cargo"
     outside_cargo.write_bytes(b"cargo")
@@ -1293,9 +1261,7 @@ def test_rule_root_symlink_and_unexpected_device_fail_closed(tmp_path: Path) -> 
     linked = tmp_path / "linked"
     linked.symlink_to(target, target_is_directory=True)
     project_index = next(
-        index
-        for index, rule in enumerate(rules)
-        if rule.logical_role == "project-root"
+        index for index, rule in enumerate(rules) if rule.logical_role == "project-root"
     )
     rules[project_index] = SandboxPathRule(linked, "read", "project-root")
     plan = build_full_c6_sandbox_plan(
@@ -1325,9 +1291,7 @@ def test_macos_profile_rule_lines_separate_executable_mapping_by_access() -> Non
         access="read",
         selector="literal",
         path=path,
-    ) == (
-        f"(allow file-read* (literal {path}))",
-    )
+    ) == (f"(allow file-read* (literal {path}))",)
     assert sandbox_module._macos_profile_rule_lines(
         access="read-execute",
         selector="literal",
@@ -1341,9 +1305,7 @@ def test_macos_profile_rule_lines_separate_executable_mapping_by_access() -> Non
         access="read-write",
         selector="literal",
         path=path,
-    ) == (
-        f"(allow file-read* file-write* (literal {path}))",
-    )
+    ) == (f"(allow file-read* file-write* (literal {path}))",)
     assert sandbox_module._macos_profile_rule_lines(
         access="read-write",
         selector="subpath",
@@ -1420,9 +1382,7 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert launch.command[:3] == ("/usr/bin/sandbox-exec", "-p", launch.command[2])
     assert launch.command[-3:] == ("--", "cargo", "build")
     rendered_sha256 = hashlib.sha256(launch.command[2].encode()).hexdigest()
-    fresh_rendered_sha256 = hashlib.sha256(
-        fresh_launch.command[2].encode()
-    ).hexdigest()
+    fresh_rendered_sha256 = hashlib.sha256(fresh_launch.command[2].encode()).hexdigest()
     assert rendered_sha256 != fresh_rendered_sha256
     assert launch.profile_sha256 == fresh_launch.profile_sha256
     assert launch.profile_sha256 not in {rendered_sha256, fresh_rendered_sha256}
@@ -1431,12 +1391,10 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
     assert '(import "system.sb")' in launch.command[2]
     assert "(deny mach-lookup)" in launch.command[2]
     assert (
-        '(deny file-read* file-test-existence file-map-executable '
-        '(subpath "/private/var")'
+        '(deny file-read* file-test-existence file-map-executable (subpath "/private/var")'
     ) in launch.command[2]
     assert (
-        '(deny file-read* file-write* file-test-existence file-map-executable '
-        '(subpath "/Library")'
+        '(deny file-read* file-write* file-test-existence file-map-executable (subpath "/Library")'
     ) in launch.command[2]
     assert '(subpath "/private/var")' in launch.command[2]
     assert '(subpath "/Library")' in launch.command[2]
@@ -1450,7 +1408,7 @@ def test_macos_requires_verified_anchor_and_emits_deterministic_profile(
         "(deny sysctl-write)",
     ]
     assert sandbox_module._MACOS_PROFILE_CONTRACT_DOMAIN == (
-        "rextio.full-c6-macos-sandbox-profile.v2"
+        "rextio.artifact-macos-sandbox-profile.v3"
     )
     assert str(tmp_path / "inputs") in launch.command[2]
     assert str(fresh_root / "inputs") in fresh_launch.command[2]
@@ -1540,11 +1498,7 @@ def test_real_macos_anchor_and_sandbox_exec_enforce_profile() -> None:
 def _nearest_xcode_developer_root(executable: Path) -> Path | None:
     """Return the nearest resolved ``Contents/Developer`` ancestor."""
     return next(
-        (
-            parent
-            for parent in executable.parents
-            if parent.parts[-2:] == ("Contents", "Developer")
-        ),
+        (parent for parent in executable.parents if parent.parts[-2:] == ("Contents", "Developer")),
         None,
     )
 
@@ -1558,9 +1512,7 @@ def test_nearest_xcode_developer_root_uses_versioned_resolved_bundle() -> None:
     assert _nearest_xcode_developer_root(executable) == Path(
         "/Applications/Xcode_26.5.app/Contents/Developer"
     )
-    assert (
-        _nearest_xcode_developer_root(Path("/opt/homebrew/bin/python3")) is None
-    )
+    assert _nearest_xcode_developer_root(Path("/opt/homebrew/bin/python3")) is None
 
 
 @pytest.mark.skipif(
@@ -1573,9 +1525,7 @@ def test_real_macos_profile_denies_inherited_mutable_executable_mapping() -> Non
     # proves it is executable-mappable in this process; absence is an honest
     # host-capability skip (Rosetta is optional).
     mapped_library: Path | None = None
-    for candidate in (
-        Path("/Library/Apple/usr/libexec/oah/libRosettaRuntime"),
-    ):
+    for candidate in (Path("/Library/Apple/usr/libexec/oah/libRosettaRuntime"),):
         try:
             observed = os.lstat(candidate)
             if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
@@ -1629,17 +1579,13 @@ def test_real_macos_profile_denies_inherited_mutable_executable_mapping() -> Non
     # Use the sealed-system interpreter, not the pytest interpreter: pyenv or
     # Homebrew Python can have dylib dependencies outside sys.base_prefix that
     # are intentionally absent from this minimal profile.
-    python_executable = Path(
-        "/Applications/Xcode.app/Contents/Developer/usr/bin/python3"
-    )
+    python_executable = Path("/Applications/Xcode.app/Contents/Developer/usr/bin/python3")
     if not python_executable.is_file():
         pytest.skip("Xcode's direct Python probe interpreter is unavailable")
     python_executable = python_executable.resolve(strict=True)
     python_root = _nearest_xcode_developer_root(python_executable)
     if python_root is None or not python_root.is_dir():
-        pytest.skip(
-            "resolved Xcode Python is not below an available Contents/Developer root"
-        )
+        pytest.skip("resolved Xcode Python is not below an available Contents/Developer root")
     ancestor_literals = " ".join(
         f"(literal {sandbox_module._sandbox_literal(os.fspath(parent))})"
         for parent in reversed(python_root.parents)

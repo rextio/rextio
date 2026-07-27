@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterator
 from contextlib import contextmanager
 import io
+import inspect
 import json
 import os
 from pathlib import Path
@@ -898,19 +900,19 @@ def test_publication_domain_failures_are_redacted_and_fail_closed(
     ("message", "expected"),
     [
         (
-            "Full C6 production authority collection failed closed",
+            "artifact build production authority collection failed closed",
             "production-collection-failed",
         ),
         (
-            "Full C6 production toolchain support authority is invalid",
+            "artifact build production toolchain support authority is invalid",
             "production-toolchain-support-invalid",
         ),
         (
-            "Full C6 production toolchain support authority failed closed",
+            "artifact build production toolchain support authority failed closed",
             "production-toolchain-support",
         ),
         (
-            "Full C6 production prerequisites are invalid",
+            "artifact build production prerequisites are invalid",
             "production-prerequisites-invalid",
         ),
         (
@@ -918,19 +920,19 @@ def test_publication_domain_failures_are_redacted_and_fail_closed(
             "production-cargo-workspace-mismatch",
         ),
         (
-            "Full C6 production toolchain support authority was replaced",
+            "artifact build production toolchain support authority was replaced",
             "production-toolchain-support-replaced",
         ),
         (
-            "Full C6 effective config is not canonical",
+            "artifact build effective config is not canonical",
             "production-config-noncanonical",
         ),
         (
-            "Full C6 production lifecycle is disabled",
+            "artifact build production lifecycle is disabled",
             "production-lifecycle-disabled",
         ),
         (
-            "Full C6 production requires exact preflight",
+            "artifact build production requires exact preflight",
             "production-preflight-invalid",
         ),
         (
@@ -948,6 +950,49 @@ def test_full_c6_failure_reason_codes_cover_direct_pre_cargo_production_gates(
     assert build_cmd._full_c6_failure_reason_code(error) == expected
 
 
+def _direct_exception_literals(error_type: type[BaseException]) -> set[str]:
+    module = sys.modules[error_type.__module__]
+    tree = ast.parse(inspect.getsource(module))
+    result: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+            continue
+        function = node.exc.func
+        function_name = (
+            function.id
+            if isinstance(function, ast.Name)
+            else function.attr
+            if isinstance(function, ast.Attribute)
+            else None
+        )
+        if function_name != error_type.__name__ or not node.exc.args:
+            continue
+        message = node.exc.args[0]
+        if isinstance(message, ast.Constant) and isinstance(message.value, str):
+            result.add(message.value)
+    return result
+
+
+def test_static_failure_reason_keys_exactly_match_producer_exceptions() -> None:
+    dynamic_prefixes = (
+        "strict Cargo build failed with exit status ",
+        "strict native sandbox build failed: ",
+    )
+    observed_by_type: dict[type[BaseException], set[str]] = {}
+
+    for error_type, message in build_cmd._FULL_C6_FAILURE_REASON_CODES:
+        if message.startswith(dynamic_prefixes):
+            continue
+        observed = observed_by_type.setdefault(
+            error_type,
+            _direct_exception_literals(error_type),
+        )
+        assert message in observed, (
+            f"{error_type.__name__} reason-code key is not an exact "
+            f"producer exception: {message!r}"
+        )
+
+
 def test_full_c6_failure_reason_code_prefers_exact_deep_cause() -> None:
     executor = build_cmd.FullC6ExecutorError(
         "strict Cargo build failed with exit status 125"
@@ -957,7 +1002,7 @@ def test_full_c6_failure_reason_code_prefers_exact_deep_cause() -> None:
     )
     external.__cause__ = executor
     production = build_cmd.FullC6ProductionError(
-        "Full C6 production authority collection failed closed"
+        "artifact build production authority collection failed closed"
     )
     production.__cause__ = external
 

@@ -1,6 +1,6 @@
-"""Complete, deterministic supply-chain documents for the first Full C6 scope.
+"""Complete, deterministic supply-chain documents for the first artifact build scope.
 
-This module is deliberately separate from the C6 preview evidence builders.
+This module is deliberately separate from the artifact evidence preview evidence builders.
 It consumes only the strict final receipts, reconstructs every public model,
 and cross-binds their exact identities before emitting CycloneDX 1.6 and
 in-toto Statement v1 / SLSA Provenance v1 documents.  The resulting receipt is
@@ -24,6 +24,25 @@ import re
 import unicodedata
 from pathlib import PurePosixPath
 
+from rextio.artifacts.contract_dialects import (
+    ARTIFACT_COMPONENT_URN_PREFIX,
+    ARTIFACT_EVIDENCE_URN_PREFIX,
+    ARTIFACT_INPUT_URN_PREFIX,
+    ARTIFACT_TOOL_URN_PREFIX,
+    ARTIFACT_WHEEL_URN_PREFIX,
+    AUTHORITY_AGGREGATE_BINDING_DOMAIN,
+    AUTHORITY_AGGREGATE_MATERIAL_NAME,
+    CARGO_AGGREGATE_BINDING_DOMAIN,
+    CURRENT,
+    EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN,
+    PLATFORM_IDENTITY_DOMAIN,
+    PROVENANCE_KIND,
+    SBOM_KIND,
+    SBOM_SUBJECT_SUFFIX,
+    SUPPLY_CHAIN_BUILDER_ID,
+    SUPPLY_CHAIN_BUILD_TYPE,
+    SUPPLY_CHAIN_DOMAIN,
+)
 from rextio.artifacts.evidence import (
     EvidenceFileRef,
     WheelEntryRef,
@@ -87,22 +106,20 @@ from rextio.source.wheel_authority import (
 )
 
 
-FULL_C6_SUPPLY_CHAIN_DOMAIN = "rextio.full-c6-supply-chain.v1"
-FULL_C6_SBOM_KIND = "full-c6-cyclonedx-sbom"
-FULL_C6_PROVENANCE_KIND = "full-c6-slsa-provenance"
-FULL_C6_BUILD_TYPE = "https://rextio.dev/buildtypes/full-c6-host-extension-wheel/v1"
-FULL_C6_BUILDER_ID = "https://rextio.dev/builder/full-c6-host-extension-wheel/v1"
-FULL_C6_PLATFORM_IDENTITY_DOMAIN = "rextio.full-c6-runtime-platform-identity.v1"
-FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN = (
-    "rextio.full-c6-cargo-input-aggregate-binding.v1"
+FULL_C6_SUPPLY_CHAIN_DOMAIN = CURRENT.string_value(SUPPLY_CHAIN_DOMAIN)
+FULL_C6_SBOM_KIND = CURRENT.string_value(SBOM_KIND)
+FULL_C6_PROVENANCE_KIND = CURRENT.string_value(PROVENANCE_KIND)
+FULL_C6_BUILD_TYPE = CURRENT.string_value(SUPPLY_CHAIN_BUILD_TYPE)
+FULL_C6_BUILDER_ID = CURRENT.string_value(SUPPLY_CHAIN_BUILDER_ID)
+FULL_C6_PLATFORM_IDENTITY_DOMAIN = CURRENT.string_value(PLATFORM_IDENTITY_DOMAIN)
+FULL_C6_CARGO_INPUT_AGGREGATE_BINDING_DOMAIN = CURRENT.string_value(CARGO_AGGREGATE_BINDING_DOMAIN)
+FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN = CURRENT.string_value(
+    EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN
 )
-FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_BINDING_DOMAIN = (
-    "rextio.full-c6-effective-config-aggregate-binding.v1"
+FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN = CURRENT.string_value(
+    AUTHORITY_AGGREGATE_BINDING_DOMAIN
 )
-FULL_C6_AUTHORITY_AGGREGATE_BINDING_DOMAIN = (
-    "rextio.full-c6-authority-aggregate-binding.v1"
-)
-FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME = "full-c6-authority-aggregate"
+FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME = CURRENT.string_value(AUTHORITY_AGGREGATE_MATERIAL_NAME)
 FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS = (
     "analysis_ir_transaction_sha256",
     "license_materials_transaction_sha256",
@@ -116,16 +133,16 @@ FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS = (
     "executor_receipt_sha256",
 )
 FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES = (
-    "full-c6-analysis-ir-transaction",
-    "full-c6-license-materials-transaction",
-    "full-c6-output-license-contract",
-    "full-c6-cargo-workspace",
-    "full-c6-native-execution-authority",
-    "full-c6-native-output-transaction",
-    "full-c6-subject-wheel-transaction",
-    "full-c6-native-runtime-authority",
+    "artifact-evidence-analysis-ir-transaction",
+    "artifact-evidence-license-materials-transaction",
+    "artifact-evidence-output-license-contract",
+    "artifact-evidence-cargo-workspace",
+    "artifact-evidence-native-execution-authority",
+    "artifact-evidence-native-output-transaction",
+    "artifact-evidence-subject-wheel-transaction",
+    "artifact-evidence-native-runtime-authority",
     "runtime-authorization",
-    "full-c6-executor-receipt",
+    "artifact-evidence-executor-receipt",
 )
 
 MAX_FULL_C6_SUPPLY_CHAIN_COMPONENTS = 4096
@@ -154,14 +171,12 @@ _EXTERNAL_ENTRY_CLASSES = frozenset(
         "external-source:license-file",
     }
 )
-_FULL_C6_CARGO_INPUT_AGGREGATE_ORDER = tuple(
-    sorted(FULL_C6_CARGO_INPUT_AGGREGATE_IDS)
-)
-_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME = "full-c6-effective-config"
+_FULL_C6_CARGO_INPUT_AGGREGATE_ORDER = tuple(sorted(FULL_C6_CARGO_INPUT_AGGREGATE_IDS))
+_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME = "artifact-evidence-effective-config"
 
 
 class FullC6SupplyChainError(ValueError):
-    """A Full C6 evidence universe or canonical document failed closed."""
+    """A artifact build evidence universe or canonical document failed closed."""
 
 
 def _require_sha256(value: object, label: str) -> str:
@@ -192,7 +207,7 @@ def _digest(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class FullC6AuthorityAggregateBinding:
-    """Closed digest identity for the typed Full C6 authority graph.
+    """Closed digest identity for the typed artifact build authority graph.
 
     This record is deliberately constructible and non-authorizing.  A later
     production collector must derive every value from the corresponding typed
@@ -225,13 +240,11 @@ class FullC6AuthorityAggregateBinding:
             or self.complete_for_scope is not True
             or self.distribution_authorized is not False
         ):
-            raise FullC6SupplyChainError(
-                "Full C6 authority aggregate posture is invalid"
-            )
+            raise FullC6SupplyChainError("artifact build authority aggregate posture is invalid")
         for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS:
             _require_sha256(
                 getattr(self, field_name),
-                f"Full C6 authority aggregate {field_name}",
+                f"artifact build authority aggregate {field_name}",
             )
 
     @property
@@ -265,7 +278,7 @@ def _rebuild_authority_aggregate(
     value: FullC6AuthorityAggregateBinding,
 ) -> FullC6AuthorityAggregateBinding:
     if type(value) is not FullC6AuthorityAggregateBinding:
-        raise TypeError("Full C6 authority aggregate has an invalid type")
+        raise TypeError("artifact build authority aggregate has an invalid type")
     try:
         rebuilt = FullC6AuthorityAggregateBinding(
             **{
@@ -275,11 +288,11 @@ def _rebuild_authority_aggregate(
         )
     except (AttributeError, TypeError, ValueError) as exc:
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate is not in canonical model form"
+            "artifact build authority aggregate is not in canonical model form"
         ) from exc
     if rebuilt != value:
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate is not in canonical model form"
+            "artifact build authority aggregate is not in canonical model form"
         )
     return rebuilt
 
@@ -301,7 +314,7 @@ class FullC6CargoPathSource:
 
     @property
     def canonical_identity(self) -> str:
-        """Return the identity shared with the Full C6 policy partition."""
+        """Return the identity shared with the artifact build policy partition."""
         return f"cargo:{self.name}@{self.version}#path-root"
 
     def to_dict(self) -> dict[str, str]:
@@ -322,10 +335,10 @@ class FullC6PartitionIdentity:
     canonical_identity_sha256: str
 
     def __post_init__(self) -> None:
-        _bounded_text(self.canonical_identity, "Full C6 partition identity")
+        _bounded_text(self.canonical_identity, "artifact build partition identity")
         _require_sha256(
             self.canonical_identity_sha256,
-            "Full C6 partition identity digest",
+            "artifact build partition identity digest",
         )
 
     def to_dict(self) -> dict[str, str]:
@@ -345,15 +358,15 @@ class FullC6ClassPartition:
 
     def __post_init__(self) -> None:
         if type(self.class_id) is not str or self.class_id not in FULL_C6_POLICY_CLASS_IDS:
-            raise FullC6SupplyChainError("Full C6 partition class is outside the vocabulary")
+            raise FullC6SupplyChainError("artifact build partition class is outside the vocabulary")
         if type(self.identities) is not tuple or any(
             type(item) is not FullC6PartitionIdentity for item in self.identities
         ):
-            raise TypeError("Full C6 partition identities must be an exact tuple")
+            raise TypeError("artifact build partition identities must be an exact tuple")
         aliases = [_identity_alias(item.canonical_identity) for item in self.identities]
         if aliases != sorted(aliases) or len(aliases) != len(set(aliases)):
             raise FullC6SupplyChainError(
-                "Full C6 partition identities are noncanonical or aliased"
+                "artifact build partition identities are noncanonical or aliased"
             )
 
     def to_dict(self) -> dict[str, object]:
@@ -396,16 +409,16 @@ class FullC6SupplyChainReceipt:
 
     def __post_init__(self) -> None:
         if self.domain != FULL_C6_SUPPLY_CHAIN_DOMAIN or self.scope != FULL_C6_SCOPE:
-            raise FullC6SupplyChainError("Full C6 supply-chain domain or scope is invalid")
+            raise FullC6SupplyChainError("artifact build supply-chain domain or scope is invalid")
         if self.target_triple not in _TARGETS:
-            raise FullC6SupplyChainError("Full C6 supply-chain target is unsupported")
+            raise FullC6SupplyChainError("artifact build supply-chain target is unsupported")
         subject = _rebuild_evidence_file(self.subject)
         if (
             subject.role != "host-extension-wheel"
             or subject.size <= 0
             or not subject.logical_path.endswith(".whl")
         ):
-            raise FullC6SupplyChainError("Full C6 subject is not one host-extension wheel")
+            raise FullC6SupplyChainError("artifact build subject is not one host-extension wheel")
         partition = _rebuild_partition(self.partition)
         for value, label in (
             (self.policy_sha256, "policy"),
@@ -442,17 +455,12 @@ class FullC6SupplyChainReceipt:
         )
         if bool(cargo_input_aggregates) != (effective_config is not None):
             raise FullC6SupplyChainError(
-                "Full C6 Cargo and effective-config aggregate identities are incomplete"
+                "artifact build Cargo and effective-config aggregate identities are incomplete"
             )
-        authority_aggregate = _rebuild_authority_aggregate(
-            self.authority_aggregate
-        )
-        if (
-            authority_aggregate.runtime_authorization_sha256
-            != self.runtime_authorization_sha256
-        ):
+        authority_aggregate = _rebuild_authority_aggregate(self.authority_aggregate)
+        if authority_aggregate.runtime_authorization_sha256 != self.runtime_authorization_sha256:
             raise FullC6SupplyChainError(
-                "Full C6 authority aggregate runtime authorization is stale"
+                "artifact build authority aggregate runtime authorization is stale"
             )
         sbom = validate_full_c6_supply_chain_document(self.sbom_json, document_kind="sbom")
         provenance = validate_full_c6_supply_chain_document(
@@ -573,10 +581,10 @@ def _rebuild_effective_config_identity(
         if allow_legacy_none:
             return None
         raise FullC6SupplyChainError(
-            "Full C6 requires one effective-config aggregate identity"
+            "artifact build requires one effective-config aggregate identity"
         )
     if type(value) is not EffectiveFullC6ConfigIdentity:
-        raise TypeError("Full C6 effective-config identity has an invalid type")
+        raise TypeError("artifact build effective-config identity has an invalid type")
     try:
         rebuilt = EffectiveFullC6ConfigIdentity(
             digest=value.digest,
@@ -585,12 +593,10 @@ def _rebuild_effective_config_identity(
         )
     except (TypeError, ValueError) as exc:
         raise FullC6SupplyChainError(
-            "Full C6 effective-config identity is not canonical"
+            "artifact build effective-config identity is not canonical"
         ) from exc
     if rebuilt != value:
-        raise FullC6SupplyChainError(
-            "Full C6 effective-config identity is not canonical"
-        )
+        raise FullC6SupplyChainError("artifact build effective-config identity is not canonical")
     return rebuilt
 
 
@@ -604,25 +610,19 @@ def _rebuild_cargo_input_aggregates(
     if not value:
         if allow_legacy_empty:
             return ()
-        raise FullC6SupplyChainError(
-            "Full C6 requires all seven Cargo input aggregates"
-        )
+        raise FullC6SupplyChainError("artifact build requires all seven Cargo input aggregates")
     rebuilt = tuple(_rebuild_build_input_aggregate(item) for item in value)
     aggregate_ids = tuple(item.aggregate_id for item in rebuilt)
     if aggregate_ids != _FULL_C6_CARGO_INPUT_AGGREGATE_ORDER:
         raise FullC6SupplyChainError(
-            "Full C6 Cargo input aggregates are missing, extra, aliased, or reordered"
+            "artifact build Cargo input aggregates are missing, extra, aliased, or reordered"
         )
-    if rebuilt != tuple(
-        sorted(rebuilt, key=lambda item: (item.kind, item.aggregate_id))
-    ):
+    if rebuilt != tuple(sorted(rebuilt, key=lambda item: (item.kind, item.aggregate_id))):
         raise FullC6SupplyChainError(
-            "Full C6 Cargo input aggregates are not in canonical order"
+            "artifact build Cargo input aggregates are not in canonical order"
         )
     if rebuilt != value:
-        raise FullC6SupplyChainError(
-            "build-input aggregates are not in canonical model form"
-        )
+        raise FullC6SupplyChainError("build-input aggregates are not in canonical model form")
     return rebuilt
 
 
@@ -632,37 +632,25 @@ def _rebuild_build_input_aggregates(
     if type(value) is not tuple:
         raise TypeError("build-input aggregates must be an exact tuple")
     rebuilt = tuple(_rebuild_build_input_aggregate(item) for item in value)
-    if rebuilt != tuple(
-        sorted(rebuilt, key=lambda item: (item.kind, item.aggregate_id))
-    ):
-        raise FullC6SupplyChainError(
-            "build-input aggregates are not in canonical order"
-        )
+    if rebuilt != tuple(sorted(rebuilt, key=lambda item: (item.kind, item.aggregate_id))):
+        raise FullC6SupplyChainError("build-input aggregates are not in canonical order")
     aliases = tuple(_identity_alias(item.aggregate_id) for item in rebuilt)
     if len(aliases) != len(set(aliases)) or rebuilt != value:
-        raise FullC6SupplyChainError(
-            "build-input aggregates are aliased or noncanonical"
-        )
+        raise FullC6SupplyChainError("build-input aggregates are aliased or noncanonical")
     return rebuilt
 
 
 def _cargo_aggregate_subset(
     value: tuple[BuildInputAggregateIdentity, ...],
 ) -> tuple[BuildInputAggregateIdentity, ...]:
-    return tuple(
-        item
-        for item in value
-        if item.aggregate_id in FULL_C6_CARGO_INPUT_AGGREGATE_IDS
-    )
+    return tuple(item for item in value if item.aggregate_id in FULL_C6_CARGO_INPUT_AGGREGATE_IDS)
 
 
 def _effective_config_from_aggregates(
     value: tuple[BuildInputAggregateIdentity, ...],
 ) -> EffectiveFullC6ConfigIdentity:
     matches = tuple(
-        item
-        for item in value
-        if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
+        item for item in value if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
     )
     expected_ids = {
         *FULL_C6_CARGO_INPUT_AGGREGATE_IDS,
@@ -670,14 +658,13 @@ def _effective_config_from_aggregates(
     }
     if len(matches) != 1 or {item.aggregate_id for item in value} != expected_ids:
         raise FullC6SupplyChainError(
-            "Full C6 build-input aggregates have a missing, extra, or aliased "
-            "effective-config row"
+            "artifact build-input aggregates have a missing, extra, or aliased effective-config row"
         )
     try:
         return effective_full_c6_config_identity_from_aggregate(matches[0])
     except FullC6ConfigIdentityError as exc:
         raise FullC6SupplyChainError(
-            "Full C6 effective-config aggregate is noncanonical"
+            "artifact build effective-config aggregate is noncanonical"
         ) from exc
 
 
@@ -716,9 +703,7 @@ def _rebuild_build_inputs(value: BuildInputClosure) -> BuildInputClosure:
             aggregates=aggregates,
         )
     except (TypeError, ValueError) as exc:
-        raise FullC6SupplyChainError(
-            "build-input closure is not in canonical model form"
-        ) from exc
+        raise FullC6SupplyChainError("build-input closure is not in canonical model form") from exc
     if rebuilt != value:
         raise FullC6SupplyChainError("build-input closure is not in canonical model form")
     return rebuilt
@@ -729,12 +714,10 @@ def _expected_full_c6_cargo_input_aggregates(
 ) -> tuple[BuildInputAggregateIdentity, ...]:
     if (
         type(cargo_dependency_workspace) is not FullC6CargoDependencyWorkspaceReceipt
-        or not validate_full_c6_cargo_dependency_workspace_receipt(
-            cargo_dependency_workspace
-        )
+        or not validate_full_c6_cargo_dependency_workspace_receipt(cargo_dependency_workspace)
     ):
         raise FullC6SupplyChainError(
-            "Full C6 Cargo input aggregates require a process-sealed workspace"
+            "artifact build Cargo input aggregates require a process-sealed workspace"
         )
     # The binder's seven rows depend only on the process-sealed workspace.  A
     # fixed path-free sentinel lets receipt verification reuse that one
@@ -742,7 +725,7 @@ def _expected_full_c6_cargo_input_aggregates(
     sentinel = BuildInputClosure(
         files=(
             ExactFileIdentity(
-                logical_name="full-c6/cargo-aggregate-authority",
+                logical_name="artifact-evidence/cargo-aggregate-authority",
                 role="cargo-aggregate-authority",
                 sha256="0" * 64,
                 size=0,
@@ -757,7 +740,7 @@ def _expected_full_c6_cargo_input_aggregates(
         ).aggregates
     except (TypeError, ValueError, RuntimeError) as exc:
         raise FullC6SupplyChainError(
-            "Full C6 Cargo input aggregate authority could not be derived"
+            "artifact build Cargo input aggregate authority could not be derived"
         ) from exc
     return _rebuild_cargo_input_aggregates(expected, allow_legacy_empty=False)
 
@@ -773,7 +756,7 @@ def _require_authoritative_cargo_input_aggregates(
     expected = _expected_full_c6_cargo_input_aggregates(cargo_dependency_workspace)
     if trusted != expected:
         raise FullC6SupplyChainError(
-            "Full C6 Cargo input aggregates do not match the process-sealed workspace"
+            "artifact build Cargo input aggregates do not match the process-sealed workspace"
         )
     return trusted
 
@@ -875,7 +858,7 @@ def _rebuild_owner(value: FullC6OwnerDeclaration) -> FullC6OwnerDeclaration:
 
 def _rebuild_policy(value: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
     if type(value) is not FullC6PolicyReceipt:
-        raise TypeError("Full C6 policy receipt has an invalid type")
+        raise TypeError("artifact build policy receipt has an invalid type")
     rebuilt = FullC6PolicyReceipt(
         rows=tuple(_rebuild_policy_row(item) for item in value.rows),
         transformations=tuple(_rebuild_transformation(item) for item in value.transformations),
@@ -885,7 +868,7 @@ def _rebuild_policy(value: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
         bootstrap_request_sha256=value.bootstrap_request_sha256,
     )
     if rebuilt != value:
-        raise FullC6SupplyChainError("Full C6 policy is not in canonical model form")
+        raise FullC6SupplyChainError("artifact build policy is not in canonical model form")
     return rebuilt
 
 
@@ -1054,7 +1037,9 @@ def _rebuild_runtime(value: RuntimeAuthorizationReceipt) -> RuntimeAuthorization
             _rebuild_runtime_image(item) for item in value.declared_system_images
         ),
         declared_system_platform_images=tuple(value.declared_system_platform_images),
-        newly_loaded_images=tuple(_rebuild_runtime_image(item) for item in value.newly_loaded_images),
+        newly_loaded_images=tuple(
+            _rebuild_runtime_image(item) for item in value.newly_loaded_images
+        ),
         newly_loaded_platform_images=tuple(value.newly_loaded_platform_images),
         path_resolution_sha256=value.path_resolution_sha256,
         transitive_closure_sha256=value.transitive_closure_sha256,
@@ -1104,7 +1089,7 @@ def _rebuild_partition(
     value: tuple[FullC6ClassPartition, ...],
 ) -> tuple[FullC6ClassPartition, ...]:
     if type(value) is not tuple:
-        raise TypeError("Full C6 class partition must be an exact tuple")
+        raise TypeError("artifact build class partition must be an exact tuple")
     rebuilt = tuple(
         FullC6ClassPartition(
             class_id=item.class_id,
@@ -1122,7 +1107,7 @@ def _rebuild_partition(
     )
     if tuple(item.class_id for item in rebuilt) != FULL_C6_POLICY_CLASS_IDS:
         raise FullC6SupplyChainError(
-            "Full C6 class partition lacks exact frozen coverage and order"
+            "artifact build class partition lacks exact frozen coverage and order"
         )
     aliases = [
         _identity_alias(identity.canonical_identity)
@@ -1130,9 +1115,9 @@ def _rebuild_partition(
         for identity in item.identities
     ]
     if len(aliases) != len(set(aliases)):
-        raise FullC6SupplyChainError("Full C6 partition contains a cross-class alias")
+        raise FullC6SupplyChainError("artifact build partition contains a cross-class alias")
     if rebuilt != value:
-        raise FullC6SupplyChainError("Full C6 partition is not in canonical model form")
+        raise FullC6SupplyChainError("artifact build partition is not in canonical model form")
     return rebuilt
 
 
@@ -1166,11 +1151,7 @@ def _row_map(
     rows: tuple[FullC6PolicyInputRow, ...],
     classes: frozenset[str],
 ) -> dict[str, FullC6PolicyInputRow]:
-    return {
-        _identity_alias(row.canonical_identity): row
-        for row in rows
-        if row.class_id in classes
-    }
+    return {_identity_alias(row.canonical_identity): row for row in rows if row.class_id in classes}
 
 
 def _require_exact_file_set(
@@ -1183,11 +1164,7 @@ def _require_exact_file_set(
         raise FullC6SupplyChainError(f"{label} does not match the exact policy partition")
     for alias, row in expected.items():
         canonical_identity, digest, size = observed[alias]
-        if (
-            row.canonical_identity != canonical_identity
-            or row.sha256 != digest
-            or row.size != size
-        ):
+        if row.canonical_identity != canonical_identity or row.sha256 != digest or row.size != size:
             raise FullC6SupplyChainError(f"{label} contains a stale content identity")
 
 
@@ -1400,7 +1377,7 @@ def _receipt_materials(
     if signature is None:  # guarded before document construction
         raise FullC6SupplyChainError("SourceLock signature identity is missing")
     base = (
-        ("full-c6-license-transformation-policy", policy.digest),
+        ("artifact-evidence-license-transformation-policy", policy.digest),
         ("source-lock-v2-manifest", source_lock.manifest_sha256),
         ("source-lock-v2-signature", signature),
         ("build-input-closure", build_inputs.digest),
@@ -1449,18 +1426,16 @@ def _authority_aggregate_materials(
 def _evidence_sbom_component(name: str, digest: str) -> dict[str, object]:
     return {
         "type": "data",
-        "bom-ref": f"urn:rextio:full-c6-evidence:{name}:{digest}",
+        "bom-ref": (f"{CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)}{name}:{digest}"),
         "name": name,
         "hashes": [{"alg": "SHA-256", "content": digest}],
-        "properties": [
-            {"name": "rextio:role", "value": "non-authorizing-evidence-receipt"}
-        ],
+        "properties": [{"name": "rextio:role", "value": "non-authorizing-evidence-receipt"}],
     }
 
 
 def _evidence_provenance_dependency(name: str, digest: str) -> dict[str, object]:
     return {
-        "uri": f"urn:rextio:full-c6-evidence:{name}",
+        "uri": f"{CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)}{name}",
         "digest": {"sha256": digest},
         "annotations": {"rextio:role": "non-authorizing-evidence-receipt"},
     }
@@ -1469,7 +1444,7 @@ def _evidence_provenance_dependency(name: str, digest: str) -> dict[str, object]
 def _cargo_aggregate_material_name(item: BuildInputAggregateIdentity) -> str:
     if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID:
         return _FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME
-    return f"full-c6-cargo-input-aggregate:{item.aggregate_id}"
+    return f"artifact-evidence-cargo-input-aggregate:{item.aggregate_id}"
 
 
 def _cargo_aggregate_identity_digest(item: BuildInputAggregateIdentity) -> str:
@@ -1491,7 +1466,7 @@ def _cargo_aggregate_annotations(
 ) -> dict[str, str]:
     annotations = {
         "rextio:role": (
-            "resolved-full-c6-effective-config"
+            "resolved-artifact-evidence-effective-config"
             if item.aggregate_id == FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID
             else "process-sealed-cargo-input-aggregate"
         ),
@@ -1513,7 +1488,7 @@ def _effective_config_aggregate_from_identity(
         allow_legacy_none=False,
     )
     if rebuilt is None:  # pragma: no cover - excluded by allow_legacy_none=False
-        raise FullC6SupplyChainError("Full C6 effective-config identity is missing")
+        raise FullC6SupplyChainError("artifact build effective-config identity is missing")
     return rebuilt.to_build_input_aggregate()
 
 
@@ -1524,7 +1499,7 @@ def _cargo_aggregate_sbom_component(
     digest = _cargo_aggregate_identity_digest(item)
     return {
         "type": "data",
-        "bom-ref": f"urn:rextio:full-c6-evidence:{name}:{digest}",
+        "bom-ref": (f"{CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)}{name}:{digest}"),
         "name": name,
         "hashes": [{"alg": "SHA-256", "content": digest}],
         "properties": [
@@ -1539,7 +1514,7 @@ def _cargo_aggregate_provenance_dependency(
 ) -> dict[str, object]:
     name = _cargo_aggregate_material_name(item)
     return {
-        "uri": f"urn:rextio:full-c6-evidence:{name}",
+        "uri": f"{CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)}{name}",
         "digest": {"sha256": _cargo_aggregate_identity_digest(item)},
         "annotations": _cargo_aggregate_annotations(item),
     }
@@ -1566,7 +1541,7 @@ def _component_from_row(
 ) -> dict[str, object]:
     digest, size, identity_mode, runtime_path = _runtime_row_binding(row, runtime_bindings)
     bom_ref = (
-        f"urn:rextio:full-c6-component:{row.class_id}:"
+        f"{CURRENT.string_value(ARTIFACT_COMPONENT_URN_PREFIX)}{row.class_id}:"
         f"{row.canonical_identity_sha256}"
     )
     properties: list[dict[str, str]] = [
@@ -1627,7 +1602,7 @@ def _material_from_row(
         annotations["rextio:runtime_path"] = runtime_path
     return {
         "uri": (
-            f"urn:rextio:full-c6-input:{row.class_id}:"
+            f"{CURRENT.string_value(ARTIFACT_INPUT_URN_PREFIX)}{row.class_id}:"
             f"{row.canonical_identity_sha256}"
         ),
         "digest": {"sha256": digest},
@@ -1677,8 +1652,7 @@ def _build_sbom(
         authority_aggregate=authority_aggregate,
     )
     cargo_aggregates = {
-        _cargo_aggregate_material_name(item): item
-        for item in build_inputs.aggregates
+        _cargo_aggregate_material_name(item): item for item in build_inputs.aggregates
     }
     for name, digest in materials:
         cargo_aggregate = cargo_aggregates.get(name)
@@ -1696,7 +1670,10 @@ def _build_sbom(
         components.append(
             {
                 "type": "application",
-                "bom-ref": f"urn:rextio:full-c6-tool:{tool.name}:{tool.executable.sha256}",
+                "bom-ref": (
+                    f"{CURRENT.string_value(ARTIFACT_TOOL_URN_PREFIX)}"
+                    f"{tool.name}:{tool.executable.sha256}"
+                ),
                 "name": tool.name,
                 "version": tool.reported_version,
                 "hashes": [{"alg": "SHA-256", "content": tool.executable.sha256}],
@@ -1707,11 +1684,11 @@ def _build_sbom(
             }
         )
     if len(components) + 1 > MAX_FULL_C6_SUPPLY_CHAIN_COMPONENTS:
-        raise FullC6SupplyChainError("Full C6 SBOM component count exceeds the bound")
+        raise FullC6SupplyChainError("artifact build SBOM component count exceeds the bound")
     refs = [str(component["bom-ref"]) for component in components]
     if len(refs) != len(set(refs)):
-        raise FullC6SupplyChainError("Full C6 SBOM component identity is duplicated")
-    subject_ref = f"urn:rextio:full-c6-wheel:{subject.sha256}"
+        raise FullC6SupplyChainError("artifact build SBOM component identity is duplicated")
+    subject_ref = f"{CURRENT.string_value(ARTIFACT_WHEEL_URN_PREFIX)}{subject.sha256}"
     partition_sha256 = _digest([item.to_dict() for item in partition])
     return {
         "bomFormat": "CycloneDX",
@@ -1806,19 +1783,14 @@ def _build_provenance(
         if row.class_id != "wheel-output:subject"
     ]
     cargo_aggregates = {
-        _cargo_aggregate_material_name(item): item
-        for item in build_inputs.aggregates
+        _cargo_aggregate_material_name(item): item for item in build_inputs.aggregates
     }
     for name, digest in bindings.items():
         cargo_aggregate = cargo_aggregates.get(name)
         if cargo_aggregate is not None:
-            resolved_dependencies.append(
-                _cargo_aggregate_provenance_dependency(cargo_aggregate)
-            )
+            resolved_dependencies.append(_cargo_aggregate_provenance_dependency(cargo_aggregate))
         else:
-            resolved_dependencies.append(
-                _evidence_provenance_dependency(name, digest)
-            )
+            resolved_dependencies.append(_evidence_provenance_dependency(name, digest))
     for tool in (
         toolchain.python,
         toolchain.cargo,
@@ -1837,16 +1809,16 @@ def _build_provenance(
             }
         )
     if len(resolved_dependencies) > MAX_FULL_C6_SUPPLY_CHAIN_COMPONENTS:
-        raise FullC6SupplyChainError("Full C6 provenance dependency count exceeds the bound")
+        raise FullC6SupplyChainError("artifact build provenance dependency count exceeds the bound")
     uris = [str(item["uri"]) for item in resolved_dependencies]
     if len(uris) != len(set(uris)):
-        raise FullC6SupplyChainError("Full C6 provenance dependency identity is duplicated")
+        raise FullC6SupplyChainError("artifact build provenance dependency identity is duplicated")
     return {
         "_type": "https://in-toto.io/Statement/v1",
         "subject": [
             {"name": subject.logical_path, "digest": {"sha256": subject.sha256}},
             {
-                "name": f"{subject.logical_path}.full-c6.cdx.json",
+                "name": (f"{subject.logical_path}{CURRENT.string_value(SBOM_SUBJECT_SUFFIX)}"),
                 "digest": {"sha256": sbom_sha256},
             },
         ],
@@ -1867,9 +1839,7 @@ def _build_provenance(
                     "partition_sha256": partition_sha256,
                     "receipt_bindings": bindings,
                     "reproducibility_input_projection": {
-                        "sbom_canonical_sha256": (
-                            reproducibility.sbom_canonical_sha256
-                        ),
+                        "sbom_canonical_sha256": (reproducibility.sbom_canonical_sha256),
                         "provenance_input_canonical_sha256": (
                             reproducibility.provenance_input_canonical_sha256
                         ),
@@ -1933,23 +1903,21 @@ def build_full_c6_supply_chain_receipt(
 ) -> FullC6SupplyChainReceipt:
     """Reconstruct and bind the complete frozen universe, then emit both documents."""
     if target_triple not in _TARGETS:
-        raise FullC6SupplyChainError("Full C6 supply-chain target is unsupported")
+        raise FullC6SupplyChainError("artifact build supply-chain target is unsupported")
     trusted_subject = _rebuild_evidence_file(subject)
     trusted_inputs = _rebuild_build_inputs(build_inputs)
     trusted_effective_config: EffectiveFullC6ConfigIdentity | None = None
     if trusted_inputs.aggregates:
         if cargo_dependency_workspace is None:
             raise FullC6SupplyChainError(
-                "aggregate-aware Full C6 supply-chain construction requires "
+                "aggregate-aware artifact build supply-chain construction requires "
                 "a process-sealed Cargo workspace"
             )
         trusted_inputs = validate_full_c6_cargo_input_aggregates(
             trusted_inputs,
             cargo_dependency_workspace,
         )
-        trusted_effective_config = _effective_config_from_aggregates(
-            trusted_inputs.aggregates
-        )
+        trusted_effective_config = _effective_config_from_aggregates(trusted_inputs.aggregates)
     elif cargo_dependency_workspace is not None:
         raise FullC6SupplyChainError(
             "legacy build-input closure cannot consume Cargo aggregate authority"
@@ -1959,8 +1927,7 @@ def build_full_c6_supply_chain_receipt(
     trusted_wheel_entries = tuple(_rebuild_wheel_entry(item) for item in wheel_entries)
     if (
         not trusted_wheel_entries
-        or trusted_wheel_entries
-        != tuple(sorted(trusted_wheel_entries, key=lambda item: item.name))
+        or trusted_wheel_entries != tuple(sorted(trusted_wheel_entries, key=lambda item: item.name))
         or len({item.name for item in trusted_wheel_entries}) != len(trusted_wheel_entries)
         or len({_identity_alias(item.name) for item in trusted_wheel_entries})
         != len(trusted_wheel_entries)
@@ -1981,25 +1948,19 @@ def build_full_c6_supply_chain_receipt(
         raise FullC6SupplyChainError("Cargo path source is not in canonical model form")
     trusted_runtime = _rebuild_runtime(runtime_authorization)
     trusted_reproducibility = _rebuild_reproducibility(reproducibility)
-    trusted_authority_aggregate = _rebuild_authority_aggregate(
-        authority_aggregate
-    )
+    trusted_authority_aggregate = _rebuild_authority_aggregate(authority_aggregate)
     if trusted_runtime.target_triple != target_triple:
         raise FullC6SupplyChainError("runtime authorization target does not match the build")
-    if (
-        trusted_authority_aggregate.runtime_authorization_sha256
-        != trusted_runtime.digest
-    ):
+    if trusted_authority_aggregate.runtime_authorization_sha256 != trusted_runtime.digest:
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate does not bind the runtime authorization"
+            "artifact build authority aggregate does not bind the runtime authorization"
         )
     if (
         cargo_dependency_workspace is not None
-        and trusted_authority_aggregate.cargo_workspace_sha256
-        != cargo_dependency_workspace.digest
+        and trusted_authority_aggregate.cargo_workspace_sha256 != cargo_dependency_workspace.digest
     ):
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate does not bind the Cargo workspace"
+            "artifact build authority aggregate does not bind the Cargo workspace"
         )
     runtime_bindings = _validate_bindings(
         subject=trusted_subject,
@@ -2032,7 +1993,7 @@ def build_full_c6_supply_chain_receipt(
     )
     sbom_json = canonical_json_bytes(sbom_document)
     if len(sbom_json) > MAX_FULL_C6_SUPPLY_CHAIN_DOCUMENT_BYTES:
-        raise FullC6SupplyChainError("Full C6 SBOM exceeds the byte bound")
+        raise FullC6SupplyChainError("artifact build SBOM exceeds the byte bound")
     provenance_document = _build_provenance(
         target_triple=target_triple,
         subject=trusted_subject,
@@ -2051,7 +2012,7 @@ def build_full_c6_supply_chain_receipt(
     )
     provenance_json = canonical_json_bytes(provenance_document)
     if len(provenance_json) > MAX_FULL_C6_SUPPLY_CHAIN_DOCUMENT_BYTES:
-        raise FullC6SupplyChainError("Full C6 provenance exceeds the byte bound")
+        raise FullC6SupplyChainError("artifact build provenance exceeds the byte bound")
     signature_sha256 = trusted_source_admission.signature_sha256
     if signature_sha256 is None:  # guarded by the exact admission check
         raise FullC6SupplyChainError("SourceLock signature identity is missing")
@@ -2065,18 +2026,12 @@ def build_full_c6_supply_chain_receipt(
         build_input_closure_sha256=trusted_inputs.digest,
         toolchain_sha256=trusted_toolchain.digest,
         toolchain_support_plan_sha256=trusted_toolchain.support_plan_sha256,
-        toolchain_support_lock_raw_sha256=(
-            trusted_toolchain.support_lock_raw_sha256
-        ),
-        toolchain_support_lock_merkle_sha256=(
-            trusted_toolchain.support_lock_merkle_sha256
-        ),
+        toolchain_support_lock_raw_sha256=(trusted_toolchain.support_lock_raw_sha256),
+        toolchain_support_lock_merkle_sha256=(trusted_toolchain.support_lock_merkle_sha256),
         cargo_path_source_sha256=trusted_cargo_root.source_tree_sha256,
         runtime_authorization_sha256=trusted_runtime.digest,
         reproducibility_sha256=trusted_reproducibility.digest,
-        reproducible_sbom_input_sha256=(
-            trusted_reproducibility.sbom_canonical_sha256
-        ),
+        reproducible_sbom_input_sha256=(trusted_reproducibility.sbom_canonical_sha256),
         reproducible_provenance_input_sha256=(
             trusted_reproducibility.provenance_input_canonical_sha256
         ),
@@ -2095,17 +2050,17 @@ def _validate_json_tree(value: object) -> None:
         current, depth = stack.pop()
         nodes += 1
         if depth > MAX_FULL_C6_SUPPLY_CHAIN_JSON_DEPTH:
-            raise FullC6SupplyChainError("Full C6 JSON exceeds the depth bound")
+            raise FullC6SupplyChainError("artifact build JSON exceeds the depth bound")
         if nodes > MAX_FULL_C6_SUPPLY_CHAIN_JSON_NODES:
-            raise FullC6SupplyChainError("Full C6 JSON exceeds the node bound")
+            raise FullC6SupplyChainError("artifact build JSON exceeds the node bound")
         if isinstance(current, dict):
             if not all(type(key) is str for key in current):
-                raise FullC6SupplyChainError("Full C6 JSON has a non-string object key")
+                raise FullC6SupplyChainError("artifact build JSON has a non-string object key")
             stack.extend((item, depth + 1) for item in current.values())
         elif isinstance(current, list):
             stack.extend((item, depth + 1) for item in current)
         elif current is not None and type(current) not in (str, int, bool):
-            raise FullC6SupplyChainError("Full C6 JSON has an unsupported value")
+            raise FullC6SupplyChainError("artifact build JSON has an unsupported value")
 
 
 def validate_full_c6_supply_chain_document(
@@ -2115,20 +2070,20 @@ def validate_full_c6_supply_chain_document(
 ) -> dict[str, object]:
     """Parse only exact canonical bytes for one supported final document kind."""
     if type(data) is not bytes:
-        raise TypeError("Full C6 supply-chain document must be exact bytes")
+        raise TypeError("artifact build supply-chain document must be exact bytes")
     if not data or len(data) > MAX_FULL_C6_SUPPLY_CHAIN_DOCUMENT_BYTES:
-        raise FullC6SupplyChainError("Full C6 supply-chain document size is invalid")
+        raise FullC6SupplyChainError("artifact build supply-chain document size is invalid")
 
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
             if key in result:
-                raise FullC6SupplyChainError("Full C6 JSON contains a duplicate object key")
+                raise FullC6SupplyChainError("artifact build JSON contains a duplicate object key")
             result[key] = value
         return result
 
     def reject_constant(_value: str) -> object:
-        raise FullC6SupplyChainError("Full C6 JSON contains a non-finite number")
+        raise FullC6SupplyChainError("artifact build JSON contains a non-finite number")
 
     try:
         document = json.loads(
@@ -2139,37 +2094,39 @@ def validate_full_c6_supply_chain_document(
     except FullC6SupplyChainError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise FullC6SupplyChainError("Full C6 supply-chain JSON is invalid") from exc
+        raise FullC6SupplyChainError("artifact build supply-chain JSON is invalid") from exc
     if type(document) is not dict:
-        raise FullC6SupplyChainError("Full C6 supply-chain document must be an object")
+        raise FullC6SupplyChainError("artifact build supply-chain document must be an object")
     _validate_json_tree(document)
     try:
         canonical = canonical_json_bytes(document)
     except (TypeError, ValueError, RecursionError) as exc:
-        raise FullC6SupplyChainError("Full C6 supply-chain JSON cannot be canonicalized") from exc
+        raise FullC6SupplyChainError(
+            "artifact build supply-chain JSON cannot be canonicalized"
+        ) from exc
     if canonical != data:
-        raise FullC6SupplyChainError("Full C6 supply-chain JSON is not canonical")
+        raise FullC6SupplyChainError("artifact build supply-chain JSON is not canonical")
     if document_kind == "sbom":
         if (
             document.get("bomFormat") != "CycloneDX"
             or document.get("specVersion") != "1.6"
             or document.get("version") != 1
         ):
-            raise FullC6SupplyChainError("Full C6 SBOM identity is invalid")
+            raise FullC6SupplyChainError("artifact build SBOM identity is invalid")
     elif document_kind == "provenance":
         if (
             document.get("_type") != "https://in-toto.io/Statement/v1"
             or document.get("predicateType") != "https://slsa.dev/provenance/v1"
         ):
-            raise FullC6SupplyChainError("Full C6 provenance identity is invalid")
+            raise FullC6SupplyChainError("artifact build provenance identity is invalid")
     else:
-        raise FullC6SupplyChainError("Full C6 document kind is unsupported")
+        raise FullC6SupplyChainError("artifact build document kind is unsupported")
     return document
 
 
 def _property_map(value: object) -> dict[str, str]:
     if not isinstance(value, list):
-        raise FullC6SupplyChainError("Full C6 SBOM properties are invalid")
+        raise FullC6SupplyChainError("artifact build SBOM properties are invalid")
     result: dict[str, str] = {}
     for item in value:
         if (
@@ -2178,53 +2135,41 @@ def _property_map(value: object) -> dict[str, str]:
             or type(item.get("name")) is not str
             or type(item.get("value")) is not str
         ):
-            raise FullC6SupplyChainError("Full C6 SBOM property is invalid")
+            raise FullC6SupplyChainError("artifact build SBOM property is invalid")
         name = item["name"]
         if name in result:
-            raise FullC6SupplyChainError("Full C6 SBOM property is duplicated")
+            raise FullC6SupplyChainError("artifact build SBOM property is duplicated")
         result[name] = item["value"]
     return result
 
 
 def _receipt_bindings(value: FullC6SupplyChainReceipt) -> dict[str, str]:
     bindings = {
-        "full-c6-license-transformation-policy": value.policy_sha256,
+        "artifact-evidence-license-transformation-policy": value.policy_sha256,
         "source-lock-v2-manifest": value.source_lock_manifest_sha256,
         "source-lock-v2-signature": value.source_lock_signature_sha256,
         "build-input-closure": value.build_input_closure_sha256,
         "builder-toolchain": value.toolchain_sha256,
         "builder-toolchain-support-plan": value.toolchain_support_plan_sha256,
-        "builder-toolchain-support-lock-raw": (
-            value.toolchain_support_lock_raw_sha256
-        ),
-        "builder-toolchain-support-lock-merkle": (
-            value.toolchain_support_lock_merkle_sha256
-        ),
+        "builder-toolchain-support-lock-raw": (value.toolchain_support_lock_raw_sha256),
+        "builder-toolchain-support-lock-merkle": (value.toolchain_support_lock_merkle_sha256),
         "cargo-path-source": value.cargo_path_source_sha256,
-        FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME: (
-            value.authority_aggregate.digest
-        ),
+        FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME: (value.authority_aggregate.digest),
         **dict(_authority_aggregate_materials(value.authority_aggregate)),
         "two-build-reproducibility": value.reproducibility_sha256,
         "reproducible-sbom-input": value.reproducible_sbom_input_sha256,
-        "reproducible-provenance-input": (
-            value.reproducible_provenance_input_sha256
-        ),
+        "reproducible-provenance-input": (value.reproducible_provenance_input_sha256),
     }
     bindings.update(
         {
-            _cargo_aggregate_material_name(item): (
-                _cargo_aggregate_identity_digest(item)
-            )
+            _cargo_aggregate_material_name(item): (_cargo_aggregate_identity_digest(item))
             for item in value.cargo_input_aggregates
         }
     )
     if value.effective_config is not None:
-        effective = _effective_config_aggregate_from_identity(
-            value.effective_config
-        )
-        bindings[_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME] = (
-            _cargo_aggregate_identity_digest(effective)
+        effective = _effective_config_aggregate_from_identity(value.effective_config)
+        bindings[_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME] = _cargo_aggregate_identity_digest(
+            effective
         )
     return bindings
 
@@ -2238,11 +2183,9 @@ def _validate_authority_aggregate_document_materials(
 ) -> None:
     components = sbom.get("components")
     resolved_dependencies = definition.get("resolvedDependencies")
-    if not isinstance(components, list) or not isinstance(
-        resolved_dependencies, list
-    ):
+    if not isinstance(components, list) or not isinstance(resolved_dependencies, list):
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate document materials are missing"
+            "artifact build authority aggregate document materials are missing"
         )
     authority_materials = (
         (
@@ -2252,11 +2195,9 @@ def _validate_authority_aggregate_document_materials(
         *_authority_aggregate_materials(value.authority_aggregate),
     )
     material_names = {name for name, _digest_value in authority_materials}
-    evidence_uri_prefix = "urn:rextio:full-c6-evidence:"
+    evidence_uri_prefix = CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)
     observed_components = [
-        item
-        for item in components
-        if isinstance(item, dict) and item.get("name") in material_names
+        item for item in components if isinstance(item, dict) and item.get("name") in material_names
     ]
     observed_dependencies = [
         item
@@ -2266,33 +2207,25 @@ def _validate_authority_aggregate_document_materials(
         and str(item["uri"]).removeprefix(evidence_uri_prefix) in material_names
     ]
     expected_components = [
-        _evidence_sbom_component(name, digest)
-        for name, digest in authority_materials
+        _evidence_sbom_component(name, digest) for name, digest in authority_materials
     ]
     expected_dependencies = [
-        _evidence_provenance_dependency(name, digest)
-        for name, digest in authority_materials
+        _evidence_provenance_dependency(name, digest) for name, digest in authority_materials
     ]
-    if (
-        observed_components != expected_components
-        or observed_dependencies != expected_dependencies
-    ):
+    if observed_components != expected_components or observed_dependencies != expected_dependencies:
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate document materials do not bind the receipt"
+            "artifact build authority aggregate document materials do not bind the receipt"
         )
 
     metadata = sbom.get("metadata")
     if not isinstance(metadata, dict):
-        raise FullC6SupplyChainError("Full C6 SBOM metadata is invalid")
+        raise FullC6SupplyChainError("artifact build SBOM metadata is invalid")
     raw_properties = metadata.get("properties")
     if not isinstance(raw_properties, list):
-        raise FullC6SupplyChainError("Full C6 SBOM properties are invalid")
+        raise FullC6SupplyChainError("artifact build SBOM properties are invalid")
     authority_property_names = {
         "rextio:authority_aggregate_sha256",
-        *(
-            f"rextio:{field_name}"
-            for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
-        ),
+        *(f"rextio:{field_name}" for field_name in FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS),
     }
     observed_properties = [
         item
@@ -2314,12 +2247,12 @@ def _validate_authority_aggregate_document_materials(
     ]
     if observed_properties != expected_properties:
         raise FullC6SupplyChainError(
-            "Full C6 authority aggregate SBOM properties do not bind the receipt"
+            "artifact build authority aggregate SBOM properties do not bind the receipt"
         )
 
     run_details = predicate.get("runDetails")
     if not isinstance(run_details, dict):
-        raise FullC6SupplyChainError("Full C6 provenance run details are invalid")
+        raise FullC6SupplyChainError("artifact build provenance run details are invalid")
     provenance_metadata = run_details.get("metadata")
     if (
         not isinstance(provenance_metadata, dict)
@@ -2327,7 +2260,7 @@ def _validate_authority_aggregate_document_materials(
         != value.authority_aggregate.to_dict()
     ):
         raise FullC6SupplyChainError(
-            "Full C6 provenance authority aggregate projection is stale"
+            "artifact build provenance authority aggregate projection is stale"
         )
 
 
@@ -2340,14 +2273,12 @@ def _validate_cargo_aggregate_document_materials(
 ) -> None:
     components = sbom.get("components")
     resolved_dependencies = definition.get("resolvedDependencies")
-    if not isinstance(components, list) or not isinstance(
-        resolved_dependencies, list
-    ):
+    if not isinstance(components, list) or not isinstance(resolved_dependencies, list):
         raise FullC6SupplyChainError(
-            "Full C6 Cargo aggregate document materials are missing"
+            "artifact build Cargo aggregate document materials are missing"
         )
-    name_prefix = "full-c6-cargo-input-aggregate:"
-    uri_prefix = f"urn:rextio:full-c6-evidence:{name_prefix}"
+    name_prefix = "artifact-evidence-cargo-input-aggregate:"
+    uri_prefix = f"{CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)}{name_prefix}"
     observed_components = [
         item
         for item in components
@@ -2363,55 +2294,43 @@ def _validate_cargo_aggregate_document_materials(
         and str(item["uri"]).startswith(uri_prefix)
     ]
     expected_components = [
-        _cargo_aggregate_sbom_component(item)
-        for item in value.cargo_input_aggregates
+        _cargo_aggregate_sbom_component(item) for item in value.cargo_input_aggregates
     ]
     expected_dependencies = [
-        _cargo_aggregate_provenance_dependency(item)
-        for item in value.cargo_input_aggregates
+        _cargo_aggregate_provenance_dependency(item) for item in value.cargo_input_aggregates
     ]
-    if (
-        observed_components != expected_components
-        or observed_dependencies != expected_dependencies
-    ):
+    if observed_components != expected_components or observed_dependencies != expected_dependencies:
         raise FullC6SupplyChainError(
-            "Full C6 Cargo aggregate document materials do not bind the receipt"
+            "artifact build Cargo aggregate document materials do not bind the receipt"
         )
 
     run_details = predicate.get("runDetails")
     if not isinstance(run_details, dict):
-        raise FullC6SupplyChainError("Full C6 provenance run details are invalid")
+        raise FullC6SupplyChainError("artifact build provenance run details are invalid")
     metadata = run_details.get("metadata")
     if not isinstance(metadata, dict):
-        raise FullC6SupplyChainError("Full C6 provenance metadata is invalid")
+        raise FullC6SupplyChainError("artifact build provenance metadata is invalid")
     build_input_projection = metadata.get("rextio:build_input_closure")
     if not isinstance(build_input_projection, dict):
-        raise FullC6SupplyChainError(
-            "Full C6 provenance build-input projection is invalid"
-        )
+        raise FullC6SupplyChainError("artifact build provenance build-input projection is invalid")
     observed_aggregates = build_input_projection.get("aggregates")
-    aggregate_rows: tuple[BuildInputAggregateIdentity, ...] = (
-        value.cargo_input_aggregates
-    )
+    aggregate_rows: tuple[BuildInputAggregateIdentity, ...] = value.cargo_input_aggregates
     if value.effective_config is not None:
         aggregate_rows = tuple(
             sorted(
                 (
                     *aggregate_rows,
-                    _effective_config_aggregate_from_identity(
-                        value.effective_config
-                    ),
+                    _effective_config_aggregate_from_identity(value.effective_config),
                 ),
                 key=lambda item: (item.kind, item.aggregate_id),
             )
         )
     expected_aggregates = [item.to_dict() for item in aggregate_rows]
-    if (
-        (expected_aggregates and observed_aggregates != expected_aggregates)
-        or (not expected_aggregates and "aggregates" in build_input_projection)
+    if (expected_aggregates and observed_aggregates != expected_aggregates) or (
+        not expected_aggregates and "aggregates" in build_input_projection
     ):
         raise FullC6SupplyChainError(
-            "Full C6 provenance Cargo aggregate projection is stale"
+            "artifact build provenance Cargo aggregate projection is stale"
         )
 
 
@@ -2423,20 +2342,15 @@ def _validate_effective_config_document_material(
 ) -> None:
     components = sbom.get("components")
     resolved_dependencies = definition.get("resolvedDependencies")
-    if not isinstance(components, list) or not isinstance(
-        resolved_dependencies, list
-    ):
-        raise FullC6SupplyChainError(
-            "Full C6 effective-config document material is missing"
-        )
+    if not isinstance(components, list) or not isinstance(resolved_dependencies, list):
+        raise FullC6SupplyChainError("artifact build effective-config document material is missing")
     observed_components = [
         item
         for item in components
-        if isinstance(item, dict)
-        and item.get("name") == _FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME
+        if isinstance(item, dict) and item.get("name") == _FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME
     ]
     expected_uri = (
-        "urn:rextio:full-c6-evidence:"
+        f"{CURRENT.string_value(ARTIFACT_EVIDENCE_URN_PREFIX)}"
         f"{_FULL_C6_EFFECTIVE_CONFIG_MATERIAL_NAME}"
     )
     observed_dependencies = [
@@ -2447,19 +2361,12 @@ def _validate_effective_config_document_material(
     expected_components: list[dict[str, object]] = []
     expected_dependencies: list[dict[str, object]] = []
     if value.effective_config is not None:
-        aggregate = _effective_config_aggregate_from_identity(
-            value.effective_config
-        )
+        aggregate = _effective_config_aggregate_from_identity(value.effective_config)
         expected_components.append(_cargo_aggregate_sbom_component(aggregate))
-        expected_dependencies.append(
-            _cargo_aggregate_provenance_dependency(aggregate)
-        )
-    if (
-        observed_components != expected_components
-        or observed_dependencies != expected_dependencies
-    ):
+        expected_dependencies.append(_cargo_aggregate_provenance_dependency(aggregate))
+    if observed_components != expected_components or observed_dependencies != expected_dependencies:
         raise FullC6SupplyChainError(
-            "Full C6 effective-config document material does not bind the receipt"
+            "artifact build effective-config document material does not bind the receipt"
         )
 
 
@@ -2499,7 +2406,7 @@ def _validate_receipt_documents(
             or properties.get("rextio:signed") != "false"
             or properties.get("rextio:distribution_authorized") != "false"
         ):
-            raise FullC6SupplyChainError("Full C6 SBOM does not bind the receipt")
+            raise FullC6SupplyChainError("artifact build SBOM does not bind the receipt")
         subjects = provenance["subject"]
         predicate = provenance["predicate"]
         if not isinstance(subjects, list) or len(subjects) != 2 or not isinstance(predicate, dict):
@@ -2532,7 +2439,9 @@ def _validate_receipt_documents(
             != {"name": value.subject.logical_path, "digest": {"sha256": value.subject.sha256}}
             or subjects[1]
             != {
-                "name": f"{value.subject.logical_path}.full-c6.cdx.json",
+                "name": (
+                    f"{value.subject.logical_path}{CURRENT.string_value(SBOM_SUBJECT_SUFFIX)}"
+                ),
                 "digest": {"sha256": value.sbom_sha256},
             }
             or definition.get("buildType") != FULL_C6_BUILD_TYPE
@@ -2542,17 +2451,17 @@ def _validate_receipt_documents(
             or parameters.get("reproducibility_input_projection")
             != {
                 "sbom_canonical_sha256": value.reproducible_sbom_input_sha256,
-                "provenance_input_canonical_sha256": (
-                    value.reproducible_provenance_input_sha256
-                ),
+                "provenance_input_canonical_sha256": (value.reproducible_provenance_input_sha256),
             }
             or parameters.get("complete_for_scope") is not True
             or parameters.get("signed") is not False
             or parameters.get("distribution_authorized") is not False
         ):
-            raise FullC6SupplyChainError("Full C6 provenance does not bind the receipt")
+            raise FullC6SupplyChainError("artifact build provenance does not bind the receipt")
     except (KeyError, IndexError, TypeError) as exc:
-        raise FullC6SupplyChainError("Full C6 supply-chain document shape is invalid") from exc
+        raise FullC6SupplyChainError(
+            "artifact build supply-chain document shape is invalid"
+        ) from exc
 
 
 def verify_full_c6_supply_chain_receipt(
@@ -2562,7 +2471,7 @@ def verify_full_c6_supply_chain_receipt(
 ) -> FullC6SupplyChainReceipt:
     """Deeply reconstruct one non-authorizing receipt and reject forged model state."""
     if type(value) is not FullC6SupplyChainReceipt:
-        raise TypeError("Full C6 supply-chain receipt has an invalid type")
+        raise TypeError("artifact build supply-chain receipt has an invalid type")
     rebuilt = FullC6SupplyChainReceipt(
         target_triple=value.target_triple,
         subject=_rebuild_evidence_file(value.subject),
@@ -2573,22 +2482,14 @@ def verify_full_c6_supply_chain_receipt(
         build_input_closure_sha256=value.build_input_closure_sha256,
         toolchain_sha256=value.toolchain_sha256,
         toolchain_support_plan_sha256=value.toolchain_support_plan_sha256,
-        toolchain_support_lock_raw_sha256=(
-            value.toolchain_support_lock_raw_sha256
-        ),
-        toolchain_support_lock_merkle_sha256=(
-            value.toolchain_support_lock_merkle_sha256
-        ),
+        toolchain_support_lock_raw_sha256=(value.toolchain_support_lock_raw_sha256),
+        toolchain_support_lock_merkle_sha256=(value.toolchain_support_lock_merkle_sha256),
         cargo_path_source_sha256=value.cargo_path_source_sha256,
         runtime_authorization_sha256=value.runtime_authorization_sha256,
         reproducibility_sha256=value.reproducibility_sha256,
         reproducible_sbom_input_sha256=value.reproducible_sbom_input_sha256,
-        reproducible_provenance_input_sha256=(
-            value.reproducible_provenance_input_sha256
-        ),
-        authority_aggregate=_rebuild_authority_aggregate(
-            value.authority_aggregate
-        ),
+        reproducible_provenance_input_sha256=(value.reproducible_provenance_input_sha256),
+        authority_aggregate=_rebuild_authority_aggregate(value.authority_aggregate),
         sbom_json=bytes(value.sbom_json),
         provenance_json=bytes(value.provenance_json),
         cargo_input_aggregates=_rebuild_cargo_input_aggregates(
@@ -2603,11 +2504,11 @@ def verify_full_c6_supply_chain_receipt(
         scope=value.scope,
     )
     if rebuilt != value:
-        raise FullC6SupplyChainError("Full C6 supply-chain receipt is forged")
+        raise FullC6SupplyChainError("artifact build supply-chain receipt is forged")
     if rebuilt.cargo_input_aggregates:
         if cargo_dependency_workspace is None:
             raise FullC6SupplyChainError(
-                "aggregate-aware Full C6 receipt verification requires "
+                "aggregate-aware artifact build receipt verification requires "
                 "a process-sealed Cargo workspace"
             )
         _require_authoritative_cargo_input_aggregates(
@@ -2616,18 +2517,15 @@ def verify_full_c6_supply_chain_receipt(
         )
         if rebuilt.effective_config is None:
             raise FullC6SupplyChainError(
-                "Full C6 effective-config aggregate identity is missing"
+                "artifact build effective-config aggregate identity is missing"
             )
-        if (
-            rebuilt.authority_aggregate.cargo_workspace_sha256
-            != cargo_dependency_workspace.digest
-        ):
+        if rebuilt.authority_aggregate.cargo_workspace_sha256 != cargo_dependency_workspace.digest:
             raise FullC6SupplyChainError(
-                "Full C6 authority aggregate does not bind the Cargo workspace"
+                "artifact build authority aggregate does not bind the Cargo workspace"
             )
     elif cargo_dependency_workspace is not None:
         raise FullC6SupplyChainError(
-            "legacy Full C6 receipt cannot consume Cargo aggregate authority"
+            "legacy artifact build receipt cannot consume Cargo aggregate authority"
         )
     return rebuilt
 

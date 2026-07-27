@@ -1,4 +1,4 @@
-"""Owner-only coordinator for the bounded Full C6 production transaction."""
+"""Owner-only coordinator for the bounded artifact build production transaction."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ import tomllib
 from typing import Literal, SupportsIndex, cast
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    PRODUCTION_AUTHORITY_DOMAIN,
+    require_current_dialect,
+)
 from rextio.build import full_c6_executor as _executor
 from rextio.build import full_c6_native_runtime as _native_runtime
 from rextio.build import orchestrator as _orchestrator
@@ -113,6 +118,7 @@ from rextio.build.full_c6_policy import (
     full_c6_policy_transformation_disposition,
     full_c6_transformation_source_set_digest,
 )
+from rextio.build.full_c6_policy_manifest import full_c6_policy_manifest_dialect
 from rextio.build.full_c6_policy_bootstrap import (
     FullC6PolicyBootstrapInputs,
     FullC6PolicyBootstrapRequest,
@@ -167,11 +173,16 @@ from rextio.build.transformation_verification import (
     collect_scoped_source_transformation_replay_authority,
 )
 from rextio.config.schema import RextioConfig
+from rextio.source.source_lock_v2 import (
+    require_current_source_lock_v2_verification,
+)
 from rextio.targets.plan import create_target_plan
 from rextio.source.wheel_authority import verify_source_wheel_license_detection
 
 
-FULL_C6_PRODUCTION_AUTHORITY_DOMAIN = "rextio.full-c6-production-authority.v2"
+FULL_C6_PRODUCTION_AUTHORITY_DOMAIN = CURRENT.string_value(
+    PRODUCTION_AUTHORITY_DOMAIN
+)
 _MAX_SOURCE_DATE_EPOCH = 2_147_483_647
 _SEAL_KEY = secrets.token_bytes(32)
 
@@ -221,28 +232,28 @@ class FullC6ProductionAuthority:
     _transaction_seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 production authority requires the collector")
+        raise TypeError("artifact build production authority requires the collector")
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 production authority is immutable")
+        raise TypeError("artifact build production authority is immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 production authority is immutable")
+        raise TypeError("artifact build production authority is immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 production authority cannot be copied")
+        raise TypeError("artifact build production authority cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 production authority cannot be copied")
+        raise TypeError("artifact build production authority cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 production authority cannot be serialized")
+        raise TypeError("artifact build production authority cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 production authority cannot be serialized")
+        raise TypeError("artifact build production authority cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 production authority cannot be serialized")
+        raise TypeError("artifact build production authority cannot be serialized")
 
     def __repr__(self) -> str:
         return "FullC6ProductionAuthority(material=<sealed>)"
@@ -298,7 +309,7 @@ def collect_full_c6_production_authority(
     base_environment: Mapping[str, str] | None,
     source_date_epoch: int,
 ) -> FullC6ProductionAuthority:
-    """Collect all typed Full C6 evidence without accepting derived authority."""
+    """Collect all typed artifact build evidence without accepting derived authority."""
     try:
         material = _collect_full_c6_production_material(
             preflight,
@@ -320,14 +331,14 @@ def collect_full_c6_production_authority(
         object.__setattr__(authority, "_transaction_seal", _seal(authority))
         if not validate_full_c6_production_authority(authority):
             raise FullC6ProductionError(
-                "collected Full C6 production authority is stale"
+                "collected artifact build production authority is stale"
             )
         return authority
     except FullC6ProductionError:
         raise
     except Exception as exc:
         raise FullC6ProductionError(
-            "Full C6 production authority collection failed closed"
+            "artifact build production authority collection failed closed"
         ) from exc
 
 
@@ -349,7 +360,7 @@ def validate_full_c6_production_authority(
 
 def _require_valid_authority(value: FullC6ProductionAuthority) -> None:
     if not validate_full_c6_production_authority(value):
-        raise FullC6ProductionError("Full C6 production authority is stale")
+        raise FullC6ProductionError("artifact build production authority is stale")
 
 
 def _validated_full_c6_production_material(
@@ -618,6 +629,12 @@ def _collect_full_c6_production_material(
         pass
     elif lifecycle.status in {"signing-required", "publication-required"}:
         policy = load_configured_full_c6_policy(project_root=root, config=config)
+        try:
+            require_current_dialect(full_c6_policy_manifest_dialect(policy))
+        except (TypeError, ValueError) as exc:
+            raise FullC6ProductionError(
+                "production artifact authorization requires the current policy dialect"
+            ) from exc
         _require_policy_matches_fresh_template(
             policy=policy,
             bootstrap_request=bootstrap_request,
@@ -647,7 +664,7 @@ def _collect_full_c6_production_material(
             cargo_dependency_workspace=cargo_workspace,
         )
     else:
-        raise FullC6ProductionError("Full C6 production lifecycle is disabled")
+        raise FullC6ProductionError("artifact build production lifecycle is disabled")
 
     return _FullC6ProductionMaterial(
         preflight=preflight,
@@ -692,6 +709,9 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
         validate_full_c6_external_context(
             material.preflight.context,
             material.preflight.analysis,
+        )
+        require_current_source_lock_v2_verification(
+            material.preflight.context.source_verification
         )
         if not validate_full_c6_license_materials_transaction(
             material.license_materials_transaction
@@ -871,6 +891,12 @@ def _validate_material(material: _FullC6ProductionMaterial) -> bool:
             type(material.policy) is not FullC6PolicyReceipt
         ):
             return False
+        try:
+            require_current_dialect(
+                full_c6_policy_manifest_dialect(material.policy)
+            )
+        except (TypeError, ValueError):
+            return False
         _require_policy_matches_fresh_template(
             policy=material.policy,
             bootstrap_request=material.bootstrap_request,
@@ -910,7 +936,7 @@ def _require_production_toolchain_support(
         or type(revalidate_paths) is not bool
     ):
         raise FullC6ProductionError(
-            "Full C6 production toolchain support authority is invalid"
+            "artifact build production toolchain support authority is invalid"
         )
     try:
         trusted = require_full_c6_toolchain_support_plan(plan)
@@ -931,7 +957,7 @@ def _require_production_toolchain_support(
             )
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 toolchain support authority differs from toolchain identity"
+                "artifact build toolchain support authority differs from toolchain identity"
             )
         return trusted
     except (
@@ -942,7 +968,7 @@ def _require_production_toolchain_support(
         ValueError,
     ) as exc:
         raise FullC6ProductionError(
-            "Full C6 production toolchain support authority failed closed"
+            "artifact build production toolchain support authority failed closed"
         ) from exc
 
 
@@ -969,7 +995,7 @@ def _require_production_inputs(
         # The executor binds this value into both invocation environments.
         or not (0 <= source_date_epoch <= _MAX_SOURCE_DATE_EPOCH)
     ):
-        raise FullC6ProductionError("Full C6 production prerequisites are invalid")
+        raise FullC6ProductionError("artifact build production prerequisites are invalid")
     if toolchain.cargo_sources is not cargo_workspace.cargo_sources:
         raise FullC6ProductionError("toolchain and Cargo workspace differ")
     if (
@@ -982,19 +1008,28 @@ def _require_production_inputs(
         is not toolchain_support_plan
     ):
         raise FullC6ProductionError(
-            "Full C6 production toolchain support authority was replaced"
+            "artifact build production toolchain support authority was replaced"
         )
     try:
         capture_effective_full_c6_config_identity(config)
     except FullC6ConfigIdentityError as exc:
         raise FullC6ProductionError(
-            "Full C6 effective config is not canonical"
+            "artifact build effective config is not canonical"
         ) from exc
     root = _require_project_root(preflight, project_root)
     validate_full_c6_external_context(preflight.context, preflight.analysis)
+    try:
+        require_current_source_lock_v2_verification(
+            preflight.context.source_verification
+        )
+    except (TypeError, ValueError) as exc:
+        raise FullC6ProductionError(
+            "artifact build production requires current SourceLock manifest "
+            "and signature dialects"
+        ) from exc
     lifecycle = resolve_full_c6_policy_lifecycle(config)
     if lifecycle.status == "disabled":
-        raise FullC6ProductionError("Full C6 production lifecycle is disabled")
+        raise FullC6ProductionError("artifact build production lifecycle is disabled")
     return root
 
 
@@ -1003,7 +1038,7 @@ def _require_project_root(
     project_root: Path | str,
 ) -> Path:
     if type(preflight) is not FullC6ExternalPreflightResult:
-        raise FullC6ProductionError("Full C6 production requires exact preflight")
+        raise FullC6ProductionError("artifact build production requires exact preflight")
     candidate = Path(project_root)
     authority_root = preflight.analysis.project_root
     if (
@@ -1055,7 +1090,7 @@ def _regenerate_production_inputs(
         project_root=root,
         layout=generated.layout,
     )
-    # The template config is deliberately removed before C5.2 execution; the
+    # The template config is deliberately removed before external-source authority execution; the
     # owner-prepared sealed workspace config is bound as a Cargo aggregate.
     generated_rust = tuple(
         item

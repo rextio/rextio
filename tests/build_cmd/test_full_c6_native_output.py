@@ -90,19 +90,14 @@ def test_native_output_is_factory_only_path_free_and_exactly_bound(
     assert str(tmp_path) not in serialized
     assert authority.wheel_filename not in serialized
     assert authority._wheel_captures[0].native_member.path not in serialized
-    assert all(
-        key == "domain" or key.endswith("sha256") or key == "digest"
-        for key in projection
-    )
+    assert all(key == "domain" or key.endswith("sha256") or key == "digest" for key in projection)
     assert "wheel_bytes" not in serialized
     assert "path" not in serialized
 
     wheel_path = full_c6_native_output_wheel_path(transaction)
     python_root = full_c6_native_output_python_root(transaction)
     native_path = full_c6_native_output_extension_path(transaction)
-    expected_root = (
-        state / FULL_C6_NATIVE_OUTPUT_DIRECTORY / authority.digest
-    )
+    expected_root = state / FULL_C6_NATIVE_OUTPUT_DIRECTORY / authority.digest
     assert wheel_path == expected_root / "wheel" / authority.wheel_filename
     assert python_root == expected_root / "python"
     assert native_path.parent == python_root
@@ -139,8 +134,7 @@ def test_native_output_transfers_exact_private_toolchain_and_seals_its_identity(
 
     assert transaction._toolchain is retained_toolchain
     assert (
-        native_output._full_c6_native_output_toolchain_identity(transaction)
-        is retained_toolchain
+        native_output._full_c6_native_output_toolchain_identity(transaction) is retained_toolchain
     )
     assert transaction.to_dict()["toolchain_sha256"] == retained_toolchain.digest
     assert "_full_c6_native_output_toolchain_identity" not in native_output.__all__
@@ -156,8 +150,7 @@ def test_native_output_transfers_exact_private_toolchain_and_seals_its_identity(
     object.__setattr__(transaction, "_toolchain", retained_toolchain)
     assert native_output.validate_full_c6_native_output_transaction(transaction)
     assert (
-        native_output._full_c6_native_output_toolchain_identity(transaction)
-        is retained_toolchain
+        native_output._full_c6_native_output_toolchain_identity(transaction) is retained_toolchain
     )
 
 
@@ -232,6 +225,7 @@ def test_native_output_requires_existing_absolute_private_nonsymlink_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from rextio.build.full_c6_native_output import (
+        FULL_C6_NATIVE_OUTPUT_DIRECTORY,
         FullC6NativeOutputError,
         materialize_full_c6_native_output,
     )
@@ -255,10 +249,12 @@ def test_native_output_requires_existing_absolute_private_nonsymlink_state(
         materialize_full_c6_native_output(authority, state_directory=alias)
     output_symlink_state = _state(tmp_path, "output-symlink-state")
     output_target = _state(tmp_path, "output-symlink-target")
-    (output_symlink_state / "full-c6-native-output").symlink_to(
+    output_symlink = output_symlink_state / FULL_C6_NATIVE_OUTPUT_DIRECTORY
+    output_symlink.symlink_to(
         output_target,
         target_is_directory=True,
     )
+    assert output_symlink.is_symlink()
     with pytest.raises(FullC6NativeOutputError):
         materialize_full_c6_native_output(
             authority,
@@ -375,9 +371,7 @@ def test_native_output_rejects_extra_members_and_byte_or_mode_changes(
         authority,
         state_directory=directory_mode_state,
     )
-    python_root = full_c6_native_output_extension_path(
-        directory_mode_transaction
-    ).parent
+    python_root = full_c6_native_output_extension_path(directory_mode_transaction).parent
     python_root.chmod(0o755)
     assert not validate_full_c6_native_output_transaction(directory_mode_transaction)
     with pytest.raises(FullC6NativeOutputError):

@@ -108,7 +108,7 @@ def test_policy_finalize_json_creates_and_exactly_reuses(
 
     assert main(argv) == 0
     created = json.loads(capsys.readouterr().out)
-    assert created["status"] == "full-c6-policy-finalized"
+    assert created["status"] == "artifact-policy-finalized"
     assert created["created"] is True
     assert created["output"] == str(output)
     assert created["signed"] is False

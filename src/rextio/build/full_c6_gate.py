@@ -1,4 +1,4 @@
-"""Final non-circular Full C6 distribution-authorization hard gate.
+"""Final non-circular artifact build distribution-authorization hard gate.
 
 This is the only module which mints a positive
 ``FullC6DistributionAuthorization``.  It rebuilds the complete frozen receipt
@@ -9,7 +9,7 @@ final evidence and authorization.
 
 The gate supports exactly macOS AArch64 and Linux x86-64 host-extension wheels
 with one depth-1 pure-Python external source wheel and no plugins.  It does not
-promote any C6 preview evidence or broaden that scope.
+promote any artifact evidence preview evidence or broaden that scope.
 """
 
 from __future__ import annotations
@@ -22,6 +22,13 @@ from pathlib import Path, PurePosixPath
 import stat
 from typing import TYPE_CHECKING
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    EXTERNAL_ARCHIVE_RECEIPT_DOMAIN,
+    FINAL_OUTPUT_RECEIPT_DOMAIN,
+    SOURCE_LOCK_RECEIPT_DOMAIN,
+    require_current_dialect,
+)
 from rextio.artifacts.evidence import EvidenceFileRef, WheelEntryRef, canonical_json_bytes
 from rextio.artifacts.full_authorization import (
     FULL_C6_AUTHORIZATION_CHECK_IDS,
@@ -50,6 +57,7 @@ from rextio.build.full_c6_policy import (
     FullC6PolicyReceipt,
     full_c6_license_detector_payload_digest,
 )
+from rextio.build.full_c6_policy_manifest import full_c6_policy_manifest_dialect
 from rextio.build.full_c6_executor import (
     FULL_C6_CALLBACK_LOCK_DRIVER,
     FULL_C6_NATIVE_DRIVER_MANIFEST,
@@ -103,6 +111,7 @@ from rextio.source.source_lock_v2 import (
     SourceLockV2Manifest,
     SourceLockV2Verification,
     SourceLockV2VerifiedContext,
+    require_current_source_lock_v2_verification,
     validate_source_lock_v2_verified_context,
 )
 from rextio.source.wheel_authority import verify_source_wheel_license_detection
@@ -112,15 +121,17 @@ if TYPE_CHECKING:
 
 
 FULL_C6_EXTERNAL_ARCHIVE_RECEIPT_DOMAIN = (
-    "rextio.full-c6-external-source-archive-bound.v1"
+    CURRENT.string_value(EXTERNAL_ARCHIVE_RECEIPT_DOMAIN)
 )
-FULL_C6_SOURCE_LOCK_RECEIPT_DOMAIN = "rextio.full-c6-source-lock-verified.v1"
-FULL_C6_FINAL_OUTPUT_RECEIPT_DOMAIN = "rextio.full-c6-final-output-revalidated.v1"
+FULL_C6_SOURCE_LOCK_RECEIPT_DOMAIN = CURRENT.string_value(SOURCE_LOCK_RECEIPT_DOMAIN)
+FULL_C6_FINAL_OUTPUT_RECEIPT_DOMAIN = CURRENT.string_value(
+    FINAL_OUTPUT_RECEIPT_DOMAIN
+)
 MAX_FULL_C6_PUBLIC_KEY_BYTES = 32
 
 
 class FullC6GateError(RuntimeError):
-    """The final Full C6 authorization graph failed closed."""
+    """The final artifact build authorization graph failed closed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,13 +145,13 @@ class FullC6GateResult:
 
     def __post_init__(self) -> None:
         if type(self.preauthorization_evidence) is not FullC6PreauthorizationEvidence:
-            raise TypeError("Full C6 gate result preauthorization evidence is invalid")
+            raise TypeError("artifact build gate result preauthorization evidence is invalid")
         if type(self.signature_receipt) is not SignatureVerificationReceipt:
-            raise TypeError("Full C6 gate result signature receipt is invalid")
+            raise TypeError("artifact build gate result signature receipt is invalid")
         if type(self.evidence) is not FullC6ArtifactEvidence:
-            raise TypeError("Full C6 gate result evidence is invalid")
+            raise TypeError("artifact build gate result evidence is invalid")
         if type(self.authorization) is not FullC6DistributionAuthorization:
-            raise TypeError("Full C6 gate result authorization is invalid")
+            raise TypeError("artifact build gate result authorization is invalid")
         preauthorization_sha256 = full_c6_preauthorization_evidence_digest(
             self.preauthorization_evidence
         )
@@ -152,7 +163,7 @@ class FullC6GateResult:
             or self.signature_receipt.public_key_sha256
             != self.evidence.trusted_public_key_sha256
         ):
-            raise ValueError("Full C6 gate result bindings are inconsistent")
+            raise ValueError("artifact build gate result bindings are inconsistent")
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +198,7 @@ def _validated_production_gate_inputs(
 
         if type(authority) is not FullC6ProductionAuthority:
             raise FullC6GateError(
-                "Full C6 hard gate requires exact production authority"
+                "artifact build hard gate requires exact production authority"
             )
         material = _validated_full_c6_production_material(authority)
         if material.lifecycle.status not in {
@@ -195,7 +206,7 @@ def _validated_production_gate_inputs(
             "publication-required",
         }:
             raise FullC6GateError(
-                "Full C6 hard gate requires pinned owner policy"
+                "artifact build hard gate requires pinned owner policy"
             )
         if (
             type(material.policy) is not FullC6PolicyReceipt
@@ -210,7 +221,15 @@ def _validated_production_gate_inputs(
             or type(material.executor_receipt) is not FullC6ExecutorReceipt
             or type(material.cargo_path_source) is not FullC6CargoPathSource
         ):
-            raise FullC6GateError("Full C6 production material is incomplete")
+            raise FullC6GateError("artifact build production material is incomplete")
+        try:
+            require_current_dialect(
+                full_c6_policy_manifest_dialect(material.policy)
+            )
+        except (TypeError, ValueError) as exc:
+            raise FullC6GateError(
+                "artifact authorization requires the current policy dialect"
+            ) from exc
         execution = _executor._validated_full_c6_native_output_material(
             material.native_execution_authority
         )
@@ -220,13 +239,20 @@ def _validated_production_gate_inputs(
             or execution.toolchain.cargo_sources
             is not material.cargo_workspace.cargo_sources
         ):
-            raise FullC6GateError("Full C6 retained Cargo authority is split")
+            raise FullC6GateError("artifact build retained Cargo authority is split")
         source_verification = material.preflight.context.source_verification
         if (
             type(source_verification) is not SourceLockV2Verification
             or source_verification.context is None
         ):
-            raise FullC6GateError("Full C6 retained SourceLock authority is invalid")
+            raise FullC6GateError("artifact build retained SourceLock authority is invalid")
+        try:
+            require_current_source_lock_v2_verification(source_verification)
+        except (TypeError, ValueError) as exc:
+            raise FullC6GateError(
+                "artifact authorization requires current SourceLock manifest "
+                "and signature dialects"
+            ) from exc
         subject = full_c6_native_output_subject(
             material.native_output_transaction
         )
@@ -272,7 +298,7 @@ def _validated_production_gate_inputs(
             or material.supply_chain.authority_aggregate != aggregate
         ):
             raise FullC6GateError(
-                "Full C6 production authority aggregate is stale"
+                "artifact build production authority aggregate is stale"
             )
         return _FullC6GateInputs(
             target_triple=material.runtime_authorization.target_triple,
@@ -298,7 +324,7 @@ def _validated_production_gate_inputs(
         raise
     except Exception as exc:
         raise FullC6GateError(
-            "Full C6 production authority failed deep validation"
+            "artifact build production authority failed deep validation"
         ) from exc
 
 
@@ -355,7 +381,7 @@ def prepare_full_c6_preauthorization_evidence(
             inputs.authority_aggregate.executor_receipt_sha256,
         ):
             raise FullC6GateError(
-                "Full C6 authority aggregate does not bind the executor receipt"
+                "artifact build authority aggregate does not bind the executor receipt"
             )
         if (
             type(runtime_authorization) is not RuntimeAuthorizationReceipt
@@ -364,7 +390,7 @@ def prepare_full_c6_preauthorization_evidence(
             or not verify_native_runtime_authorization(runtime_authorization)
         ):
             raise FullC6GateError(
-                "Full C6 requires a freshly reverified native runtime receipt"
+                "artifact build requires a freshly reverified native runtime receipt"
             )
         trusted_supply_chain = verify_full_c6_supply_chain_receipt(
             supply_chain,
@@ -373,7 +399,7 @@ def prepare_full_c6_preauthorization_evidence(
         authority_aggregate = trusted_supply_chain.authority_aggregate
         if authority_aggregate != inputs.authority_aggregate:
             raise FullC6GateError(
-                "Full C6 authority aggregate does not bind the gate inputs"
+                "artifact build authority aggregate does not bind the gate inputs"
             )
         fresh_supply_chain = build_full_c6_supply_chain_receipt(
             target_triple=target_triple,
@@ -391,7 +417,7 @@ def prepare_full_c6_preauthorization_evidence(
             cargo_dependency_workspace=cargo_dependency_workspace,
         )
         if fresh_supply_chain != trusted_supply_chain:
-            raise FullC6GateError("Full C6 supply-chain receipt is stale or replayed")
+            raise FullC6GateError("artifact build supply-chain receipt is stale or replayed")
         if (
             target_triple != trusted_supply_chain.target_triple
             or subject != trusted_supply_chain.subject
@@ -399,7 +425,7 @@ def prepare_full_c6_preauthorization_evidence(
             or source_lock.distribution != trusted_context.plan.distribution
             or source_lock.version != trusted_context.plan.requested_version
         ):
-            raise FullC6GateError("Full C6 target, subject, or external project is stale")
+            raise FullC6GateError("artifact build target, subject, or external project is stale")
 
         archive = EvidenceFileRef(
             logical_path=f"external/{source_lock.archive.filename}",
@@ -430,7 +456,7 @@ def prepare_full_c6_preauthorization_evidence(
     except FullC6GateError:
         raise
     except Exception as exc:
-        raise FullC6GateError("Full C6 preauthorization evidence failed closed") from exc
+        raise FullC6GateError("artifact build preauthorization evidence failed closed") from exc
 
 
 def authorize_full_c6_distribution(
@@ -440,7 +466,7 @@ def authorize_full_c6_distribution(
     signature_envelope_path: Path | str,
     public_key_path: Path | str,
 ) -> FullC6GateResult:
-    """Verify and mint one final Full C6 authorization, or fail closed."""
+    """Verify and mint one final artifact build authorization, or fail closed."""
     preauthorization = prepare_full_c6_preauthorization_evidence(authority)
     try:
         inputs = _validated_production_gate_inputs(authority)
@@ -479,7 +505,7 @@ def authorize_full_c6_distribution(
             or signature_receipt.target_triple != target_triple
             or signature_receipt.scope != FULL_C6_SCOPE
         ):
-            raise FullC6GateError("Full C6 signature receipt is stale or replayed")
+            raise FullC6GateError("artifact build signature receipt is stale or replayed")
 
         # This capture happens after signature verification by design.  It is
         # the final trust-boundary read before the positive model is minted.
@@ -556,7 +582,7 @@ def authorize_full_c6_distribution(
         if tuple(item.id for item in authorization.checks) != (
             FULL_C6_AUTHORIZATION_CHECK_IDS
         ):
-            raise FullC6GateError("Full C6 hard-gate check coverage is incomplete")
+            raise FullC6GateError("artifact build hard-gate check coverage is incomplete")
         return result
     except FullC6GateError:
         raise
@@ -565,9 +591,9 @@ def authorize_full_c6_distribution(
         FullC6AnalysisTransactionError,
         SignatureVerificationError,
     ) as exc:
-        raise FullC6GateError("Full C6 final signature or output verification failed") from exc
+        raise FullC6GateError("artifact build final signature or output verification failed") from exc
     except Exception as exc:
-        raise FullC6GateError("Full C6 authorization failed closed") from exc
+        raise FullC6GateError("artifact build authorization failed closed") from exc
 
 
 def _rebuild_source_verification(
@@ -578,18 +604,18 @@ def _rebuild_source_verification(
         or value.admission.status != "admitted"
         or type(value.context) is not SourceLockV2VerifiedContext
     ):
-        raise FullC6GateError("Full C6 requires an admitted SourceLock v2 context")
+        raise FullC6GateError("artifact build requires an admitted SourceLock v2 context")
     context = value.context
     if not validate_source_lock_v2_verified_context(context):
         raise FullC6GateError(
-            "Full C6 SourceLock v2 context is not from a valid verification transaction"
+            "artifact build SourceLock v2 context is not from a valid verification transaction"
         )
     rebuilt_verification = SourceLockV2Verification(
         admission=value.admission,
         context=context,
     )
     if rebuilt_verification != value:
-        raise FullC6GateError("Full C6 SourceLock v2 context is not canonical")
+        raise FullC6GateError("artifact build SourceLock v2 context is not canonical")
     return context
 
 
@@ -612,13 +638,13 @@ def _require_external_license_bindings(
         or detection.detected_spdx != source_context.manifest.observed_license
     ):
         raise FullC6GateError(
-            "Full C6 requires independent exact-byte license detection"
+            "artifact build requires independent exact-byte license detection"
         )
     source_detector_receipt_sha256 = detection.semantic_sha256
     entries = {item.path: item for item in wheel.entries}
     files: list[FullC6PolicyFileIdentity] = []
     if len(wheel.license_payloads) != len(wheel.license_entry_paths):
-        raise FullC6GateError("Full C6 external license payload coverage is incomplete")
+        raise FullC6GateError("artifact build external license payload coverage is incomplete")
     for path, payload in zip(
         wheel.license_entry_paths,
         wheel.license_payloads,
@@ -632,7 +658,7 @@ def _require_external_license_bindings(
             or entry.sha256 != digest
             or entry.size != len(payload)
         ):
-            raise FullC6GateError("Full C6 external license payload bytes are stale")
+            raise FullC6GateError("artifact build external license payload bytes are stale")
         files.append(
             FullC6PolicyFileIdentity(
                 logical_path=f"external/{path}",
@@ -649,12 +675,12 @@ def _require_external_license_bindings(
             source_detector_receipt_sha256=source_detector_receipt_sha256,
         )
     except (TypeError, ValueError) as exc:
-        raise FullC6GateError("Full C6 external license observation is invalid") from exc
+        raise FullC6GateError("artifact build external license observation is invalid") from exc
     external_rows = tuple(
         row for row in policy.rows if row.class_id.startswith("external-source:")
     )
     if not external_rows:
-        raise FullC6GateError("Full C6 external license policy coverage is empty")
+        raise FullC6GateError("artifact build external license policy coverage is empty")
     for row in external_rows:
         evidence = row.license_evidence
         if (
@@ -669,7 +695,7 @@ def _require_external_license_bindings(
             )
         ):
             raise FullC6GateError(
-                "Full C6 external license policy is not derived from exact wheel bytes"
+                "artifact build external license policy is not derived from exact wheel bytes"
             )
 
 
@@ -682,9 +708,9 @@ def _validate_executor_bindings(
     build_inputs: BuildInputClosure,
     policy: FullC6PolicyReceipt,
 ) -> FullC6ExecutorReceipt:
-    """Rebuild and cross-bind the only executor posture accepted by Full C6."""
+    """Rebuild and cross-bind the only executor posture accepted by artifact build."""
     if type(value) is not FullC6ExecutorReceipt:
-        raise FullC6GateError("Full C6 requires an exact executor receipt")
+        raise FullC6GateError("artifact build requires an exact executor receipt")
     try:
         tree = FullC6FrozenTreeManifest(
             entries=tuple(
@@ -748,15 +774,15 @@ def _validate_executor_bindings(
             authorizes_distribution=value.authorizes_distribution,
         )
     except (AttributeError, TypeError, ValueError) as exc:
-        raise FullC6GateError("Full C6 executor receipt is not canonical") from exc
+        raise FullC6GateError("artifact build executor receipt is not canonical") from exc
     if rebuilt != value:
-        raise FullC6GateError("Full C6 executor receipt is not canonical")
+        raise FullC6GateError("artifact build executor receipt is not canonical")
     if (
         rebuilt.execution_driver != FULL_C6_NATIVE_EXECUTION_DRIVER
         or rebuilt.lock_driver == FULL_C6_CALLBACK_LOCK_DRIVER
     ):
         raise FullC6GateError(
-            "Full C6 rejects callback and test-only executor authority"
+            "artifact build rejects callback and test-only executor authority"
         )
     invocation = rebuilt.invocations[0]
     payload_argv = toolchain.argv.values
@@ -801,7 +827,7 @@ def _validate_executor_bindings(
         )
     ):
         raise FullC6GateError(
-            "Full C6 executor tree, invocations, or toolchain binding is stale"
+            "artifact build executor tree, invocations, or toolchain binding is stale"
         )
     _require_executor_build_input_projection(
         executor=rebuilt,
@@ -827,7 +853,7 @@ def _require_executor_build_input_projection(
     its receipt digest below.
     """
     if type(build_inputs) is not BuildInputClosure or type(policy) is not FullC6PolicyReceipt:
-        raise FullC6GateError("Full C6 executor build-input projection is invalid")
+        raise FullC6GateError("artifact build executor build-input projection is invalid")
     closure = {item.logical_name: item for item in build_inputs.files}
     generated_classes = {
         "file-input:generated-python-input": "python",
@@ -839,7 +865,7 @@ def _require_executor_build_input_projection(
         row for row in policy.rows if row.class_id in generated_classes
     )
     if {row.class_id for row in generated_rows} != set(generated_classes):
-        raise FullC6GateError("Full C6 generated input classes are incomplete")
+        raise FullC6GateError("artifact build generated input classes are incomplete")
     projected: dict[str, ExactFileIdentity] = {}
     for row in generated_rows:
         generated_kind = generated_classes[row.class_id]
@@ -852,7 +878,7 @@ def _require_executor_build_input_projection(
             )
         )
         if row.class_id == "file-input:generated-rust-lib" and relative != "src/lib.rs":
-            raise FullC6GateError("Full C6 generated Rust lib path is invalid")
+            raise FullC6GateError("artifact build generated Rust lib path is invalid")
         item = closure.get(row.canonical_identity)
         if (
             item is None
@@ -860,7 +886,7 @@ def _require_executor_build_input_projection(
             or row.size != item.size
             or relative in projected
         ):
-            raise FullC6GateError("Full C6 generated closure projection is stale")
+            raise FullC6GateError("artifact build generated closure projection is stale")
         projected[relative] = item
     tree_files = {
         item.logical_name: item
@@ -870,7 +896,7 @@ def _require_executor_build_input_projection(
     executor_owned = {FULL_C6_NATIVE_DRIVER_MANIFEST}
     if set(projected) | executor_owned != set(tree_files):
         raise FullC6GateError(
-            "Full C6 executor frozen tree differs from the generated closure"
+            "artifact build executor frozen tree differs from the generated closure"
         )
     driver_manifest = tree_files[FULL_C6_NATIVE_DRIVER_MANIFEST]
     if (
@@ -882,7 +908,7 @@ def _require_executor_build_input_projection(
         )
         or driver_manifest.mode != 0o644
     ):
-        raise FullC6GateError("Full C6 native driver manifest binding is stale")
+        raise FullC6GateError("artifact build native driver manifest binding is stale")
     for logical_name, exact_file in projected.items():
         tree_file = tree_files[logical_name]
         executable = tree_file.mode == 0o755
@@ -892,7 +918,7 @@ def _require_executor_build_input_projection(
             or executable != exact_file.executable
         ):
             raise FullC6GateError(
-                "Full C6 executor frozen tree bytes differ from the build-input closure"
+                "artifact build executor frozen tree bytes differ from the build-input closure"
             )
 
 
@@ -908,7 +934,7 @@ def _full_c6_generated_executor_path(
     or suffix-only guessing is accepted for either form.
     """
     if generated_kind not in {"python", "rust"}:
-        raise FullC6GateError("Full C6 generated projection kind is invalid")
+        raise FullC6GateError("artifact build generated projection kind is invalid")
     parts = PurePosixPath(canonical_identity).parts
     production_marker = (".rextio", "generated", generated_kind)
     production_matches = tuple(
@@ -919,13 +945,13 @@ def _full_c6_generated_executor_path(
     if len(production_matches) == 1:
         relative_parts = parts[production_matches[0] + len(production_marker) :]
     elif len(production_matches) > 1:
-        raise FullC6GateError("Full C6 generated input root is ambiguous")
+        raise FullC6GateError("artifact build generated input root is ambiguous")
     elif parts[:2] == ("generated", generated_kind):
         relative_parts = parts[2:]
     else:
-        raise FullC6GateError("Full C6 generated input root is invalid")
+        raise FullC6GateError("artifact build generated input root is invalid")
     if not relative_parts:
-        raise FullC6GateError("Full C6 generated input path is invalid")
+        raise FullC6GateError("artifact build generated input path is invalid")
     relative = PurePosixPath(*relative_parts)
     if generated_kind == "python":
         relative = PurePosixPath("python-staging") / relative
@@ -940,7 +966,7 @@ def _require_owner_key_bindings(
 ) -> None:
     admission_key = source_context.admission.public_key_sha256
     if admission_key is None:
-        raise FullC6GateError("Full C6 SourceLock admission key is missing")
+        raise FullC6GateError("artifact build SourceLock admission key is missing")
     bindings = (
         policy.trusted_owner_public_key_sha256,
         source_context.manifest.trusted_public_key_sha256,
@@ -948,17 +974,17 @@ def _require_owner_key_bindings(
         expected_public_key_sha256,
     )
     if type(expected_public_key_sha256) is not str or len(expected_public_key_sha256) != 64:
-        raise FullC6GateError("Full C6 pinned public-key digest is invalid")
+        raise FullC6GateError("artifact build pinned public-key digest is invalid")
     try:
         bytes.fromhex(expected_public_key_sha256)
     except ValueError as exc:
-        raise FullC6GateError("Full C6 pinned public-key digest is invalid") from exc
+        raise FullC6GateError("artifact build pinned public-key digest is invalid") from exc
     if any(type(value) is not str for value in bindings) or not all(
         hmac.compare_digest(bindings[0], value) for value in bindings[1:]
     ):
-        raise FullC6GateError("Full C6 owner public-key bindings disagree")
+        raise FullC6GateError("artifact build owner public-key bindings disagree")
     if policy.owner_declaration.owner_identity != source_context.manifest.owner:
-        raise FullC6GateError("Full C6 owner identity bindings disagree")
+        raise FullC6GateError("artifact build owner identity bindings disagree")
 
 
 def _preauthorization_receipts(
@@ -1013,7 +1039,7 @@ def _preauthorization_receipts(
 
 def _rebuild_request(value: FinalAuthorizationRequest) -> FinalAuthorizationRequest:
     if type(value) is not FinalAuthorizationRequest:
-        raise FullC6GateError("Full C6 final authorization request has an invalid type")
+        raise FullC6GateError("artifact build final authorization request has an invalid type")
     rebuilt = FinalAuthorizationRequest(
         target_triple=value.target_triple,
         project_sha256=value.project_sha256,
@@ -1024,7 +1050,7 @@ def _rebuild_request(value: FinalAuthorizationRequest) -> FinalAuthorizationRequ
         scope=value.scope,
     )
     if rebuilt != value:
-        raise FullC6GateError("Full C6 final authorization request is not canonical")
+        raise FullC6GateError("artifact build final authorization request is not canonical")
     return rebuilt
 
 
@@ -1055,12 +1081,12 @@ def _validate_request_bindings(
         or not hmac.compare_digest(actual, wanted)
         for actual, wanted in expected
     ):
-        raise FullC6GateError("Full C6 final authorization request is stale or replayed")
+        raise FullC6GateError("artifact build final authorization request is stale or replayed")
 
 
 def _revalidate_subject(path: Path | str, expected: EvidenceFileRef) -> EvidenceFileRef:
     if type(expected) is not EvidenceFileRef:
-        raise FullC6GateError("Full C6 subject identity has an invalid type")
+        raise FullC6GateError("artifact build subject identity has an invalid type")
     candidate = Path(path)
     _reject_symlink_components(candidate)
     try:
@@ -1070,9 +1096,9 @@ def _revalidate_subject(path: Path | str, expected: EvidenceFileRef) -> Evidence
             role=expected.role,
         )
     except (BuildInputIdentityError, TypeError, ValueError) as exc:
-        raise FullC6GateError("Full C6 subject cannot be read through a no-follow file") from exc
+        raise FullC6GateError("artifact build subject cannot be read through a no-follow file") from exc
     if captured.sha256 != expected.sha256 or captured.size != expected.size:
-        raise FullC6GateError("Full C6 subject bytes changed after evidence capture")
+        raise FullC6GateError("artifact build subject bytes changed after evidence capture")
     return EvidenceFileRef(
         logical_path=captured.logical_name,
         sha256=captured.sha256,
@@ -1099,7 +1125,7 @@ def _read_public_key(path: Path | str) -> bytes:
         max_bytes=MAX_FULL_C6_PUBLIC_KEY_BYTES,
     )
     if len(data) != MAX_FULL_C6_PUBLIC_KEY_BYTES:
-        raise FullC6GateError("Full C6 public key must be exactly 32 raw bytes")
+        raise FullC6GateError("artifact build public key must be exactly 32 raw bytes")
     return data
 
 
@@ -1120,7 +1146,7 @@ def _read_pinned_file(
             max_bytes=max_bytes,
         )
     except (BuildInputIdentityError, TypeError, ValueError) as exc:
-        raise FullC6GateError("Full C6 signature material cannot be read safely") from exc
+        raise FullC6GateError("artifact build signature material cannot be read safely") from exc
     return data
 
 
@@ -1132,9 +1158,9 @@ def _reject_symlink_components(path: Path) -> None:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            raise FullC6GateError("Full C6 input path cannot be inspected") from exc
+            raise FullC6GateError("artifact build input path cannot be inspected") from exc
         if stat.S_ISLNK(observed.st_mode):
-            raise FullC6GateError("Full C6 input path contains a symlink")
+            raise FullC6GateError("artifact build input path contains a symlink")
 
 
 def _semantic_digest(value: object) -> str:

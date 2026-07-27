@@ -1,8 +1,8 @@
-"""Exact subject-wheel capture for the bounded Full C6 profile.
+"""Exact subject-wheel capture for the bounded artifact build profile.
 
 This module deliberately does not grant gate or distribution authority.  It
 turns one real, no-follow wheel read into a process-local transaction that can
-later be consumed by the Full C6 gate once that integration is reviewed.
+later be consumed by the artifact build gate once that integration is reviewed.
 """
 
 from __future__ import annotations
@@ -14,6 +14,10 @@ import secrets
 from pathlib import Path, PurePosixPath
 from typing import SupportsIndex
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    SUBJECT_WHEEL_TRANSACTION_DOMAIN,
+)
 from rextio.artifacts.evidence import (
     ArtifactEvidenceError,
     EvidenceFileRef,
@@ -36,7 +40,7 @@ from rextio.build.wheel_builder import (
 )
 
 
-FULL_C6_SUBJECT_WHEEL_TRANSACTION_DOMAIN = "rextio.full-c6-subject-wheel.v1"
+FULL_C6_SUBJECT_WHEEL_TRANSACTION_DOMAIN = CURRENT.string_value(SUBJECT_WHEEL_TRANSACTION_DOMAIN)
 _SEAL_KEY = secrets.token_bytes(32)
 
 
@@ -76,28 +80,28 @@ class FullC6SubjectWheelTransaction:
     _transaction_seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 subject-wheel transaction requires the capture factory")
+        raise TypeError("artifact build subject-wheel transaction requires the capture factory")
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 subject-wheel transaction is immutable")
+        raise TypeError("artifact build subject-wheel transaction is immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 subject-wheel transaction is immutable")
+        raise TypeError("artifact build subject-wheel transaction is immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 subject-wheel transaction cannot be copied")
+        raise TypeError("artifact build subject-wheel transaction cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 subject-wheel transaction cannot be copied")
+        raise TypeError("artifact build subject-wheel transaction cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 subject-wheel transaction cannot be serialized")
+        raise TypeError("artifact build subject-wheel transaction cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 subject-wheel transaction cannot be serialized")
+        raise TypeError("artifact build subject-wheel transaction cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 subject-wheel transaction cannot be serialized")
+        raise TypeError("artifact build subject-wheel transaction cannot be serialized")
 
     def __repr__(self) -> str:
         return (
@@ -200,8 +204,7 @@ def validate_full_c6_subject_wheel_transaction(
         and snapshot.verification == transaction.external_verification
         and snapshot.native_member == transaction.native_member
         and snapshot.record_member == transaction.record_member
-        and snapshot.output_license_verification
-        == transaction._output_license_verification
+        and snapshot.output_license_verification == transaction._output_license_verification
         and snapshot.output_metadata_payload == transaction._output_metadata_payload
         and snapshot.output_license_payloads == transaction._output_license_payloads
         and hmac.compare_digest(transaction._transaction_seal, _seal(transaction))
@@ -314,9 +317,7 @@ def _capture_snapshot(
         output_metadata_payload=(
             None if output_license is None else output_license.metadata_payload
         ),
-        output_license_payloads=(
-            () if output_license is None else output_license.license_payloads
-        ),
+        output_license_payloads=(() if output_license is None else output_license.license_payloads),
     )
 
 
@@ -422,9 +423,7 @@ def _semantic_payload(transaction: FullC6SubjectWheelTransaction) -> dict[str, s
         "domain": FULL_C6_SUBJECT_WHEEL_TRANSACTION_DOMAIN,
         "subject_sha256": transaction.subject.sha256,
         "subject_identity_sha256": _digest(transaction.subject.to_dict()),
-        "wheel_inventory_sha256": _digest(
-            [item.to_dict() for item in transaction.wheel_entries]
-        ),
+        "wheel_inventory_sha256": _digest([item.to_dict() for item in transaction.wheel_entries]),
         "external_contract_sha256": _digest(_contract_projection(transaction._external_contract)),
         "external_verification_sha256": _digest(
             {

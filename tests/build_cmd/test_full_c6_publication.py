@@ -11,6 +11,10 @@ import runpy
 import pytest
 
 import rextio.build.full_c6_gate as gate_module
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST,
+    LEGACY_0_1_7,
+)
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import FullC6DistributionAuthorization
 from rextio.build.full_c6_gate import FullC6GateResult
@@ -28,7 +32,11 @@ from rextio.build.full_c6_publication import (
     materialize_full_c6_signing_request,
     _publish_full_c6_bundle,
 )
-from rextio.build.signing import DetachedSignatureEnvelope, FinalAuthorizationRequest
+from rextio.build.signing import (
+    DetachedSignatureEnvelope,
+    FinalAuthorizationRequest,
+    parse_final_authorization_request,
+)
 
 
 _THIS_DIR = Path(__file__).parent
@@ -116,6 +124,42 @@ def _publish(
         public_key_path=tmp_path / "gate" / "owner.pub",
     )
     return publication_root, receipt
+
+
+def test_legacy_authorization_request_is_readable_but_not_publishable(
+    tmp_path: Path,
+) -> None:
+    files, request, result = _authorized_bundle(tmp_path)
+    legacy_identity = LEGACY_0_1_7.identity(AUTHORIZATION_REQUEST)
+    legacy_document = request.to_dict()
+    legacy_document.update(
+        {
+            "kind": legacy_identity.kind,
+            "schema_version": legacy_identity.schema_version,
+            "domain": legacy_identity.domain,
+        }
+    )
+    legacy_request = parse_final_authorization_request(
+        canonical_json_bytes(legacy_document)
+    )
+    assert legacy_request.domain == legacy_identity.domain
+
+    publication_root = tmp_path / "dist"
+    publication_root.mkdir(mode=0o700)
+    with pytest.raises(
+        FullC6PublicationError,
+        match="signing request is not canonical",
+    ):
+        _publish_full_c6_bundle(
+            publication_root=publication_root,
+            bundle_name="candidate",
+            bundle_files=files,
+            request=legacy_request,
+            gate_result=result,
+            public_key_path=tmp_path / "gate" / "owner.pub",
+        )
+
+    assert not (publication_root / "candidate").exists()
 
 
 def test_signing_request_is_private_atomic_and_idempotent(tmp_path: Path) -> None:
@@ -228,7 +272,7 @@ def test_successful_publication_is_one_closed_atomic_bundle(tmp_path: Path) -> N
     assert receipt.sealed_authorization_observed is True
     assert receipt.authorizes_distribution is False
     assert "tmp_path" not in str(receipt.to_dict())
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 def test_exact_existing_publication_is_idempotently_reconciled(tmp_path: Path) -> None:
@@ -245,7 +289,7 @@ def test_exact_existing_publication_is_idempotently_reconciled(tmp_path: Path) -
     )
 
     assert second == first
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 def test_existing_target_reconciliation_rejects_source_drift_after_target_check(
@@ -327,7 +371,7 @@ def test_concurrent_target_reconciliation_rejects_public_key_drift(
         )
 
     assert (publication_root / "candidate").is_dir()
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 @pytest.mark.parametrize("interruption", (KeyboardInterrupt, SystemExit))
@@ -387,7 +431,7 @@ def test_retry_recovers_exact_bundle_after_post_commit_async_exception(
 
     assert recovered == repeated
     assert recovered.publication_completed is True
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 def test_direct_fake_authorization_is_rejected(tmp_path: Path) -> None:
@@ -595,7 +639,7 @@ def test_concurrent_target_creation_is_detected_before_rename(
             gate_result=result,
             public_key_path=tmp_path / "gate" / "owner.pub",
         )
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 def test_target_created_after_last_check_is_never_replaced(
@@ -637,7 +681,7 @@ def test_target_created_after_last_check_is_never_replaced(
     assert (publication_root / "candidate" / "concurrent-owner").read_text(
         encoding="utf-8"
     ) == "keep"
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 def test_input_mutation_during_staging_fails_and_cleans_only_staging(
@@ -673,7 +717,7 @@ def test_input_mutation_during_staging_fails_and_cleans_only_staging(
         )
     assert sentinel.read_text(encoding="utf-8") == "owned by caller"
     assert not (publication_root / "candidate").exists()
-    assert not tuple(publication_root.glob(".rextio-full-c6-stage-*"))
+    assert not tuple(publication_root.glob(".rextio-artifact-stage-*"))
 
 
 def test_noncanonical_or_mutated_semantic_files_fail_closed(tmp_path: Path) -> None:
@@ -738,7 +782,7 @@ def test_post_commit_tamper_cannot_turn_completed_rename_into_false_failure(
             source_name=source_name,
             destination_name=destination_name,
         )
-        (publication_root / destination_name / "rextio.full-c6-evidence.json").write_bytes(
+        (publication_root / destination_name / "rextio.artifact-evidence.json").write_bytes(
             b"tampered-after-rename"
         )
 
@@ -753,7 +797,7 @@ def test_post_commit_tamper_cannot_turn_completed_rename_into_false_failure(
     )
 
     published_evidence = (
-        publication_root / "candidate" / "rextio.full-c6-evidence.json"
+        publication_root / "candidate" / "rextio.artifact-evidence.json"
     )
     expected = next(item for item in receipt.files if item.role == ROLE_FINAL_EVIDENCE)
     assert receipt.publication_completed is True
