@@ -31,7 +31,7 @@ correctness baseline.
 
 ## Quick Start
 
-Start with normal Python:
+Start with normal typed Python:
 
 ```python
 # src/myapp/math_ops.py
@@ -45,7 +45,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # not in the direct Rust subset
 ```
 
-Build it (installed users; from a source checkout use
+Install and analyze/build (from a source checkout use
 `python -m pip install -e .` instead):
 
 ```text
@@ -64,217 +64,17 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-The main commands:
-
-| Command | What it does |
-| --- | --- |
-| `rextio init` | Creates `rextio.toml`, `REXTIO.md`, and `.rextioignore`. |
-| `rextio check` | Analyzes native candidates and prints diagnostics (structured JSON via `--format json`). |
-| `rextio capabilities` | Prints the machine-readable capability manifest: supported types, promotion rules with guidance, and active plugins (experimental). |
-| `rextio policy bootstrap-support-lock` | Creates or exactly reuses the canonical, non-authorizing Full-C6 host support lock and returns the two config values to pin (0.1.5 Experimental). |
-| `rextio policy finalize` | Combines one exact Full-C6 bootstrap v2 and explicit owner completion into an unsigned, non-authorizing policy manifest v2 (0.1.5 Experimental). |
-| `rextio generate` | Writes generated Rust and Python source without compiling. |
-| `rextio build` | Generates, compiles, packages, and writes build reports. |
-| `rextio bench` | Compares Python fallback and Rust native timing for one function. |
-| `rextio clean` | Removes `.rextio/build`, `.rextio/generated`, and `.rextio/reports`. |
-
-Common build variants:
+Native is an optimization, not a requirement. If the native module is missing,
+disabled, or fails to load, the package still runs through Python fallback.
+Force fallback at runtime with:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --entrypoint=myapp.cli:main --executable-backend=rust --executable-fallback=error
-rextio build . --rust-importable --rust-crate-name=my_native
-rextio build . --artifact-evidence-policy=required
+REXTIO_NATIVE_MODE=fallback
 ```
 
-A typical end-to-end flow:
-
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
-
-Use `rextio generate` when you want generated source only. It does not run
-Cargo, maturin, Nuitka, wheel building, or executable packaging.
-
-Use `rextio build` when you want the generated source plus compiled/packageable
-artifacts.
-
-`--artifact-evidence-policy=required` is deliberately narrower: it accepts
-exactly one native host-extension + CPython wheel backed by an accepted native
-region (a function and/or native top-level segment), with no executable or
-Rust-importable crate, and exits with `RXT060` unless the artifact-evidence
-status is `preview-ready`. C6.4 makes that preview include a bounded inventory
-of only the extension's directly observed Mach-O (`otool -L`) or ELF
-(`readelf -W -d`) link entries. The installed native binary must match the
-exact wheel member by generated-Python relative name, SHA-256, and byte size
-before the inventory is accepted. Binary-header and linkage inspection use one
-private same-byte snapshot bound to both that wheel member and the installed
-original; both original and snapshot identity/digest are revalidated. Inspector
-children use reviewed absolute tool paths without a shell or inherited parent
-environment, under only a minimal C locale. It records a normalized binary
-architecture and only a closed set of expected system-runtime dependencies;
-each accepted dependency has a sanitized `origin` and stable `bom_ref`. A
-Mach-O first-row private Cargo self-ID is excluded only when the header is
-`MH_DYLIB` and bounded `otool -D` reports that exact ID. An unexpected
-dependency makes evidence unavailable. C6.8 may additionally bind each direct
-dependency to one packaged wheel member or a system logical leaf. The packaged
-path observation uses fixed `otool -l` / `readelf -W -d` inspection, only
-contained loader/ORIGIN-anchored candidates, exact wheel hash/size binding, and
-pinned non-symlink file receipts. It does not model actual loader-environment
-selection, system library bytes, transitive dependencies, or `dlopen`. C6.9 may
-then recursively inspect only those exact packaged members, preserving cycles
-as canonical graph edges while inspecting each packaged node at most once.
-Strict global and per-dependency bounds, exact wheel/hash/size rebinding,
-case/hardlink alias rejection, Linux system-SONAME shadow checks, and final
-receipt verification fail closed by omitting only C6.9. Its gate remains
-`distribution_authorized: false`,
-`complete: false`, and `signed: false`; it is not a release authorization or a
-full supply-chain attestation. The default `best-effort` policy preserves the
-C6.2 behavior where a fixed, sanitized evidence-unavailable reason does not fail
-an ordinary build. Under `required`, the same unavailable evidence produces
-`RXT060`; publication and rollback pin the output parent and verify exact
-content receipts. Required wheels are built privately and exposed only with a
-create-if-absent hard link; rollback quarantines a public candidate before
-receipt verification. It therefore never claims or deletes an observed
-concurrent-owner file. Publication mismatch makes evidence unavailable;
-pre-existing or concurrently replaced content is restored or retained for
-recovery, and a required rollback mismatch is reported as incomplete.
-Windows, runtime-bearing plugins, signatures, transitive
-closure, and runtime `dlopen` discovery remain outside this preview.
-
-For that same in-scope wheel path, `build.json` also includes
-`artifact_distribution_authorization`. This C6.5-C6.15 policy-version-11 record is derived from the
-final `artifact_evidence` record after required-mode revalidation/transaction
-handling. It always reports `status: "blocked"`,
-`authority: "readiness-assessment-only"`, and false values for `complete`,
-`signed`, and `distribution_authorized`. Preview-ready evidence can satisfy
-fourteen bounded observation checks after closed-model reconstruction and exact
-cross-binding. The ninth check means the in-process C6.10 collector already
-replayed one narrowly supported source/AST/IR/codegen closure; the later report
-does not itself reopen source or generated artifacts. The tenth check means an
-exact C6.11 owner lock was structurally bound to all registry-license metadata;
-it is still not the blocked global license-policy check. The eleventh means a
-separate C6.12 owner lock was bound to the exact C6.10 project-source set and
-generated Rust output; it proves no ownership or output rights. The twelfth
-check verifies the exact C6.10 sibling-stub set; present stubs become
-`project-python-stub` materials and compatibility snapshots are not
-evidence-eligible. The thirteenth binds C6.14's compact disjoint partition to
-the exact surviving C6.9-C6.13 receipts without claiming global policy or
-provenance completeness. The fourteenth binds C6.15's exact owner lock and
-closed class dispositions to C6.14; it authenticates no owner and grants no
-distribution authority. License
-policy, runtime path/transitive closure, runtime dynamic loading, complete build
-inputs, complete source-transformation provenance, builder identity, reproducibility,
-signatures, and complete SBOM composition remain selected current-scope fixed
-blockers. Unavailable evidence reports only `evidence-unavailable` plus its
-existing sanitized reason. If a preview evidence model cannot pass the stricter
-readiness validation, every check becomes `not-evaluated` and the only blocker
-is `readiness-assessment-unavailable`; this cannot fail an otherwise successful
-best-effort build or satisfied C6.3 required gate. No configuration flag can
-turn this assessment into authorization. The strict Full-C6 Alpha described
-below creates a separate, deeply typed authority chain; it never upgrades or
-reinterprets this preview-readiness record.
-
-The C6.6 `source_transformation_inventory` is deterministic and immutable. It
-serializes SHA-256 identities, bounded logical paths/ranges, and closed ids only;
-raw Python source, AST dumps, absolute paths, exception text, credentials, and
-unbounded output are excluded. Accepted-function count, total plugin references,
-unique plugin ids, and deterministic serialized inventory size have closed
-bounds. If the inventory cannot be bound, or would make provenance exceed its
-sidecar ceiling, evidence and
-the independent C6.3 gate keep their prior outcome, while the new observation is
-`unavailable` with the fixed
-`source-transformation-inventory-unavailable` blocker. A malformed,
-noncanonical, or source/generated-reference-binding-breaking inventory instead
-uses the existing all-`not-evaluated`
-`readiness-assessment-unavailable` shape. The separate
-`source-transformation-provenance-complete` check remains blocked. A
-structurally valid changed observation value is not independently detected by
-this report-only evaluator and still cannot become signed, complete, or
-distribution-authorizing.
-
-The C6.10 `source_transformation_verification` is a sibling observation, not a
-replacement for C6.6. Its scope is exactly
-`project-functions-pyo3-plugin-free-v1`: project-owned module-level direct
-native functions, CPython/PyO3 host-extension wheel, no plugins, embedding,
-native top-level, runtime shim, delegated fallback, or Python boundary call.
-It binds the canonical C6.6 inventory, exact project-source set, canonical
-ModuleIR, complete accepted qualnames, and captured/regenerated Rust digest and
-size. Any scope or replay mismatch omits only this receipt and reports
-`scoped-source-transformation-verified: unavailable`; C6.6 and C6.3 remain
-independent. `complete_for_scope: true` never changes
-`global_provenance_complete: false`, the blocked
-`source-transformation-provenance-complete` check, or distribution authority.
-
-The C6.7 `component_license_inventory` is likewise deterministic, immutable,
-and observation-only. Its records exactly cover the reachable
-`cargo_packages` set in canonical `bom_ref` order and bind only `bom_ref`,
-name, version, package kind, the raw bounded metadata string or null, and
-`declared-unvalidated | missing`. Nonblank values such as `UNKNOWN`,
-`NOASSERTION`, compound expressions, and sentinel-looking text are not parsed,
-normalized, approved, or denied. Whitespace-only values are missing; otherwise
-leading and trailing whitespace is retained. NUL/control characters and
-over-budget values fail closed. Missing inventory makes only
-`component-license-inventory-bound` unavailable and adds the fixed
-`component-license-inventory-unavailable` blocker. Malformed, reordered,
-duplicated, stale, or non-exactly-bound records use the all-`not-evaluated`
-readiness-unavailable shape. If provenance still exceeds its ceiling after the
-newer C6.15, C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, and C6.8 observations are omitted, C6.7 is omitted next so C6.6 and all earlier evidence/gate results are preserved whenever
-possible. `component-license-policy-complete` remains blocked: this is not SPDX
-validation, a license allow/deny lock, legal approval, or distribution authority.
-
-The C6.11 `component_license_policy_verification` is an optional scoped sibling
-of that inventory. A fixed project-root `rextio.cargo-license.lock.json` must
-repeat every registry record verbatim in canonical order, bind the full C6.7
-digest, declare `allow` for the exact local-build/package/redistribution scopes,
-use the fixed acknowledgement, and identify either a human owner or organization
-owner. Rextio securely hashes the exact lock bytes, rejects links, races,
-duplicate/nonfinite/deep JSON and missing or unknown registry-license sentinels,
-then recollects the receipt before final evidence construction. The lock is a
-provenance material only while the receipt survives; it is not a C6.2 input or
-SBOM component. Missing, changed, or invalid policy data makes
-`scoped-component-license-policy-verified` unavailable with the fixed
-`scoped-component-license-policy-verification-unavailable` blocker without
-changing the build or C6.3 gate. Claimed owner identity is not authenticated,
-and license files, notices, obligations, compatibility, legal approval,
-signatures, the global license policy, and distribution authority remain open.
-
-The C6.8 `native_runtime_path_resolution` remains incomplete and
-observation-only. Records are in direct-dependency `bom_ref` order and bind the
-exact dependency name/origin plus one closed result/mechanism. Packaged records
-also bind one unique canonical `WheelEntryRef` name, SHA-256, and size; missing,
-ambiguous, symlinked, escaping, unsupported, or changed candidates omit only
-C6.8. The readiness report then marks
-`direct-native-path-resolution-bound` unavailable and adds
-`native-runtime-path-resolution-inventory-unavailable`; the ordinary build and
-C6.3 gate are unchanged. A present malformed or format-crossed record fails the
-readiness reconstruction closed. C6.15 is omitted first, then C6.14, C6.13, C6.12, C6.11, C6.10, C6.9, C6.8,
-C6.7, and C6.6 at the provenance ceiling. Actual loader precedence/environment, complete
-transitive closure beyond the bounded C6.9 graph, system-library bytes, runtime `dlopen`, Windows PE, WASM,
-runtime-bearing plugins, signatures, and distribution authorization remain out
-of scope.
-
-The C6.9 `native_runtime_transitive_closure` field is deliberately named for
-the graph it observes, not a completeness claim. Its fixed fields keep
-`complete: false`, `transitive_closure_complete: false`, and
-`actual_loader_selection: false`. Missing, ambiguous, noncanonical, aliased,
-tampered, unsupported, malformed, deadline-exhausted, or over-budget recursive
-observations make only `bounded-static-native-runtime-graph-bound`
-`unavailable` with the fixed
-`bounded-static-native-runtime-graph-unavailable` blocker. C6.8 remains when a
-C6.9-only check fails; a C6.8 failure necessarily removes both dependent
-observations. The readiness check
-`native-runtime-transitive-closure-complete` remains blocked.
+Useful first-project commands: `rextio init`, `rextio check`,
+`rextio generate` (write generated source without compiling), `rextio build`,
+`rextio bench`, and `rextio clean`.
 
 <!-- rextio-benchmark:start -->
 ## Verified CPU benchmark results

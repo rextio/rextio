@@ -28,7 +28,7 @@ Rextio 不是 Python 的替代品，也不是整個專案遷移到 Rust 的工�
 
 ## 快速開始
 
-從普通的 Python 程式碼開始:
+從帶型別註解的普通 Python 程式碼開始:
 
 ```python
 # src/myapp/math_ops.py
@@ -42,7 +42,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # 不在 direct Rust subset 內
 ```
 
-建置（面向已安裝使用者；從原始碼檢出請改用
+安裝並分析/建置（從原始碼檢出請改用
 `python -m pip install -e .`）:
 
 ```text
@@ -61,45 +61,16 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-主要指令:
-
-| 指令 | 作用 |
-| --- | --- |
-| `rextio init` | 建立 `rextio.toml`、`REXTIO.md` 和 `.rextioignore`。 |
-| `rextio check` | 分析 native 候選並輸出診斷（結構化 JSON 用 `--format json`）。 |
-| `rextio capabilities` | 輸出機器可讀的 capability manifest: 受支援的型別、帶指引的提升規則、以及啟用的外掛（experimental）。 |
-| `rextio generate` | 只寫出產生的 Rust/Python 原始碼，不編譯。 |
-| `rextio build` | 產生、編譯、打包並寫出建置報告。 |
-| `rextio bench` | 比較一個函式的 Python fallback 與 Rust native 耗時。 |
-| `rextio clean` | 刪除 `.rextio/build`、`.rextio/generated`、`.rextio/reports`。 |
-
-常用建置變體:
+Native 是優化，不是必需。即使 native 模組缺失、被停用或載入失敗，套件仍會
+透過 Python fallback 執行。執行時強制 fallback:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --rust-importable --rust-crate-name=my_native
+REXTIO_NATIVE_MODE=fallback
 ```
 
-常見的完整流程:
-
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
-
-只需要產生原始碼時用 `rextio generate`。它不會執行 Cargo、maturin、
-Nuitka、wheel 建置或可執行檔打包。
-
-需要產生原始碼加上編譯/打包產物時用 `rextio build`。
+第一個專案常用指令: `rextio init`、`rextio check`、
+`rextio generate`（只寫出產生原始碼、不編譯）、`rextio build`、
+`rextio bench`、`rextio clean`。
 
 <!-- rextio-benchmark:start -->
 ## 已驗證的 CPU 基準結果

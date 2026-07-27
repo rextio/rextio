@@ -31,7 +31,7 @@ Rextio는 Python을 대체하지 않으며 프로젝트 전체를 Rust로 옮기
 
 ## 빠른 시작
 
-일반 Python 코드에서 시작합니다:
+일반 타입 힌트가 있는 Python 코드에서 시작합니다:
 
 ```python
 # src/myapp/math_ops.py
@@ -45,7 +45,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # direct Rust subset 밖
 ```
 
-빌드합니다(설치된 사용자 기준; 소스 체크아웃에서는
+설치 후 분석/빌드합니다(소스 체크아웃에서는
 `python -m pip install -e .`를 대신 사용):
 
 ```text
@@ -64,46 +64,17 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-주요 명령어:
-
-| 명령 | 하는 일 |
-| --- | --- |
-| `rextio init` | `rextio.toml`, `REXTIO.md`, `.rextioignore`를 생성합니다. |
-| `rextio check` | native 후보를 분석하고 진단을 출력합니다(구조화된 JSON은 `--format json`). |
-| `rextio capabilities` | 기계가 읽을 수 있는 capability manifest를 출력합니다: 지원 타입, 가이드가 딸린 승격 규칙, 활성 플러그인 (experimental). |
-| `rextio generate` | 컴파일 없이 Rust/Python 생성 소스를 작성합니다. |
-| `rextio build` | 생성, 컴파일, 패키징 후 빌드 리포트를 작성합니다. |
-| `rextio bench` | 한 함수의 Python fallback과 Rust native 시간을 비교합니다. |
-| `rextio clean` | `.rextio/build`, `.rextio/generated`, `.rextio/reports`를 제거합니다. |
-
-자주 쓰는 빌드 변형:
+Native는 최적화일 뿐 필수는 아닙니다. native 모듈이 없거나, 비활성화되어
+있거나, 로드에 실패해도 패키지는 Python fallback으로 계속 동작합니다.
+런타임에 fallback을 강제하려면:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --rust-importable --rust-crate-name=my_native
+REXTIO_NATIVE_MODE=fallback
 ```
 
-일반적인 전체 흐름:
-
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
-
-생성 소스만 원하면 `rextio generate`를 사용하세요. Cargo, maturin, Nuitka,
-wheel 빌드, 실행파일 패키징은 실행하지 않습니다.
-
-생성 소스에 더해 컴파일/패키징된 산출물까지 원하면 `rextio build`를
-사용하세요.
+처음 프로젝트에 유용한 명령: `rextio init`, `rextio check`,
+`rextio generate`(컴파일 없이 생성 소스만 작성), `rextio build`,
+`rextio bench`, `rextio clean`.
 
 <!-- rextio-benchmark:start -->
 ## 검증된 CPU 벤치마크 결과

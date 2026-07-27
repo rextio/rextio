@@ -28,7 +28,7 @@ Rextio 不是 Python 的替代品，也不是整个项目迁移到 Rust 的工�
 
 ## 快速开始
 
-从普通的 Python 代码开始:
+从带类型注解的普通 Python 代码开始:
 
 ```python
 # src/myapp/math_ops.py
@@ -42,7 +42,7 @@ def format_result(value: int) -> str:
     return f"score={value}"  # 不在 direct Rust subset 内
 ```
 
-构建（面向已安装用户；从源码检出请改用
+安装并分析/构建（从源码检出请改用
 `python -m pip install -e .`）:
 
 ```text
@@ -61,45 +61,16 @@ assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-主要命令:
-
-| 命令 | 作用 |
-| --- | --- |
-| `rextio init` | 创建 `rextio.toml`、`REXTIO.md` 和 `.rextioignore`。 |
-| `rextio check` | 分析 native 候选并输出诊断（结构化 JSON 用 `--format json`）。 |
-| `rextio capabilities` | 输出机器可读的 capability manifest: 受支持的类型、带指引的提升规则、以及激活的插件（experimental）。 |
-| `rextio generate` | 只写出生成的 Rust/Python 源码，不编译。 |
-| `rextio build` | 生成、编译、打包并写出构建报告。 |
-| `rextio bench` | 比较一个函数的 Python fallback 与 Rust native 耗时。 |
-| `rextio clean` | 删除 `.rextio/build`、`.rextio/generated`、`.rextio/reports`。 |
-
-常用构建变体:
+Native 是优化，不是必需。即使 native 模块缺失、被禁用或加载失败，包仍会
+通过 Python fallback 运行。运行时强制 fallback:
 
 ```text
-rextio build . --fallback=cpython
-rextio build . --fallback=nuitka
-rextio build . --fallback-threshold=1000
-rextio build . --embed-helpers
-rextio build . --entrypoint=myapp.cli:main
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-rextio build . --rust-importable --rust-crate-name=my_native
+REXTIO_NATIVE_MODE=fallback
 ```
 
-常见的完整流程:
-
-```text
-rextio init --project-root path/to/project
-rextio check path/to/project
-rextio generate path/to/project --fallback=cpython
-rextio build path/to/project --fallback=cpython
-rextio bench myapp.math_ops.sum_squares --project-root path/to/project
-rextio clean path/to/project
-```
-
-只需要生成源码时用 `rextio generate`。它不会运行 Cargo、maturin、Nuitka、
-wheel 构建或可执行文件打包。
-
-需要生成源码加上编译/打包产物时用 `rextio build`。
+首个项目常用命令: `rextio init`、`rextio check`、
+`rextio generate`（只写出生成源码、不编译）、`rextio build`、
+`rextio bench`、`rextio clean`。
 
 <!-- rextio-benchmark:start -->
 ## 已验证的 CPU 基准结果
