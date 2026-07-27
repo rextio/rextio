@@ -18,7 +18,16 @@ import 경로도, 동작도 그대로입니다.
 ## 검증된 CPU 벤치마크 스냅샷
 
 동일한 Python 소스와 결정론적 입력; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-버전: rextio 0.1.7 candidate@b8b8ed11f6b7, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@cf461e677578, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@1fdb2e1cd91d, rextio-torch 0.1.3 candidate@1e92b24b154c.
+
+이 스냅샷은 **Rextio Core와 1st-party 플러그인 5개 전부**를 함께 사용해 측정했습니다. 패키지(PyPI 이름 · 버전 · 저장소):
+
+- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
+- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
+- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
+- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
+- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
+- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
+
 선택: 정확히 세 개의 적격 publish 보고서 중 시간순 첫 번째 보고서(index 0)를 사용하며, 속도비로 선택하지 않습니다.
 안정성: 고정된 여섯 headline 행은 모두 10% 안정성 veto를 통과했습니다. 3회 실행 중앙값: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
 
@@ -34,10 +43,9 @@ import 경로도, 동작도 그대로입니다.
 각 수치는 해당 workload의 결과이며 라이브러리 전체 성능을 뜻하지 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
 어떤 결과도 BLAS, libtorch, TensorFlow kernel 또는 CUDA 자체의 가속을 주장하지 않습니다.
 
-candidate로 표시된 패키지는 Core 0.1.7과 rextio-torch 0.1.3을 포함한 미배포 exact Git 커밋 핀이며 PyPI 릴리스가 아닙니다. rextio-numpy 0.1.3과 rextio-tensorflow 0.1.3에도 동일하게 적용됩니다.
-`candidate@` 표시는 앞 12자리 16진수만 보이며, 각 candidate는 전체 40자리 Git 커밋으로 검증·고정됩니다.
+**candidate**로 표시된 패키지(Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, rextio-tensorflow 0.1.3)는 미배포 버전이며 PyPI 릴리스가 아닙니다. rextio-networkx 0.1.1과 rextio-pandas 0.1.2는 릴리스된 패키지입니다.
 
-[정식 보고서](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [측정 커밋](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [증거 커밋](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
+**전체 방법론, 정확한 리비전, 증거, 진단, 상세 결과는 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 저장소를 사용하세요.**
 <!-- rextio-benchmark:end -->
 
 ```text
