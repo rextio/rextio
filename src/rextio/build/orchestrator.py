@@ -283,7 +283,7 @@ class GenerateResult:
     # successfully preflighted provider. Raw provider option values are never
     # serialized; each plan exposes option keys plus a binding digest.
     device_provider_plans: tuple[dict[str, object], ...] = ()
-    # Train C5 preview evidence.  Presence never authorizes a build.
+    # External-source preview evidence. Presence never authorizes a build.
     external_source_plan: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -350,13 +350,13 @@ class BuildResult:
     # Device Provider API 1: resolved only for an explicit host-extension
     # selection. Omitted entirely from legacy no-selection reports.
     device_provider_plans: tuple[dict[str, object], ...] = ()
-    # C6.2: bounded host-extension wheel SBOM/provenance preview (additive).
+    # Bounded host-extension wheel SBOM/provenance preview (additive).
     # Absent when the build is outside the ordinary host-extension wheel path.
     artifact_evidence: ArtifactEvidence | None = None
-    # C6.3: emitted only for the opt-in required evidence policy. Even a
+    # Emitted only for the opt-in required evidence policy. Even a
     # satisfied gate remains incomplete, unsigned, and non-authorizing.
     artifact_evidence_gate: ArtifactEvidenceGate | None = None
-    # C6.5-C6.9: derived only from final C6.2-C6.9 evidence. This readiness
+    # Derived only from final artifact evidence. This readiness
     # report is always blocked and never authorizes distribution.
     artifact_distribution_authorization: (
         ArtifactDistributionAuthorizationAssessment | None
@@ -432,7 +432,7 @@ class ArtifactEvidenceRequiredError(RuntimeError):
 def _artifact_authorization_assessment_no_throw(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Keep report-only C6.5 incapable of changing build or C6.3 outcomes."""
+    """Keep report-only readiness from changing required-evidence outcomes."""
     try:
         return evaluate_artifact_distribution_authorization(evidence)
     except Exception:
@@ -1040,7 +1040,7 @@ def _required_native_runtime_mismatch_reason(
     native_build: NativeBuildResult,
     evidence: ArtifactEvidence,
 ) -> str | None:
-    """Re-hash the exact contained installed binary recorded by C6.4."""
+    """Re-hash the exact contained binary recorded by artifact evidence."""
     runtime_inventory = evidence.native_runtime_inventory
     if runtime_inventory is None:
         return REASON_EVIDENCE_INTERNAL
@@ -1247,7 +1247,7 @@ def required_artifact_evidence_scope_is_valid(
     executable_entrypoint: str | None,
     rust_importable: bool,
 ) -> bool:
-    """Check the exact C6.3 artifact set without probing any toolchain."""
+    """Check the exact required-evidence artifact set without probing a toolchain."""
     return (
         native_extension
         and fallback == "cpython"
@@ -1376,7 +1376,8 @@ def build_hybrid_artifact(
     if strict_distribution:
         if full_c6_external_context is None:
             raise FullC6PipelineError(
-                "RXT060 strict evidence distribution policy lacks a same-transaction strict C5.2 context"
+                "RXT060 strict evidence distribution policy lacks a same-transaction "
+                "artifact-contract context"
             )
         if blocked_plan is None:
             raise FullC6PipelineError(
@@ -1400,13 +1401,14 @@ def build_hybrid_artifact(
             )
     elif full_c6_external_context is not None:
         raise FullC6PipelineError(
-            "RXT060 strict C5.2 context cannot enter an ordinary or preview build"
+            "RXT060 strict artifact-contract context cannot enter an ordinary "
+            "or preview build"
         )
     if blocked_plan is not None and not strict_distribution:
         # External-source work must stop before target discovery, generated-
         # source cleanup, Cargo, Python fallback, wheel, executable, or
-        # rust-crate work.  C6.1 verifies a project SourceLock; a verified lock
-        # still cannot claim remaining C5.2 linkage/codegen/packaging.
+        # rust-crate work. A project SourceLock can verify source authority; a
+        # verified lock still cannot claim unavailable linkage/codegen/packaging.
         if blocked_plan.authorization_verified:
             raise ExternalSourceC5NotImplementedError(blocked_plan)
         raise ExternalSourceBuildBlockedError(blocked_plan)
@@ -1508,7 +1510,7 @@ def build_hybrid_artifact(
     _write_check_report(layout, analysis)
     _write_python_fallback_tree(plan.fallback, layout.python_dir, boundary_fallback_threshold)
     _write_runtime_support(layout.python_dir)
-    # C6.2: only capture prebuild evidence snapshots for in-scope
+    # Only capture prebuild evidence snapshots for in-scope
     # host-extension+cpython builds. Out-of-scope paths skip the work entirely.
     evidence_snapshot: EvidenceInputSnapshot | None = None
     if is_in_scope_host_extension_cpython(plan):
@@ -1555,10 +1557,10 @@ def build_hybrid_artifact(
     expected_wheel: Path | None = None
     strict_candidate_dir: Path | None = None
     if strict_distribution:
-        # A C5.2 candidate is build input for the separate two-build Full C6
-        # executor, not a distributable artifact.  Keep it under the private
+        # An artifact candidate is build input for the separate strict two-build
+        # executor, not a distributable artifact. Keep it under the private
         # build tree; only the sealed publication adapter may create dist output.
-        strict_candidate_dir = layout.build_dir / "full-c6-candidate"
+        strict_candidate_dir = layout.build_dir / "artifact-candidate"
         strict_candidate_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     if ordinary_required_evidence:
         expected_wheel = artifact_wheel_path(project_root, layout.build_python_dir, layout.dist_dir)
@@ -1603,13 +1605,13 @@ def build_hybrid_artifact(
                         path=str(expected_wheel),
                         message=wheel_build.message,
                     )
-        # C6.2: after the ordinary host-extension+cpython wheel is finalized, emit
+        # After the ordinary host-extension+cpython wheel is finalized, emit
         # preview-ready or unavailable evidence. Out-of-scope builds omit the field.
         # Unavailability never raises into the ordinary build success path.
         artifact_evidence: ArtifactEvidence | None
         if strict_distribution:
-            # C6.2-C6.15 preview records are intentionally not promoted or
-            # interpreted inside the complete Full C6 path.
+            # Preview records are intentionally not promoted or interpreted
+            # inside the strict artifact-contract path.
             artifact_evidence = None
         elif publication_failure_reason is not None:
             artifact_evidence = ArtifactEvidence.unavailable(
@@ -1712,7 +1714,7 @@ def build_hybrid_artifact(
             if not rollback.complete:
                 raise OSError("required evidence output rollback was incomplete") from error
         raise
-    # C6.5 is derived only after best-effort evidence has reached its final
+    # Readiness is derived only after best-effort evidence has reached its final
     # shape or required mode has completed revalidation and its output
     # transaction. It cannot affect build success or gate semantics.
     artifact_distribution_authorization = (

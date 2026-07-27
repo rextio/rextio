@@ -1,4 +1,4 @@
-"""Persistent, process-sealed native output for the bounded Full C6 profile.
+"""Persistent, process-sealed native output for the bounded artifact build profile.
 
 Only a validated native executor authority can supply bytes and contracts to
 this module.  The caller selects an already-created private state directory;
@@ -21,6 +21,11 @@ from types import ModuleType
 from typing import SupportsIndex
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    NATIVE_OUTPUT_DIRECTORY,
+    NATIVE_OUTPUT_TRANSACTION_DOMAIN,
+)
 from rextio.artifacts.evidence import (
     ArtifactEvidenceError,
     EvidenceFileRef,
@@ -52,8 +57,8 @@ from rextio.build.toolchain_identity import BuildToolchainIdentity
 from rextio.build.wheel_builder import ExternalWheelNativeMemberIdentity
 
 
-FULL_C6_NATIVE_OUTPUT_TRANSACTION_DOMAIN = "rextio.full-c6-native-output.v1"
-FULL_C6_NATIVE_OUTPUT_DIRECTORY = "full-c6-native-output"
+FULL_C6_NATIVE_OUTPUT_TRANSACTION_DOMAIN = CURRENT.string_value(NATIVE_OUTPUT_TRANSACTION_DOMAIN)
+FULL_C6_NATIVE_OUTPUT_DIRECTORY = CURRENT.string_value(NATIVE_OUTPUT_DIRECTORY)
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _MAX_AUTHORITY_DIRECTORIES = 1024
@@ -109,28 +114,28 @@ class FullC6NativeOutputTransaction:
     _transaction_seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 native output transaction requires the materializer")
+        raise TypeError("artifact build native output transaction requires the materializer")
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 native output transaction is immutable")
+        raise TypeError("artifact build native output transaction is immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 native output transaction is immutable")
+        raise TypeError("artifact build native output transaction is immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 native output transaction cannot be copied")
+        raise TypeError("artifact build native output transaction cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 native output transaction cannot be copied")
+        raise TypeError("artifact build native output transaction cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 native output transaction cannot be serialized")
+        raise TypeError("artifact build native output transaction cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 native output transaction cannot be serialized")
+        raise TypeError("artifact build native output transaction cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 native output transaction cannot be serialized")
+        raise TypeError("artifact build native output transaction cannot be serialized")
 
     def __repr__(self) -> str:
         return (
@@ -281,11 +286,12 @@ def materialize_full_c6_native_output(
     the current user with mode ``0700``.  This lets the future coordinator own
     state-root creation while this factory owns only its deterministic subtree.
     """
-    if (
-        type(authority) is not FullC6NativeExecutionAuthority
-        or not validate_full_c6_native_execution_authority(authority)
+    if type(
+        authority
+    ) is not FullC6NativeExecutionAuthority or not validate_full_c6_native_execution_authority(
+        authority
     ):
-        raise FullC6NativeOutputError("Full C6 native authority is invalid")
+        raise FullC6NativeOutputError("artifact build native authority is invalid")
     prepared = _prepare_material(authority)
     state_path = _lexical_absolute_state_path(state_directory)
     paths = _deterministic_paths(state_path, prepared)
@@ -319,7 +325,7 @@ def materialize_full_c6_native_output(
                     and len(existing_authorities) >= _MAX_AUTHORITY_DIRECTORIES
                 ):
                     raise FullC6NativeOutputError(
-                        "Full C6 native output root cannot accept another authority"
+                        "artifact build native output root cannot accept another authority"
                     )
                 authority_fd, created_authority = _create_or_open_directory(
                     output_fd,
@@ -380,7 +386,7 @@ def materialize_full_c6_native_output(
                     os.close(authority_fd)
                 if final_snapshot != snapshot:
                     raise FullC6NativeOutputError(
-                        "Full C6 native output changed during materialization"
+                        "artifact build native output changed during materialization"
                     )
                 _validate_output_root_inventory(output_fd)
                 _require_present_without_alias(
@@ -401,7 +407,7 @@ def materialize_full_c6_native_output(
                 _unlock_directory(output_fd)
         except (OSError, ValueError, TypeError, ArtifactEvidenceError) as exc:
             raise FullC6NativeOutputError(
-                "Full C6 native output could not be materialized safely"
+                "artifact build native output could not be materialized safely"
             ) from exc
         finally:
             if output_fd >= 0:
@@ -409,7 +415,7 @@ def materialize_full_c6_native_output(
             os.close(state_fd)
     if transaction is None or not validate_full_c6_native_output_transaction(transaction):
         raise FullC6NativeOutputError(
-            "Full C6 native output changed before sealing completed"
+            "artifact build native output changed before sealing completed"
         )
     return transaction
 
@@ -435,8 +441,7 @@ def validate_full_c6_native_output_transaction(
             or transaction._cargo_workspace is not prepared.executor.cargo_workspace
             or transaction._toolchain is not prepared.executor.toolchain
             or type(transaction._toolchain) is not BuildToolchainIdentity
-            or transaction._toolchain.digest
-            != transaction._executor_receipt.toolchain_sha256
+            or transaction._toolchain.digest != transaction._executor_receipt.toolchain_sha256
             or transaction._wheel_filename != prepared.executor.wheel_filename
             or transaction._native_member != prepared.executor.native_member
             or type(transaction._subject_wheel) is not FullC6SubjectWheelTransaction
@@ -455,9 +460,7 @@ def validate_full_c6_native_output_transaction(
             return False
 
         with _PROCESS_LOCK:
-            state_fd, _state_identity = _open_state_directory(
-                transaction._state_directory
-            )
+            state_fd, _state_identity = _open_state_directory(transaction._state_directory)
             output_fd = -1
             authority_fd = -1
             try:
@@ -487,13 +490,9 @@ def validate_full_c6_native_output_transaction(
                     )
                     if observed != transaction._snapshot:
                         return False
-                    if not validate_full_c6_subject_wheel_transaction(
-                        transaction._subject_wheel
-                    ):
+                    if not validate_full_c6_subject_wheel_transaction(transaction._subject_wheel):
                         return False
-                    image = capture_runtime_loaded_image(
-                        transaction._native_extension_path
-                    )
+                    image = capture_runtime_loaded_image(transaction._native_extension_path)
                     _require_native_image(observed.native_file, image)
                     if image != transaction._native_image:
                         return False
@@ -628,17 +627,16 @@ def _prepare_material(authority: FullC6NativeExecutionAuthority) -> _PreparedMat
     filename = _require_wheel_filename(material.wheel_filename)
     native_name = _require_native_name(material.native_member.path)
     if native_name != material.native_member.path:
-        raise FullC6NativeOutputError("Full C6 native member is not canonical")
+        raise FullC6NativeOutputError("artifact build native member is not canonical")
     if (
-        hashlib.sha256(material.native_artifact_bytes).hexdigest()
-        != material.native_member.sha256
+        hashlib.sha256(material.native_artifact_bytes).hexdigest() != material.native_member.sha256
         or len(material.native_artifact_bytes) != material.native_member.size
     ):
-        raise FullC6NativeOutputError("Full C6 native artifact bytes are stale")
+        raise FullC6NativeOutputError("artifact build native artifact bytes are stale")
     try:
         entries = inventory_wheel_zip_bytes(material.wheel_bytes)
     except ArtifactEvidenceError as exc:
-        raise FullC6NativeOutputError("Full C6 wheel inventory is invalid") from exc
+        raise FullC6NativeOutputError("artifact build wheel inventory is invalid") from exc
     matches = tuple(item for item in entries if item.name == native_name)
     if (
         len(matches) != 1
@@ -646,7 +644,7 @@ def _prepare_material(authority: FullC6NativeExecutionAuthority) -> _PreparedMat
         or matches[0].uncompressed_size != material.native_member.size
     ):
         raise FullC6NativeOutputError(
-            "Full C6 wheel member differs from the retained native artifact"
+            "artifact build wheel member differs from the retained native artifact"
         )
     authority_digest = authority.digest
     subject = EvidenceFileRef(
@@ -725,7 +723,7 @@ def _materialize_new_authority_tree(
     )
     try:
         if not wheel_created:
-            raise FullC6NativeOutputError("new Full C6 wheel directory already exists")
+            raise FullC6NativeOutputError("new artifact build wheel directory already exists")
         _write_exclusive_file(
             wheel_fd,
             prepared.executor.wheel_filename,
@@ -746,7 +744,7 @@ def _materialize_new_authority_tree(
     )
     try:
         if not python_created:
-            raise FullC6NativeOutputError("new Full C6 Python directory already exists")
+            raise FullC6NativeOutputError("new artifact build Python directory already exists")
         _write_exclusive_file(
             python_fd,
             prepared.executor.native_member.path,
@@ -777,9 +775,7 @@ def _capture_tree(
 ) -> _TreeSnapshot:
     _require_secure_directory_stat(os.fstat(state_fd), label="state directory")
     _require_secure_directory_stat(os.fstat(output_fd), label="native output root")
-    _require_secure_directory_stat(
-        os.fstat(authority_fd), label="native authority directory"
-    )
+    _require_secure_directory_stat(os.fstat(authority_fd), label="native authority directory")
     _require_exact_inventory(
         authority_fd,
         frozenset({"wheel", "python"}),
@@ -856,7 +852,7 @@ def _capture_tree(
 
 def _lexical_absolute_state_path(value: Path | str) -> Path:
     if not (type(value) is str or isinstance(value, Path)):
-        raise TypeError("Full C6 state directory must be a string or Path")
+        raise TypeError("artifact build state directory must be a string or Path")
     raw = os.fspath(value)
     if (
         type(raw) is not str
@@ -867,7 +863,7 @@ def _lexical_absolute_state_path(value: Path | str) -> Path:
         or unicodedata.normalize("NFC", raw) != raw
     ):
         raise FullC6NativeOutputError(
-            "Full C6 state directory must be lexical, absolute, and NFC"
+            "artifact build state directory must be lexical, absolute, and NFC"
         )
     return Path(raw)
 
@@ -894,7 +890,7 @@ def _open_state_directory(path: Path) -> tuple[int, _DirectoryIdentity]:
     except OSError as exc:
         os.close(current)
         raise FullC6NativeOutputError(
-            "Full C6 state directory could not be opened safely"
+            "artifact build state directory could not be opened safely"
         ) from exc
 
 
@@ -927,13 +923,13 @@ def _open_child_directory(
 ) -> int:
     before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
-        raise FullC6NativeOutputError(f"Full C6 {label} is not a real directory")
+        raise FullC6NativeOutputError(f"artifact build {label} is not a real directory")
     descriptor = os.open(name, _directory_open_flags(), dir_fd=parent_fd)
     try:
         opened = os.fstat(descriptor)
         named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if not _same_stat(before, opened) or not _same_stat(opened, named):
-            raise FullC6NativeOutputError(f"Full C6 {label} changed during open")
+            raise FullC6NativeOutputError(f"artifact build {label} changed during open")
         if require_private:
             _require_secure_directory_stat(opened, label=label)
         return descriptor
@@ -949,9 +945,7 @@ def _require_secure_directory_stat(observed: os.stat_result, *, label: str) -> N
         or stat.S_IMODE(observed.st_mode) != _DIRECTORY_MODE
         or observed.st_uid != _current_uid()
     ):
-        raise FullC6NativeOutputError(
-            f"Full C6 {label} must be owner-owned mode 0700"
-        )
+        raise FullC6NativeOutputError(f"artifact build {label} must be owner-owned mode 0700")
 
 
 def _require_name_binding(
@@ -964,12 +958,12 @@ def _require_name_binding(
 ) -> None:
     observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if not stat.S_ISDIR(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
-        raise FullC6NativeOutputError(f"Full C6 {label} name is not a directory")
+        raise FullC6NativeOutputError(f"artifact build {label} name is not a directory")
     actual = _DirectoryIdentity(os.fstat(descriptor) if descriptor is not None else observed)
     if expected is not None and actual != expected:
-        raise FullC6NativeOutputError(f"Full C6 {label} identity changed")
+        raise FullC6NativeOutputError(f"artifact build {label} identity changed")
     if (observed.st_dev, observed.st_ino) != (actual.device, actual.inode):
-        raise FullC6NativeOutputError(f"Full C6 {label} name binding changed")
+        raise FullC6NativeOutputError(f"artifact build {label} name binding changed")
     _require_secure_directory_stat(observed, label=label)
 
 
@@ -977,11 +971,11 @@ def _validate_output_root_inventory(output_fd: int) -> tuple[str, ...]:
     before = os.fstat(output_fd)
     names = _stable_names(output_fd, label="native output root")
     if len(names) > _MAX_AUTHORITY_DIRECTORIES:
-        raise FullC6NativeOutputError("Full C6 native output root exceeds its bound")
+        raise FullC6NativeOutputError("artifact build native output root exceeds its bound")
     for name in names:
         if _SHA256.fullmatch(name) is None:
             raise FullC6NativeOutputError(
-                "Full C6 native output root contains an unexpected member"
+                "artifact build native output root contains an unexpected member"
             )
         descriptor = _open_child_directory(
             output_fd,
@@ -990,9 +984,7 @@ def _validate_output_root_inventory(output_fd: int) -> tuple[str, ...]:
         )
         os.close(descriptor)
     if not _same_directory_stamp(before, os.fstat(output_fd)):
-        raise FullC6NativeOutputError(
-            "Full C6 native output root changed during validation"
-        )
+        raise FullC6NativeOutputError("artifact build native output root changed during validation")
     return names
 
 
@@ -1005,7 +997,7 @@ def _require_present_without_alias(
     names = _stable_names(directory_fd, label=f"{label} parent")
     _reject_alias(names, name, label=label)
     if name not in names:
-        raise FullC6NativeOutputError(f"Full C6 {label} is missing")
+        raise FullC6NativeOutputError(f"artifact build {label} is missing")
 
 
 def _require_exact_inventory(
@@ -1017,7 +1009,7 @@ def _require_exact_inventory(
     names = _stable_names(directory_fd, label=label)
     if frozenset(names) != expected:
         raise FullC6NativeOutputError(
-            f"Full C6 {label} contains missing, extra, or aliased members"
+            f"artifact build {label} contains missing, extra, or aliased members"
         )
 
 
@@ -1026,14 +1018,14 @@ def _stable_names(directory_fd: int, *, label: str) -> tuple[str, ...]:
     names = tuple(os.listdir(directory_fd))
     after = os.fstat(directory_fd)
     if not _same_directory_stamp(before, after):
-        raise FullC6NativeOutputError(f"Full C6 {label} changed during enumeration")
+        raise FullC6NativeOutputError(f"artifact build {label} changed during enumeration")
     aliases: set[str] = set()
     for name in names:
         if type(name) is not str or not name or unicodedata.normalize("NFC", name) != name:
-            raise FullC6NativeOutputError(f"Full C6 {label} contains a noncanonical name")
+            raise FullC6NativeOutputError(f"artifact build {label} contains a noncanonical name")
         alias = unicodedata.normalize("NFC", name).casefold()
         if alias in aliases:
-            raise FullC6NativeOutputError(f"Full C6 {label} contains aliased names")
+            raise FullC6NativeOutputError(f"artifact build {label} contains aliased names")
         aliases.add(alias)
     return tuple(sorted(names))
 
@@ -1044,7 +1036,7 @@ def _reject_alias(names: tuple[str, ...], expected: str, *, label: str) -> None:
         unicodedata.normalize("NFC", name).casefold() == alias and name != expected
         for name in names
     ):
-        raise FullC6NativeOutputError(f"Full C6 {label} has a case/NFC alias")
+        raise FullC6NativeOutputError(f"artifact build {label} has a case/NFC alias")
 
 
 def _write_exclusive_file(directory_fd: int, name: str, data: bytes) -> None:
@@ -1067,7 +1059,7 @@ def _write_exclusive_file(directory_fd: int, name: str, data: bytes) -> None:
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
-                raise FullC6NativeOutputError("Full C6 output write made no progress")
+                raise FullC6NativeOutputError("artifact build output write made no progress")
             view = view[written:]
         os.fsync(descriptor)
         final = os.fstat(descriptor)
@@ -1093,7 +1085,7 @@ def _capture_exact_file(
     try:
         opened = os.fstat(descriptor)
         if not _same_stat(before, opened):
-            raise FullC6NativeOutputError(f"Full C6 {label} changed during open")
+            raise FullC6NativeOutputError(f"artifact build {label} changed during open")
         chunks: list[bytes] = []
         remaining = len(expected)
         while remaining:
@@ -1103,16 +1095,16 @@ def _capture_exact_file(
             chunks.append(chunk)
             remaining -= len(chunk)
         if os.read(descriptor, 1):
-            raise FullC6NativeOutputError(f"Full C6 {label} exceeds expected size")
+            raise FullC6NativeOutputError(f"artifact build {label} exceeds expected size")
         data = b"".join(chunks)
         final = os.fstat(descriptor)
         if not _same_stat(opened, final):
-            raise FullC6NativeOutputError(f"Full C6 {label} changed while reading")
+            raise FullC6NativeOutputError(f"artifact build {label} changed while reading")
     finally:
         os.close(descriptor)
     named = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     if not _same_stat(final, named) or not hmac.compare_digest(data, expected):
-        raise FullC6NativeOutputError(f"Full C6 {label} bytes or identity changed")
+        raise FullC6NativeOutputError(f"artifact build {label} bytes or identity changed")
     return _FileIdentity(final, sha256=hashlib.sha256(data).hexdigest())
 
 
@@ -1131,7 +1123,7 @@ def _require_secure_file_stat(
         or observed.st_size != expected_size
     ):
         raise FullC6NativeOutputError(
-            f"Full C6 {label} must be an owner-owned unaliased mode 0600 file"
+            f"artifact build {label} must be an owner-owned unaliased mode 0600 file"
         )
 
 
@@ -1142,7 +1134,7 @@ def _require_native_image(expected: _FileIdentity, image: RuntimeLoadedImage) ->
         or image.sha256 != expected.sha256
         or image.size != expected.size
     ):
-        raise FullC6NativeOutputError("Full C6 runtime native image identity changed")
+        raise FullC6NativeOutputError("artifact build runtime native image identity changed")
 
 
 def _semantic_payload(transaction: FullC6NativeOutputTransaction) -> dict[str, str]:
@@ -1150,7 +1142,7 @@ def _semantic_payload(transaction: FullC6NativeOutputTransaction) -> dict[str, s
     cargo = transaction._cargo_workspace
     target = receipt.target_triple
     if type(target) is not str or not target:
-        raise FullC6NativeOutputError("Full C6 native target identity is missing")
+        raise FullC6NativeOutputError("artifact build native target identity is missing")
     toolchain = _require_digest(receipt.toolchain_sha256, label="toolchain")
     cargo_executable = _require_digest(
         receipt.cargo_executable_sha256,
@@ -1218,11 +1210,12 @@ def _seal(transaction: FullC6NativeOutputTransaction) -> bytes:
 
 
 def _require_valid_transaction(transaction: FullC6NativeOutputTransaction) -> None:
-    if (
-        type(transaction) is not FullC6NativeOutputTransaction
-        or not validate_full_c6_native_output_transaction(transaction)
+    if type(
+        transaction
+    ) is not FullC6NativeOutputTransaction or not validate_full_c6_native_output_transaction(
+        transaction
     ):
-        raise FullC6NativeOutputError("Full C6 native output transaction is stale")
+        raise FullC6NativeOutputError("artifact build native output transaction is stale")
 
 
 def _require_wheel_filename(value: object) -> str:
@@ -1235,7 +1228,7 @@ def _require_wheel_filename(value: object) -> str:
         or PureWindowsPath(value).name != value
         or _WHEEL_NAME.fullmatch(value) is None
     ):
-        raise FullC6NativeOutputError("Full C6 wheel filename is not canonical")
+        raise FullC6NativeOutputError("artifact build wheel filename is not canonical")
     return value
 
 
@@ -1250,13 +1243,13 @@ def _require_native_name(value: object) -> str:
         or not value.startswith("_rextio_native.")
         or not value.endswith((".so", ".pyd"))
     ):
-        raise FullC6NativeOutputError("Full C6 native member name is not canonical")
+        raise FullC6NativeOutputError("artifact build native member name is not canonical")
     return value
 
 
 def _require_digest(value: object, *, label: str) -> str:
     if type(value) is not str or _SHA256.fullmatch(value) is None:
-        raise FullC6NativeOutputError(f"Full C6 {label} digest is invalid")
+        raise FullC6NativeOutputError(f"artifact build {label} digest is invalid")
     return value
 
 
@@ -1326,17 +1319,17 @@ def _same_directory_stamp(first: os.stat_result, second: os.stat_result) -> bool
 def _current_uid() -> int:
     getter = getattr(os, "geteuid", None) or getattr(os, "getuid", None)
     if getter is None:
-        raise FullC6NativeOutputError("Full C6 native state requires POSIX ownership")
+        raise FullC6NativeOutputError("artifact build native state requires POSIX ownership")
     return int(getter())
 
 
 def _fcntl_module() -> ModuleType:
     if os.name != "posix":
-        raise FullC6NativeOutputError("Full C6 native state locking requires POSIX")
+        raise FullC6NativeOutputError("artifact build native state locking requires POSIX")
     try:
         return importlib.import_module("fcntl")
     except ImportError as exc:
-        raise FullC6NativeOutputError("Full C6 native state locking is unavailable") from exc
+        raise FullC6NativeOutputError("artifact build native state locking is unavailable") from exc
 
 
 def _lock_directory(descriptor: int) -> None:

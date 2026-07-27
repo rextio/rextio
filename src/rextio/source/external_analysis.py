@@ -1,4 +1,4 @@
-"""Exact-byte C5.2 analysis foundation for external pure-Python source.
+"""Exact-byte analysis foundation for external pure-Python source.
 
 This module deliberately stops before project call linkage, code generation, or
 build authorization.  It accepts an immutable byte snapshot that has already

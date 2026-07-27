@@ -22,13 +22,15 @@ def canonical_full_c6_build_input_name(logical_path: str, role: str) -> str:
     evidence role is rewritten.
     """
     if type(logical_path) is not str or type(role) is not str:
-        raise TypeError("Full C6 build-input identity fields must be strings")
+        raise TypeError("artifact build-input identity fields must be strings")
     if role in _GENERATED_INPUT_ROLES and logical_path.startswith(
         _GENERATED_EVIDENCE_PREFIX
     ):
         suffix = logical_path[len(_GENERATED_EVIDENCE_PREFIX) :]
         if not suffix:
-            raise ValueError("Full C6 generated build-input identity is incomplete")
+            raise ValueError(
+                "artifact generated build-input identity is incomplete"
+            )
         return f"{_GENERATED_BUILD_INPUT_PREFIX}{suffix}"
     return logical_path
 

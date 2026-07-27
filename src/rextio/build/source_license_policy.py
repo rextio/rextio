@@ -1,4 +1,4 @@
-"""Bounded C6.12 owner policy for one exact C6.10 source/output scope."""
+"""Bounded owner policy for one exact source-transformation scope."""
 
 from __future__ import annotations
 
@@ -84,11 +84,11 @@ def _collect_project_source_license_policy_verification(
 def _reconstruct_transformation_verification(
     value: SourceTransformationVerification,
 ) -> SourceTransformationVerification:
-    """Re-run the closed C6.10 model invariants before trusting its digest."""
+    """Re-run closed transformation model invariants before trusting its digest."""
     if type(value) is not SourceTransformationVerification:
-        raise TypeError("project source license policy requires a C6.10 receipt")
+        raise TypeError("project source license policy requires a transformation receipt")
     if type(value.function_qualnames) is not tuple or type(value.source_inputs) is not tuple:
-        raise TypeError("project source license policy C6.10 collections are invalid")
+        raise TypeError("project source license policy transformation collections are invalid")
     rebuilt = SourceTransformationVerification(
         source_transformation_inventory_sha256=(value.source_transformation_inventory_sha256),
         source_input_set_sha256=value.source_input_set_sha256,
@@ -108,7 +108,7 @@ def _reconstruct_transformation_verification(
         authority=value.authority,
     )
     if rebuilt != value:
-        raise ValueError("project source license policy C6.10 receipt is noncanonical")
+        raise ValueError("project source license policy transformation receipt is noncanonical")
     return rebuilt
 
 

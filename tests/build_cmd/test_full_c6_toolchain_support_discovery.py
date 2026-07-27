@@ -1,4 +1,4 @@
-"""Focused tests for fixed-profile Full C6 support discovery."""
+"""Focused tests for fixed-profile artifact contract support discovery."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def _write_strict_bootstrap_config(
                 (
                     'artifact_signing_request_output = '
                     '".rextio/full-c6-state/'
-                    'rextio.full-c6-final-authorization-request.json"'
+                    'rextio.artifact-authorization-request.json"'
                 ),
                 "artifact_repeat_builds = 2",
                 "",
@@ -568,7 +568,7 @@ def test_macos_quiescence_does_not_accept_continuous_verification_drift(
         assert observed_lock is fixture_lock
         events.append("verify")
         raise support.FullC6ToolchainSupportError(
-            "Full C6 support bytes differ from the exact configured lock"
+            "artifact contract support bytes differ from the exact configured lock"
         ) from drift
 
     monkeypatch.setattr(
@@ -1052,7 +1052,7 @@ def test_bootstrap_rejects_unsupported_host_before_tool_discovery(
     authority.mkdir(mode=0o700)
 
     def unsupported() -> str:
-        raise host.FullC6HostInputsError("unsupported Full C6 host")
+        raise host.FullC6HostInputsError("unsupported artifact contract host")
 
     monkeypatch.setattr(host, "_require_supported_host", unsupported)
 
@@ -1325,7 +1325,7 @@ def test_macos_fixed_xcode_layout_rejects_resource_near_misses_path_privately(
 
     message = str(captured.value)
     assert message == (
-        "Full C6 Xcode clang resource differs from the fixed version profile"
+        "artifact build Xcode clang resource differs from the fixed version profile"
     )
     assert os.fspath(candidate) not in message
     assert "/Applications" not in message

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterator
 from contextlib import contextmanager
 import io
+import inspect
 import json
 import os
 from pathlib import Path
@@ -344,7 +346,7 @@ def test_bootstrap_lifecycle_preserves_context_and_writes_non_authorizing_result
             {
                 "created": True,
                 "distribution_authorized": False,
-                "filename": "rextio.full-c6-policy.bootstrap.json",
+                "filename": "rextio.artifact-policy.bootstrap.json",
                 "status": "bootstrap-required",
             }
         )
@@ -360,10 +362,10 @@ def test_bootstrap_lifecycle_preserves_context_and_writes_non_authorizing_result
 
     report = _report(project)
     assert report["lifecycle"] == "bootstrap-required"
-    assert report["status"] == "full-c6-bootstrap-required"
+    assert report["status"] == "artifact-policy-bootstrap-required"
     assert report["distribution_authorized"] is False
     assert report["analysis"]["project_root"] == "."  # type: ignore[index]
-    assert report["full_c6"]["production_authority"] == authority.to_dict()  # type: ignore[index]
+    assert report["artifact_contract"]["production_authority"] == authority.to_dict()  # type: ignore[index]
     assert events == ["host-enter", "production-authority", "policy-bootstrap", "host-exit"]
     assert "next owner action" in stdout.getvalue()
     assert stderr.getvalue() == ""
@@ -386,7 +388,7 @@ def test_strict_lifecycle_projects_every_nested_file_path_once_for_both_reports(
             "cpython",
             reporter,
             lifecycle="bootstrap-required",
-            status="full-c6-bootstrap-required",
+            status="artifact-policy-bootstrap-required",
             distribution_authorized=False,
             details={},
             next_action="complete the owner policy",
@@ -432,7 +434,7 @@ def test_strict_success_projection_failure_uses_fixed_stderr_boundary(
             "cpython",
             reporter,
             lifecycle="bootstrap-required",
-            status="full-c6-bootstrap-required",
+            status="artifact-policy-bootstrap-required",
             distribution_authorized=False,
             details={},
             next_action="must not be serialized",
@@ -672,9 +674,9 @@ def test_signing_lifecycle_is_idempotent_and_emits_json_primary_result(
     report = _report(project)
     assert finalizations == 2
     assert primary["lifecycle"] == "signing-required"
-    assert primary["status"] == "full-c6-signing-required"
+    assert primary["status"] == "artifact-signing-required"
     assert primary["distribution_authorized"] is False
-    assert report["full_c6"]["signing_request_receipt"]["already_present"] is True  # type: ignore[index]
+    assert report["artifact_contract"]["signing_request_receipt"]["already_present"] is True  # type: ignore[index]
     assert second_stderr.getvalue() == ""
     assert not (project / "dist").exists()
 
@@ -741,9 +743,9 @@ def test_publication_lifecycle_uses_exact_adapter_and_reports_receipt(
         "host-exit",
     ]
     assert primary["lifecycle"] == "publication-required"
-    assert primary["status"] == "full-c6-published"
+    assert primary["status"] == "artifact-published"
     assert primary["distribution_authorized"] is True
-    assert report["full_c6"]["publication_receipt"]["publication_completed"] is True  # type: ignore[index]
+    assert report["artifact_contract"]["publication_receipt"]["publication_completed"] is True  # type: ignore[index]
     assert stderr.getvalue() == ""
     assert (project / "dist" / "demo-0.1.0-cp311.full-c6").is_dir()
 
@@ -837,7 +839,7 @@ def test_completed_publication_has_no_fallible_context_cleanup(
     assert _run_lifecycle(project, config, preflight, reporter) == 0
 
     report = _report(project)
-    assert report["status"] == "full-c6-published"
+    assert report["status"] == "artifact-published"
     assert report["distribution_authorized"] is True
     assert events[-1] == "host-exit"
     assert stdout.getvalue()
@@ -898,19 +900,19 @@ def test_publication_domain_failures_are_redacted_and_fail_closed(
     ("message", "expected"),
     [
         (
-            "Full C6 production authority collection failed closed",
+            "artifact build production authority collection failed closed",
             "production-collection-failed",
         ),
         (
-            "Full C6 production toolchain support authority is invalid",
+            "artifact build production toolchain support authority is invalid",
             "production-toolchain-support-invalid",
         ),
         (
-            "Full C6 production toolchain support authority failed closed",
+            "artifact build production toolchain support authority failed closed",
             "production-toolchain-support",
         ),
         (
-            "Full C6 production prerequisites are invalid",
+            "artifact build production prerequisites are invalid",
             "production-prerequisites-invalid",
         ),
         (
@@ -918,19 +920,19 @@ def test_publication_domain_failures_are_redacted_and_fail_closed(
             "production-cargo-workspace-mismatch",
         ),
         (
-            "Full C6 production toolchain support authority was replaced",
+            "artifact build production toolchain support authority was replaced",
             "production-toolchain-support-replaced",
         ),
         (
-            "Full C6 effective config is not canonical",
+            "artifact build effective config is not canonical",
             "production-config-noncanonical",
         ),
         (
-            "Full C6 production lifecycle is disabled",
+            "artifact build production lifecycle is disabled",
             "production-lifecycle-disabled",
         ),
         (
-            "Full C6 production requires exact preflight",
+            "artifact build production requires exact preflight",
             "production-preflight-invalid",
         ),
         (
@@ -948,6 +950,49 @@ def test_full_c6_failure_reason_codes_cover_direct_pre_cargo_production_gates(
     assert build_cmd._full_c6_failure_reason_code(error) == expected
 
 
+def _direct_exception_literals(error_type: type[BaseException]) -> set[str]:
+    module = sys.modules[error_type.__module__]
+    tree = ast.parse(inspect.getsource(module))
+    result: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+            continue
+        function = node.exc.func
+        function_name = (
+            function.id
+            if isinstance(function, ast.Name)
+            else function.attr
+            if isinstance(function, ast.Attribute)
+            else None
+        )
+        if function_name != error_type.__name__ or not node.exc.args:
+            continue
+        message = node.exc.args[0]
+        if isinstance(message, ast.Constant) and isinstance(message.value, str):
+            result.add(message.value)
+    return result
+
+
+def test_static_failure_reason_keys_exactly_match_producer_exceptions() -> None:
+    dynamic_prefixes = (
+        "strict Cargo build failed with exit status ",
+        "strict native sandbox build failed: ",
+    )
+    observed_by_type: dict[type[BaseException], set[str]] = {}
+
+    for error_type, message in build_cmd._FULL_C6_FAILURE_REASON_CODES:
+        if message.startswith(dynamic_prefixes):
+            continue
+        observed = observed_by_type.setdefault(
+            error_type,
+            _direct_exception_literals(error_type),
+        )
+        assert message in observed, (
+            f"{error_type.__name__} reason-code key is not an exact "
+            f"producer exception: {message!r}"
+        )
+
+
 def test_full_c6_failure_reason_code_prefers_exact_deep_cause() -> None:
     executor = build_cmd.FullC6ExecutorError(
         "strict Cargo build failed with exit status 125"
@@ -957,7 +1002,7 @@ def test_full_c6_failure_reason_code_prefers_exact_deep_cause() -> None:
     )
     external.__cause__ = executor
     production = build_cmd.FullC6ProductionError(
-        "Full C6 production authority collection failed closed"
+        "artifact build production authority collection failed closed"
     )
     production.__cause__ = external
 

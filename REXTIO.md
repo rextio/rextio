@@ -1,21 +1,23 @@
-# Rextio 0.1.7 Notes
+# Rextio 0.1.8 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-> **Release status:** Package version **0.1.7** is published to PyPI on
-> 2026-07-27 (plugin API **1.7**; tooling contract **2.28.0**), superseding
-> **0.1.6** (2026-07-26; plugin API **1.6**; tooling contract **2.27.0**;
+> **Release status:** Package version **0.1.8** is published to PyPI on
+> 2026-07-27 (plugin API **1.7**; tooling contract **3.0.0**), superseding
+> **0.1.7** (2026-07-27; plugin API **1.7**; tooling contract **2.28.0**),
+> which superseded **0.1.6** (2026-07-26; plugin API **1.6**; tooling contract **2.27.0**;
 > readiness policy **11**). Related 0.1.2-line
 > releases were published in the completed strict order: rextio-lsp 0.1.1 →
 > core 0.1.2 → rextio-numpy 0.1.1. Release Train B also completed consumer
 > first: rextio-lsp 0.1.2 → core 0.1.4.
 > Release Train C ships in core 0.1.5, with its host source-AOT, executable,
-> and bounded Full-C6/C5.2 surfaces remaining Experimental/Alpha.
+> and bounded strict artifact-contract surfaces remaining Experimental/Alpha.
 > Core 0.1.6 adds bounded plugin comparison expressions, Device Provider API 1
 > selection/preflight/build wiring, and static device-domain lowering
-> authorization. Core 0.1.7 adds optional plugin function-scope RAII guards.
+> authorization. Core 0.1.7 adds optional plugin function-scope RAII guards;
+> Core 0.1.8 publishes semantic `artifact-*` contract identities.
 > Those additions remain Experimental/Alpha and do not themselves claim CUDA
 > framework support or certified accelerator execution.
 > See [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
@@ -42,7 +44,7 @@ legacy route/status/rejection meanings.
 
 **0.1.5** advances to plugin API **1.4** and tooling contract **2.24.0** with
 readiness policy **11**, shipping the bounded Train C surfaces without claiming
-broad Full C6, general package AOT, CUDA support, or heavy host-lifecycle CI
+general artifact authorization, general package AOT, CUDA support, or heavy host-lifecycle CI
 certification. See
 [docs/specs/](./docs/README.md) and [CHANGELOG.md](./CHANGELOG.md); the core
 workflow below is unchanged from 0.1.0.
@@ -59,6 +61,11 @@ fail closed and are not CUDA framework support or certification claims.
 generated native functions (Core-owned bindings after input conversion,
 across the native body, and explicitly unwound before normal output
 materialization). Pre-1.7 providers keep load and generated-output behavior.
+
+**0.1.8** retains plugin API **1.7** and advances the tooling contract to
+**3.0.0**, replacing public artifact lifecycle identities with semantic
+`artifact-*` names. Exact 0.1.7 persisted roots remain legacy read/verification
+inputs only.
 
 Rextio proves a focused hybrid build workflow:
 

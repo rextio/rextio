@@ -1,4 +1,4 @@
-"""Typed PEP 639 material for the bounded Full C6 output-wheel profile."""
+"""Typed PEP 639 material for the bounded artifact build output-wheel profile."""
 
 from __future__ import annotations
 
@@ -10,6 +10,14 @@ from pathlib import PurePosixPath, PureWindowsPath
 import re
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    OUTPUT_LICENSE_CONTRACT_DOMAIN,
+    OUTPUT_LICENSE_DERIVATION_DOMAIN,
+    OUTPUT_LICENSE_EXPRESSION_DOMAIN,
+    OUTPUT_LICENSE_MAPPING_DOMAIN,
+    OUTPUT_LICENSE_SOURCE_LOCK_DOMAIN,
+)
 from rextio.build.full_c6_license_materials import (
     FullC6LicenseMaterialFile,
     FullC6LicenseMaterialsTransaction,
@@ -35,12 +43,20 @@ MAX_OUTPUT_WHEEL_LICENSE_FILE_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_WHEEL_LICENSE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_WHEEL_LICENSE_PATH_CHARS = 512
 
-FULL_C6_OUTPUT_LICENSE_DERIVATION_DOMAIN = "rextio.full-c6-output-license-derivation.v2"
-FULL_C6_OUTPUT_LICENSE_EXPRESSION_DOMAIN = "rextio.full-c6-output-license-expression.v1"
-FULL_C6_OUTPUT_LICENSE_CONTRACT_DOMAIN = "rextio.full-c6-output-license-contract.v2"
-FULL_C6_OUTPUT_LICENSE_MAPPING_DOMAIN = "rextio.full-c6-output-license-mapping.v2"
+FULL_C6_OUTPUT_LICENSE_DERIVATION_DOMAIN = CURRENT.string_value(
+    OUTPUT_LICENSE_DERIVATION_DOMAIN
+)
+FULL_C6_OUTPUT_LICENSE_EXPRESSION_DOMAIN = CURRENT.string_value(
+    OUTPUT_LICENSE_EXPRESSION_DOMAIN
+)
+FULL_C6_OUTPUT_LICENSE_CONTRACT_DOMAIN = CURRENT.string_value(
+    OUTPUT_LICENSE_CONTRACT_DOMAIN
+)
+FULL_C6_OUTPUT_LICENSE_MAPPING_DOMAIN = CURRENT.string_value(
+    OUTPUT_LICENSE_MAPPING_DOMAIN
+)
 FULL_C6_OUTPUT_LICENSE_SOURCE_LOCK_DOMAIN = (
-    "rextio.full-c6-output-license-source-lock-verification.v1"
+    CURRENT.string_value(OUTPUT_LICENSE_SOURCE_LOCK_DOMAIN)
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -222,7 +238,7 @@ class FullC6OutputLicenseMaterialMapping:
             self.domain != FULL_C6_OUTPUT_LICENSE_MAPPING_DOMAIN
             or type(self.source_subject_identity) is not str
             or re.fullmatch(
-                r"urn:rextio:full-c6-license-material:"
+                r"urn:rextio:artifact-evidence:license-material:"
                 r"(?:project|cargo|external):[0-9a-f]{64}",
                 self.source_subject_identity,
             )
@@ -237,7 +253,7 @@ class FullC6OutputLicenseMaterialMapping:
             or isinstance(self.size, bool)
             or not 1 <= self.size <= MAX_OUTPUT_WHEEL_LICENSE_FILE_BYTES
         ):
-            raise ValueError("Full C6 output license material mapping is invalid")
+            raise ValueError("artifact build output license material mapping is invalid")
 
     def to_dict(self) -> dict[str, object]:
         """Return logical paths and content identities, never retained bytes."""
@@ -302,13 +318,13 @@ class FullC6OutputLicenseObservation:
             or self.authorizes_build is not False
             or self.authorizes_distribution is not False
         ):
-            raise ValueError("Full C6 output license observation is invalid")
+            raise ValueError("artifact build output license observation is invalid")
         output_aliases = tuple(_alias(item.output_path) for item in self.mappings)
         source_aliases = tuple(_alias(item.source_logical_name) for item in self.mappings)
         if len(output_aliases) != len(set(output_aliases)) or len(source_aliases) != len(
             set(source_aliases)
         ):
-            raise ValueError("Full C6 output license observation contains aliases")
+            raise ValueError("artifact build output license observation contains aliases")
 
     @property
     def digest(self) -> str:
@@ -480,7 +496,7 @@ def _derive_full_c6_output_license(
         or not validate_full_c6_license_materials_transaction(transaction)
     ):
         raise FullC6OutputLicenseDerivationError(
-            "Full C6 license materials transaction is invalid or stale"
+            "artifact build license materials transaction is invalid or stale"
         )
 
     source_lock_sha256 = _source_lock_verification_digest(source_context)
@@ -617,7 +633,7 @@ def _derive_full_c6_output_license(
         ) from error
     if not validate_full_c6_license_materials_transaction(transaction):
         raise FullC6OutputLicenseDerivationError(
-            "Full C6 license materials transaction changed during derivation"
+            "artifact build license materials transaction changed during derivation"
         )
     if not _validate_external_source_context(source_context):
         raise FullC6OutputLicenseDerivationError(
@@ -760,7 +776,7 @@ def _external_source_subject_identity(
 ) -> str:
     identity_sha256 = _digest(
         {
-            "domain": "rextio.full-c6-output-license-external-subject.v1",
+            "domain": "rextio.artifact-output-license-external-subject.v2",
             "package": source_context.wheel.package,
             "distribution": _canonical_name(source_context.wheel.distribution),
             "version": source_context.wheel.version,
@@ -768,7 +784,7 @@ def _external_source_subject_identity(
             "source_lock_verification_sha256": source_lock_sha256,
         }
     )
-    return f"urn:rextio:full-c6-license-material:external:{identity_sha256}"
+    return f"urn:rextio:artifact-evidence:license-material:external:{identity_sha256}"
 
 
 def _require_exact_material_payload(
@@ -851,7 +867,7 @@ def _expression_digest(expression: str) -> str:
 def _output_verification_digest(verification: OutputWheelLicenseVerification) -> str:
     return _digest(
         {
-            "domain": "rextio.full-c6-output-license-wheel-verification.v2",
+            "domain": "rextio.artifact-output-license-wheel-verification.v3",
             "expression": verification.expression,
             "metadata_member": verification.metadata_member,
             "metadata_sha256": verification.metadata_sha256,

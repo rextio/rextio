@@ -1,4 +1,4 @@
-"""Focused adversarial tests for strict Full C6 host prerequisites."""
+"""Focused adversarial tests for strict artifact contract host prerequisites."""
 
 from __future__ import annotations
 
@@ -724,7 +724,7 @@ def test_inherited_environment_is_reduced_to_two_discovery_values() -> None:
 def _host_config(**build_overrides: object) -> RextioConfig:
     values: dict[str, object] = {
         "artifact_signing_request_output": (
-            "state/rextio.full-c6-final-authorization-request.json"
+            "state/rextio.artifact-authorization-request.json"
         ),
         **build_overrides,
     }
@@ -1905,7 +1905,7 @@ def test_publication_plan_requires_valid_final_authority_and_real_wheel(
             _ = prerequisites.first_quarantine_root
         plan = prerequisites.derive_publication_plan(authority)
         assert plan.wheel_filename == wheel.name
-        assert plan.bundle_name == f"{wheel.name.removesuffix('.whl')}.full-c6"
+        assert plan.bundle_name == f"{wheel.name.removesuffix('.whl')}.artifact-bundle"
         assert (project / "dist").is_dir()
         assert str(project) not in repr(plan)
         assert not hasattr(plan, "to_dict")
@@ -2060,5 +2060,5 @@ def test_real_host_probe_is_availability_gated() -> None:
     try:
         target = host_inputs._require_supported_host()
     except FullC6HostInputsError:
-        pytest.skip("this runner is outside the supported Full C6 host pair")
+        pytest.skip("this runner is outside the supported artifact contract host pair")
     assert target in {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}

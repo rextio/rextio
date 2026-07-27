@@ -1,4 +1,4 @@
-"""Strict C5.2 linkage for signed, exact external scalar source.
+"""Strict linkage for signed, exact external scalar source.
 
 The registry is deliberately separate from :class:`ProjectAnalysis`: external
 modules never become project modules or Python exports.  It proves direct,
@@ -1110,7 +1110,7 @@ def analysis_target_is_mutated(
     """Reject project-authority or exact-source mutation of an external target.
 
     The ordinary project mutation index is intentionally rooted in project and
-    known runtime symbols.  A C5.2 package is neither, so a write such as
+    known runtime symbols. An external source-native package is neither, so a write such as
     ``pkg.external_helper = replacement`` can otherwise fall outside that
     index.  Re-read the exact project module and conservatively collect writes
     through every import alias that resolves to the external target.

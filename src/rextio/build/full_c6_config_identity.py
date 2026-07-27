@@ -1,6 +1,6 @@
-"""Path-safe identity for the exact resolved Full C6 configuration.
+"""Path-safe identity for the exact resolved artifact build configuration.
 
-Full C6 consumes the resolved :class:`~rextio.config.schema.RextioConfig`, not
+artifact build consumes the resolved :class:`~rextio.config.schema.RextioConfig`, not
 only ``rextio.toml``.  CLI and environment overrides therefore have to be
 part of the signed build-input graph as well.  This module canonicalizes the
 complete typed configuration and exposes only an opaque digest and a bounded
@@ -26,6 +26,13 @@ import re
 from typing import Mapping
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    EFFECTIVE_CONFIG_AGGREGATE_ID,
+    EFFECTIVE_CONFIG_DOMAIN,
+    FINAL_SIGNATURE_LIFECYCLE_MARKER,
+    POLICY_MANIFEST_DIGEST_LIFECYCLE_MARKER,
+)
 from rextio.build.input_closure import BuildInputAggregateIdentity
 from rextio.config.schema import (
     BuildConfig,
@@ -43,12 +50,16 @@ from rextio.config.schema import (
 )
 
 
-FULL_C6_EFFECTIVE_CONFIG_DOMAIN = "rextio.full-c6-effective-config.v1"
-FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID = "full-c6-effective-config"
+FULL_C6_EFFECTIVE_CONFIG_DOMAIN = CURRENT.string_value(EFFECTIVE_CONFIG_DOMAIN)
+FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID = CURRENT.string_value(
+    EFFECTIVE_CONFIG_AGGREGATE_ID
+)
 FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_KIND = "effective-config"
-FULL_C6_FINAL_SIGNATURE_LIFECYCLE_MARKER = "full-c6-final-signature-is-separately-bound"
+FULL_C6_FINAL_SIGNATURE_LIFECYCLE_MARKER = CURRENT.string_value(
+    FINAL_SIGNATURE_LIFECYCLE_MARKER
+)
 FULL_C6_POLICY_MANIFEST_DIGEST_LIFECYCLE_MARKER = (
-    "full-c6-policy-manifest-digest-is-separately-bound"
+    CURRENT.string_value(POLICY_MANIFEST_DIGEST_LIFECYCLE_MARKER)
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_FULL_C6_EFFECTIVE_CONFIG_DEPTH = 32
@@ -75,7 +86,7 @@ _CONFIG_SECTION_TYPES = (
 
 
 class FullC6ConfigIdentityError(RuntimeError):
-    """The resolved Full C6 configuration has no safe canonical identity."""
+    """The resolved artifact build configuration has no safe canonical identity."""
 
 
 @dataclass(slots=True)
@@ -87,25 +98,25 @@ class _NormalizationBudget:
     def consume_node(self) -> None:
         self.nodes += 1
         if self.nodes > MAX_FULL_C6_EFFECTIVE_CONFIG_NODES:
-            raise ValueError("Full C6 effective config exceeds its node bound")
+            raise ValueError("artifact build effective config exceeds its node bound")
 
     def consume_leaf(self) -> None:
         self.leaves += 1
         if self.leaves > MAX_FULL_C6_EFFECTIVE_CONFIG_MEMBERS:
-            raise ValueError("Full C6 effective config exceeds its member bound")
+            raise ValueError("artifact build effective config exceeds its member bound")
 
     def consume_string(self, value: str) -> None:
         if value != unicodedata.normalize("NFC", value) or any(
             ord(character) < 32 or ord(character) == 127 for character in value
         ):
-            raise ValueError("Full C6 effective config contains noncanonical text")
+            raise ValueError("artifact build effective config contains noncanonical text")
         size = len(value.encode("utf-8"))
         if size > MAX_FULL_C6_EFFECTIVE_CONFIG_STRING_BYTES:
-            raise ValueError("Full C6 effective config string exceeds its byte bound")
+            raise ValueError("artifact build effective config string exceeds its byte bound")
         self.string_bytes += size
         if self.string_bytes > MAX_FULL_C6_EFFECTIVE_CONFIG_TOTAL_STRING_BYTES:
             raise ValueError(
-                "Full C6 effective config strings exceed their aggregate byte bound"
+                "artifact build effective config strings exceed their aggregate byte bound"
             )
 
 
@@ -119,15 +130,15 @@ class EffectiveFullC6ConfigIdentity:
 
     def __post_init__(self) -> None:
         if self.domain != FULL_C6_EFFECTIVE_CONFIG_DOMAIN:
-            raise ValueError("Full C6 effective-config domain is invalid")
+            raise ValueError("artifact build effective-config domain is invalid")
         if type(self.digest) is not str or _SHA256_RE.fullmatch(self.digest) is None:
-            raise ValueError("Full C6 effective-config digest is invalid")
+            raise ValueError("artifact build effective-config digest is invalid")
         if (
             type(self.member_count) is not int
             or isinstance(self.member_count, bool)
             or not 1 <= self.member_count <= MAX_FULL_C6_EFFECTIVE_CONFIG_MEMBERS
         ):
-            raise ValueError("Full C6 effective-config member count is invalid")
+            raise ValueError("artifact build effective-config member count is invalid")
 
     def to_dict(self) -> dict[str, object]:
         """Return only the canonical domain, digest, and bounded count."""
@@ -152,7 +163,7 @@ def capture_effective_full_c6_config_identity(
 ) -> EffectiveFullC6ConfigIdentity:
     """Canonicalize every resolved config field and return its opaque identity."""
     if type(config) is not RextioConfig:
-        raise FullC6ConfigIdentityError("Full C6 effective config requires an exact RextioConfig")
+        raise FullC6ConfigIdentityError("artifact build effective config requires an exact RextioConfig")
     _require_exact_config_model(config)
     try:
         budget = _NormalizationBudget()
@@ -174,10 +185,10 @@ def capture_effective_full_c6_config_identity(
             allow_nan=False,
         ).encode("utf-8")
         if len(canonical) > MAX_FULL_C6_EFFECTIVE_CONFIG_CANONICAL_BYTES:
-            raise ValueError("Full C6 effective config canonical JSON is too large")
+            raise ValueError("artifact build effective config canonical JSON is too large")
     except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise FullC6ConfigIdentityError(
-            "Full C6 effective config cannot be canonicalized exactly"
+            "artifact build effective config cannot be canonicalized exactly"
         ) from exc
     return EffectiveFullC6ConfigIdentity(
         digest=hashlib.sha256(canonical).hexdigest(),
@@ -196,7 +207,7 @@ def effective_full_c6_config_identity_from_aggregate(
         or value.metadata_digest is not None
     ):
         raise FullC6ConfigIdentityError(
-            "Full C6 effective-config aggregate is missing or noncanonical"
+            "artifact build effective-config aggregate is missing or noncanonical"
         )
     try:
         return EffectiveFullC6ConfigIdentity(
@@ -204,7 +215,7 @@ def effective_full_c6_config_identity_from_aggregate(
             member_count=value.member_count,
         )
     except (TypeError, ValueError) as exc:
-        raise FullC6ConfigIdentityError("Full C6 effective-config aggregate is invalid") from exc
+        raise FullC6ConfigIdentityError("artifact build effective-config aggregate is invalid") from exc
 
 
 def _require_exact_config_model(config: RextioConfig) -> None:
@@ -214,14 +225,14 @@ def _require_exact_config_model(config: RextioConfig) -> None:
         for section, expected in zip(sections, _CONFIG_SECTION_TYPES, strict=True)
     ):
         raise FullC6ConfigIdentityError(
-            "Full C6 effective config contains a noncanonical typed section"
+            "artifact build effective config contains a noncanonical typed section"
         )
     target_options = config.target.build_options
     if type(target_options) is not dict or any(
         type(key) is not str or type(value) is not str for key, value in target_options.items()
     ):
         raise FullC6ConfigIdentityError(
-            "Full C6 target build options are not an exact string mapping"
+            "artifact build target build options are not an exact string mapping"
         )
     packages = config.imports.packages
     if type(packages) is not dict or any(
@@ -229,7 +240,7 @@ def _require_exact_config_model(config: RextioConfig) -> None:
         for key, value in packages.items()
     ):
         raise FullC6ConfigIdentityError(
-            "Full C6 import package policies are not in canonical typed form"
+            "artifact build import package policies are not in canonical typed form"
         )
 
 
@@ -241,12 +252,12 @@ def _normalize_value(
     budget: _NormalizationBudget,
 ) -> object:
     if depth > MAX_FULL_C6_EFFECTIVE_CONFIG_DEPTH:
-        raise ValueError("Full C6 effective config exceeds its depth bound")
+        raise ValueError("artifact build effective config exceeds its depth bound")
     budget.consume_node()
     if is_dataclass(value) and not isinstance(value, type):
         dataclass_fields = fields(value)
         if len(dataclass_fields) > MAX_FULL_C6_EFFECTIVE_CONFIG_CONTAINER_ITEMS:
-            raise ValueError("Full C6 effective config dataclass is too large")
+            raise ValueError("artifact build effective config dataclass is too large")
         return {
             item.name: _normalize_value(
                 (
@@ -277,7 +288,7 @@ def _normalize_value(
             len(mapping) > MAX_FULL_C6_EFFECTIVE_CONFIG_CONTAINER_ITEMS
             or any(type(key) is not str for key in mapping)
         ):
-            raise TypeError("Full C6 config mapping keys must be strings")
+            raise TypeError("artifact build config mapping keys must be strings")
         normalized: dict[str, object] = {}
         for key, item in mapping.items():
             budget.consume_string(key)
@@ -289,10 +300,10 @@ def _normalize_value(
             )
         return normalized
     if isinstance(value, Mapping):
-        raise TypeError("Full C6 config mappings must be exact dictionaries")
+        raise TypeError("artifact build config mappings must be exact dictionaries")
     if type(value) is tuple:
         if len(value) > MAX_FULL_C6_EFFECTIVE_CONFIG_CONTAINER_ITEMS:
-            raise ValueError("Full C6 config tuple exceeds its item bound")
+            raise ValueError("artifact build config tuple exceeds its item bound")
         return [
             _normalize_value(
                 item,
@@ -303,7 +314,7 @@ def _normalize_value(
             for item in value
         ]
     if type(value) is list:
-        raise TypeError("Full C6 config sequences must use their typed tuple model")
+        raise TypeError("artifact build config sequences must use their typed tuple model")
     if value is None or type(value) is bool:
         budget.consume_leaf()
         return value
@@ -313,15 +324,15 @@ def _normalize_value(
         return value
     if type(value) is int:
         if value.bit_length() > _MAX_EFFECTIVE_CONFIG_INTEGER_BITS:
-            raise ValueError("Full C6 config integer exceeds its bit bound")
+            raise ValueError("artifact build config integer exceeds its bit bound")
         budget.consume_leaf()
         return value
     if type(value) is float:
         if not math.isfinite(value):
-            raise ValueError("Full C6 config floats must be finite")
+            raise ValueError("artifact build config floats must be finite")
         budget.consume_leaf()
         return value
-    raise TypeError(f"Full C6 config field {field_name or '<root>'} has an unsupported value")
+    raise TypeError(f"artifact build config field {field_name or '<root>'} has an unsupported value")
 __all__ = [
     "EffectiveFullC6ConfigIdentity",
     "FULL_C6_EFFECTIVE_CONFIG_AGGREGATE_ID",

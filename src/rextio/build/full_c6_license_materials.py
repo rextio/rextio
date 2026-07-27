@@ -1,4 +1,4 @@
-"""Process-sealed license materials for the bounded first Full C6 profile.
+"""Process-sealed license materials for the bounded first artifact build profile.
 
 This collector observes machine-readable SPDX declarations and the exact
 metadata/license bytes that accompany the project and every locked Cargo
@@ -23,6 +23,14 @@ import tomllib
 from typing import SupportsIndex
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    LICENSE_DETECTOR_KIND,
+    LICENSE_DETECTOR_PAYLOAD_DOMAIN,
+    LICENSE_DETECTOR_RECEIPT_DOMAIN,
+    LICENSE_MATERIALS_DOMAIN,
+    LICENSE_OBSERVATION_DOMAIN,
+)
 from rextio.build.full_c6_cargo_workspace import (
     FullC6CargoDependencyWorkspaceReceipt,
     FullC6CargoWorkspaceError,
@@ -34,15 +42,17 @@ from rextio.build.full_c6_policy import (
 )
 
 
-FULL_C6_LICENSE_MATERIALS_DOMAIN = "rextio.full-c6-license-materials.v1"
-FULL_C6_LICENSE_OBSERVATION_DOMAIN = "rextio.full-c6-license-observation.v1"
+FULL_C6_LICENSE_MATERIALS_DOMAIN = CURRENT.string_value(LICENSE_MATERIALS_DOMAIN)
+FULL_C6_LICENSE_OBSERVATION_DOMAIN = CURRENT.string_value(
+    LICENSE_OBSERVATION_DOMAIN
+)
 FULL_C6_LICENSE_DETECTOR_PAYLOAD_DOMAIN = (
-    "rextio.full-c6-machine-readable-license-detector-payload.v1"
+    CURRENT.string_value(LICENSE_DETECTOR_PAYLOAD_DOMAIN)
 )
 FULL_C6_LICENSE_DETECTOR_RECEIPT_DOMAIN = (
-    "rextio.full-c6-machine-readable-license-detector-receipt.v1"
+    CURRENT.string_value(LICENSE_DETECTOR_RECEIPT_DOMAIN)
 )
-FULL_C6_LICENSE_DETECTOR_KIND = "full-c6-machine-readable-spdx-metadata-observation"
+FULL_C6_LICENSE_DETECTOR_KIND = CURRENT.string_value(LICENSE_DETECTOR_KIND)
 FULL_C6_LICENSE_MATERIALS_SCOPE = (
     "project-pep621-pep639-and-locked-cargo-registry-packages-v1"
 )
@@ -58,7 +68,8 @@ _PROJECT_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$"
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]{0,127}$")
 _LOGICAL_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@=-]{0,254}$")
 _SUBJECT_IDENTITY = re.compile(
-    r"^urn:rextio:full-c6-license-material:(?:project|cargo):[0-9a-f]{64}$"
+    r"^urn:rextio:artifact-evidence:license-material:"
+    r"(?:project|cargo):[0-9a-f]{64}$"
 )
 _LICENSE_BASENAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
 _CARGO_LEGACY_MIT_APACHE_SPDX = "MIT/Apache-2.0"
@@ -88,15 +99,15 @@ class FullC6LicenseMaterialFile:
             "cargo-license-metadata",
             "cargo-license-file",
         }:
-            raise ValueError("Full C6 license material role is invalid")
+            raise ValueError("artifact build license material role is invalid")
         if type(self.sha256) is not str or _SHA256.fullmatch(self.sha256) is None:
-            raise ValueError("Full C6 license material SHA-256 is invalid")
+            raise ValueError("artifact build license material SHA-256 is invalid")
         if (
             type(self.size) is not int
             or isinstance(self.size, bool)
             or not 1 <= self.size <= MAX_FULL_C6_LICENSE_FILE_BYTES
         ):
-            raise ValueError("Full C6 license material size is outside the bound")
+            raise ValueError("artifact build license material size is outside the bound")
 
     def to_dict(self) -> dict[str, object]:
         """Return the safe exact-file identity without bytes or local paths."""
@@ -126,29 +137,29 @@ class FullC6LicenseObservation:
 
     def __post_init__(self) -> None:
         if self.subject_kind not in {"project", "cargo-registry-package"}:
-            raise ValueError("Full C6 license subject kind is invalid")
+            raise ValueError("artifact build license subject kind is invalid")
         if (
             type(self.subject_identity) is not str
             or _SUBJECT_IDENTITY.fullmatch(self.subject_identity) is None
         ):
-            raise ValueError("Full C6 license subject identity is invalid")
+            raise ValueError("artifact build license subject identity is invalid")
         if type(self.name) is not str or _PROJECT_NAME.fullmatch(self.name) is None:
-            raise ValueError("Full C6 license subject name is invalid")
+            raise ValueError("artifact build license subject name is invalid")
         if self.version is not None and (
             type(self.version) is not str or _VERSION.fullmatch(self.version) is None
         ):
-            raise ValueError("Full C6 license subject version is invalid")
+            raise ValueError("artifact build license subject version is invalid")
         if self.detector_kind != FULL_C6_LICENSE_DETECTOR_KIND:
-            raise ValueError("Full C6 license detector kind is invalid")
+            raise ValueError("artifact build license detector kind is invalid")
         try:
             declared = canonicalize_full_c6_spdx_expression(self.declared_spdx)
             observed = canonicalize_full_c6_spdx_expression(self.observed_spdx)
         except FullC6PolicyError as exc:
-            raise ValueError("Full C6 license SPDX expression is invalid") from exc
+            raise ValueError("artifact build license SPDX expression is invalid") from exc
         if declared != observed:
-            raise ValueError("Full C6 declared and observed SPDX expressions differ")
+            raise ValueError("artifact build declared and observed SPDX expressions differ")
         if type(self.metadata_file) is not FullC6LicenseMaterialFile:
-            raise TypeError("Full C6 license metadata identity is invalid")
+            raise TypeError("artifact build license metadata identity is invalid")
         expected_metadata_role = (
             "project-license-metadata"
             if self.subject_kind == "project"
@@ -160,7 +171,7 @@ class FullC6LicenseObservation:
             else "cargo-license-file"
         )
         if self.metadata_file.role != expected_metadata_role:
-            raise ValueError("Full C6 license metadata role differs from its subject")
+            raise ValueError("artifact build license metadata role differs from its subject")
         if (
             type(self.license_files) is not tuple
             or not self.license_files
@@ -168,20 +179,20 @@ class FullC6LicenseObservation:
             or any(type(item) is not FullC6LicenseMaterialFile for item in self.license_files)
             or any(item.role != expected_license_role for item in self.license_files)
         ):
-            raise ValueError("Full C6 license file identities are invalid")
+            raise ValueError("artifact build license file identities are invalid")
         canonical = tuple(
             sorted(self.license_files, key=lambda item: _logical_alias(item.logical_name))
         )
         aliases = tuple(_logical_alias(item.logical_name) for item in self.license_files)
         if self.license_files != canonical or len(aliases) != len(set(aliases)):
-            raise ValueError("Full C6 license file identities are noncanonical")
+            raise ValueError("artifact build license file identities are noncanonical")
         if self.subject_kind == "project":
             if (
                 self.registry_source is not None
                 or self.registry_checksum is not None
                 or self.metadata_file.logical_name != _PROJECT_METADATA_LOGICAL_NAME
             ):
-                raise ValueError("Full C6 project license subject has Cargo metadata")
+                raise ValueError("artifact build project license subject has Cargo metadata")
         elif (
             type(self.version) is not str
             or type(self.registry_source) is not str
@@ -189,14 +200,14 @@ class FullC6LicenseObservation:
             or type(self.registry_checksum) is not str
             or _SHA256.fullmatch(self.registry_checksum) is None
         ):
-            raise ValueError("Full C6 Cargo license subject identity is incomplete")
+            raise ValueError("artifact build Cargo license subject identity is incomplete")
 
     @property
     def license_file_set_sha256(self) -> str:
         """Return the canonical exact license-file identity-set digest."""
         return _digest(
             {
-                "domain": "rextio.full-c6-license-material-file-set.v1",
+                "domain": "rextio.artifact-license-material-file-set.v2",
                 "files": [item.to_dict() for item in self.license_files],
             }
         )
@@ -261,7 +272,7 @@ class FullC6LicenseObservation:
 
 
 class FullC6LicenseMaterialsTransaction:
-    """Immutable process-local authority over exact Full C6 license materials."""
+    """Immutable process-local authority over exact artifact build license materials."""
 
     __slots__ = (
         "project",
@@ -282,28 +293,28 @@ class FullC6LicenseMaterialsTransaction:
     _transaction_seal: bytes
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 license materials transaction requires the collector")
+        raise TypeError("artifact build license materials transaction requires the collector")
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 license materials transaction is immutable")
+        raise TypeError("artifact build license materials transaction is immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 license materials transaction is immutable")
+        raise TypeError("artifact build license materials transaction is immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 license materials transaction cannot be copied")
+        raise TypeError("artifact build license materials transaction cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 license materials transaction cannot be copied")
+        raise TypeError("artifact build license materials transaction cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 license materials transaction cannot be serialized")
+        raise TypeError("artifact build license materials transaction cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 license materials transaction cannot be serialized")
+        raise TypeError("artifact build license materials transaction cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 license materials transaction cannot be serialized")
+        raise TypeError("artifact build license materials transaction cannot be serialized")
 
     def __repr__(self) -> str:
         return (
@@ -321,7 +332,7 @@ class FullC6LicenseMaterialsTransaction:
         """Return the ordered project-plus-Cargo observation-set digest."""
         return _digest(
             {
-                "domain": "rextio.full-c6-license-observation-set.v1",
+                "domain": "rextio.artifact-license-observation-set.v2",
                 "observations": [
                     self.project.observation_sha256,
                     *(item.observation_sha256 for item in self.cargo_packages),
@@ -358,7 +369,7 @@ def collect_full_c6_license_materials(
 ) -> FullC6LicenseMaterialsTransaction:
     """Collect project and all locked Cargo license materials into one seal."""
     if not validate_full_c6_cargo_dependency_workspace_receipt(cargo_workspace):
-        raise FullC6LicenseMaterialsError("Full C6 Cargo workspace receipt is stale")
+        raise FullC6LicenseMaterialsError("artifact build Cargo workspace receipt is stale")
     root = Path(os.path.abspath(project_root))
     first = _capture_project_snapshot(root)
     second = _capture_project_snapshot(root)
@@ -459,7 +470,7 @@ def _capture_project_snapshot(root: Path) -> _ProjectSnapshot:
                 pass
     name, version, expression = project
     subject_identity = (
-        "urn:rextio:full-c6-license-material:project:"
+        "urn:rextio:artifact-evidence:license-material:project:"
         + _digest(
             {
                 "name": _normalized_project_name(name),
@@ -534,7 +545,7 @@ def _capture_cargo_observations(
     workspace: FullC6CargoDependencyWorkspaceReceipt,
 ) -> tuple[FullC6LicenseObservation, ...]:
     if not validate_full_c6_cargo_dependency_workspace_receipt(workspace):
-        raise FullC6LicenseMaterialsError("Full C6 Cargo workspace receipt is stale")
+        raise FullC6LicenseMaterialsError("artifact build Cargo workspace receipt is stale")
     try:
         payload_pairs = workspace.metadata_payloads()
     except (FullC6CargoWorkspaceError, TypeError, ValueError) as exc:
@@ -622,7 +633,7 @@ def _capture_cargo_observations(
             )
         package_projection = package.package.to_dict()
         subject_identity = (
-            "urn:rextio:full-c6-license-material:cargo:"
+            "urn:rextio:artifact-evidence:license-material:cargo:"
             + _digest(package_projection)
         )
         observations.append(
@@ -678,9 +689,9 @@ def _material_file(logical_name: str, role: str, payload: bytes) -> FullC6Licens
 
 def _validate_transaction_shape(transaction: FullC6LicenseMaterialsTransaction) -> None:
     if type(transaction.project) is not FullC6LicenseObservation:
-        raise TypeError("Full C6 project license observation is invalid")
+        raise TypeError("artifact build project license observation is invalid")
     if transaction.project.subject_kind != "project":
-        raise ValueError("Full C6 project license observation has the wrong subject")
+        raise ValueError("artifact build project license observation has the wrong subject")
     if (
         type(transaction.cargo_packages) is not tuple
         or not transaction.cargo_packages
@@ -689,10 +700,10 @@ def _validate_transaction_shape(transaction: FullC6LicenseMaterialsTransaction) 
         or transaction.cargo_packages
         != tuple(sorted(transaction.cargo_packages, key=lambda item: item.subject_identity))
     ):
-        raise ValueError("Full C6 Cargo license observations are invalid")
+        raise ValueError("artifact build Cargo license observations are invalid")
     subjects = tuple(item.subject_identity for item in transaction.cargo_packages)
     if len(subjects) != len(set(subjects)):
-        raise ValueError("Full C6 Cargo license observations contain a duplicate")
+        raise ValueError("artifact build Cargo license observations contain a duplicate")
     if (
         type(transaction.cargo_workspace_sha256) is not str
         or _SHA256.fullmatch(transaction.cargo_workspace_sha256) is None
@@ -704,17 +715,17 @@ def _validate_transaction_shape(transaction: FullC6LicenseMaterialsTransaction) 
         is not FullC6CargoDependencyWorkspaceReceipt
         or type(transaction._transaction_seal) is not bytes
     ):
-        raise ValueError("Full C6 license transaction private material is invalid")
+        raise ValueError("artifact build license transaction private material is invalid")
     expected_payload_count = 1 + len(transaction.project.license_files)
     if len(transaction._project_payloads) != expected_payload_count:
-        raise ValueError("Full C6 project license retained-byte coverage is incomplete")
+        raise ValueError("artifact build project license retained-byte coverage is incomplete")
     project_files = (transaction.project.metadata_file, *transaction.project.license_files)
     for identity, payload in zip(project_files, transaction._project_payloads, strict=True):
         if identity.size != len(payload) or not hmac.compare_digest(
             identity.sha256,
             hashlib.sha256(payload).hexdigest(),
         ):
-            raise ValueError("Full C6 project retained license bytes are stale")
+            raise ValueError("artifact build project retained license bytes are stale")
 
 
 def _semantic_payload(transaction: FullC6LicenseMaterialsTransaction) -> dict[str, object]:
@@ -957,11 +968,11 @@ def _validate_declared_project_path(value: str) -> None:
 
 def _validate_logical_name(value: str) -> None:
     if type(value) is not str or not value or len(value) > MAX_FULL_C6_LICENSE_PATH_CHARS:
-        raise ValueError("Full C6 license logical name is invalid")
+        raise ValueError("artifact build license logical name is invalid")
     try:
         _validate_declared_project_path(value)
     except FullC6LicenseMaterialsError as exc:
-        raise ValueError("Full C6 license logical name is noncanonical") from exc
+        raise ValueError("artifact build license logical name is noncanonical") from exc
 
 
 def _is_license_basename(value: str) -> bool:

@@ -1,4 +1,4 @@
-"""Non-authorizing owner-policy bootstrap for the bounded Full C6 profile.
+"""Non-authorizing owner-policy bootstrap for the bounded artifact policy.
 
 The strict policy parser accepts only a complete, owner-authored manifest.  It
 must not be weakened merely to discover what the owner still has to complete.
@@ -13,7 +13,7 @@ or observed race fails closed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
@@ -24,6 +24,17 @@ import stat
 from typing import Literal
 import unicodedata
 
+from rextio.artifacts.contract_dialects import (
+    ARTIFACT_CONTRACT_DIALECTS,
+    CURRENT,
+    POLICY_BOOTSTRAP,
+    POLICY_BOOTSTRAP_FILENAME,
+    POLICY_BOOTSTRAP_INPUT_SET_DOMAIN,
+    POLICY_TEMPLATE,
+    ArtifactContractDialect,
+    require_current_dialect,
+    resolve_artifact_contract_dialect,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
     artifact_policy_coverage_inventory_digest,
@@ -43,10 +54,11 @@ from rextio.build.full_c6_policy_template import (
 from rextio.config.schema import RextioConfig
 
 
-FULL_C6_POLICY_BOOTSTRAP_FILENAME = "rextio.full-c6-policy.bootstrap.json"
-FULL_C6_POLICY_BOOTSTRAP_KIND = "full-c6-owner-policy-completion-request"
-FULL_C6_POLICY_BOOTSTRAP_DOMAIN = "rextio.full-c6-owner-policy-bootstrap.v2"
-FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = 2
+_CURRENT_BOOTSTRAP_IDENTITY = CURRENT.identity(POLICY_BOOTSTRAP)
+FULL_C6_POLICY_BOOTSTRAP_FILENAME = CURRENT.filename(POLICY_BOOTSTRAP_FILENAME)
+FULL_C6_POLICY_BOOTSTRAP_KIND = _CURRENT_BOOTSTRAP_IDENTITY.kind
+FULL_C6_POLICY_BOOTSTRAP_DOMAIN = _CURRENT_BOOTSTRAP_IDENTITY.domain
+FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION = _CURRENT_BOOTSTRAP_IDENTITY.schema_version
 
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
@@ -86,7 +98,7 @@ class FullC6PolicyBootstrapError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class FullC6PolicyLifecycle:
-    """Configuration state before the signed Full C6 pipeline runs.
+    """Configuration state before the signed artifact pipeline runs.
 
     ``publication-required`` means that a detached-signature *path* is
     configured.  It is not a published state and grants no authority.  Only
@@ -108,17 +120,19 @@ class FullC6PolicyLifecycle:
             "signing-required": (False, True, True, False),
             "publication-required": (False, True, True, True),
         }
-        if self.status not in expected or (
-            self.bootstrap_allowed,
-            self.owner_policy_pinned,
-            self.signing_request_allowed,
-            self.publication_attempt_allowed,
-        ) != expected[self.status]:
-            raise FullC6PolicyBootstrapError("Full C6 policy lifecycle is inconsistent")
-        if self.published is not False:
-            raise FullC6PolicyBootstrapError(
-                "configuration cannot claim a published Full C6 artifact"
+        if (
+            self.status not in expected
+            or (
+                self.bootstrap_allowed,
+                self.owner_policy_pinned,
+                self.signing_request_allowed,
+                self.publication_attempt_allowed,
             )
+            != expected[self.status]
+        ):
+            raise FullC6PolicyBootstrapError("artifact policy lifecycle is inconsistent")
+        if self.published is not False:
+            raise FullC6PolicyBootstrapError("configuration cannot claim a published artifact")
 
 
 def resolve_full_c6_policy_lifecycle(config: RextioConfig) -> FullC6PolicyLifecycle:
@@ -129,7 +143,7 @@ def resolve_full_c6_policy_lifecycle(config: RextioConfig) -> FullC6PolicyLifecy
     later verified publication attempt; it cannot mint a ``published`` state.
     """
     if type(config) is not RextioConfig:
-        raise FullC6PolicyBootstrapError("Full C6 policy lifecycle requires typed config")
+        raise FullC6PolicyBootstrapError("artifact policy lifecycle requires typed config")
     build = config.build
     if build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY:
         return FullC6PolicyLifecycle(
@@ -148,9 +162,7 @@ def resolve_full_c6_policy_lifecycle(config: RextioConfig) -> FullC6PolicyLifecy
         )
     if manifest_sha256 is None:
         if final_signature is not None:
-            raise FullC6PolicyBootstrapError(
-                "policy bootstrap cannot consume a final signature"
-            )
+            raise FullC6PolicyBootstrapError("policy bootstrap cannot consume a final signature")
         return FullC6PolicyLifecycle(
             status="bootstrap-required",
             bootstrap_allowed=True,
@@ -168,7 +180,7 @@ def resolve_full_c6_policy_lifecycle(config: RextioConfig) -> FullC6PolicyLifecy
             publication_attempt_allowed=False,
         )
     if type(final_signature) is not str or not final_signature:
-        raise FullC6PolicyBootstrapError("Full C6 final signature path is invalid")
+        raise FullC6PolicyBootstrapError("final artifact signature path is invalid")
     return FullC6PolicyLifecycle(
         status="publication-required",
         bootstrap_allowed=False,
@@ -208,21 +220,16 @@ class FullC6PolicyBootstrapInputs:
             self.required_transformation_count,
         )
         if any(type(value) is not int for value in counts):
-            raise FullC6PolicyBootstrapError("Full C6 policy completion counts are invalid")
-        row_count = (
-            self.artifact_observed_component_count
-            + self.external_observed_component_count
-        )
+            raise FullC6PolicyBootstrapError("artifact policy completion counts are invalid")
+        row_count = self.artifact_observed_component_count + self.external_observed_component_count
         if (
             self.artifact_observed_component_count < 0
             or self.external_observed_component_count < 0
             or not 1 <= row_count <= MAX_FULL_C6_POLICY_ROWS
-            or not 1
-            <= self.required_transformation_count
-            <= MAX_FULL_C6_POLICY_TRANSFORMATIONS
+            or not 1 <= self.required_transformation_count <= MAX_FULL_C6_POLICY_TRANSFORMATIONS
         ):
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy completion counts are outside the bounded profile"
+                "artifact policy completion counts are outside the bounded profile"
             )
         class_counts = (
             (
@@ -241,30 +248,23 @@ class FullC6PolicyBootstrapInputs:
                 type(observed_counts) is not tuple
                 or len(observed_counts) != len(class_ids)
                 or any(
-                    type(value) is not int
-                    or value < 0
-                    or value > MAX_FULL_C6_POLICY_ROWS
+                    type(value) is not int or value < 0 or value > MAX_FULL_C6_POLICY_ROWS
                     for value in observed_counts
                 )
                 or sum(observed_counts) != expected_total
             ):
-                raise FullC6PolicyBootstrapError(
-                    "Full C6 policy class coverage counts are not exact"
-                )
+                raise FullC6PolicyBootstrapError("artifact coverage class counts are not exact")
         if self.target_triple not in _TARGET_TRIPLES:
-            raise FullC6PolicyBootstrapError("Full C6 policy bootstrap target is unsupported")
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap target is unsupported")
         if self.build_profile != "release":
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap requires the release build profile"
+                "artifact policy bootstrap requires the release build profile"
             )
 
     @property
     def required_policy_row_count(self) -> int:
-        """Return the exact C6.14-plus-C5.2 policy row count."""
-        return (
-            self.artifact_observed_component_count
-            + self.external_observed_component_count
-        )
+        """Return the combined artifact-coverage and external-source row count."""
+        return self.artifact_observed_component_count + self.external_observed_component_count
 
     def input_aggregates(self) -> dict[str, str]:
         """Return the exact ordered-by-canonical-JSON digest-only input set."""
@@ -278,17 +278,43 @@ class FullC6PolicyBootstrapRequest:
     inputs: FullC6PolicyBootstrapInputs
     trusted_owner_public_key_sha256: str
     technical_template: FullC6TechnicalPolicyTemplate
+    kind: str = field(default=FULL_C6_POLICY_BOOTSTRAP_KIND, init=False)
+    schema_version: int = field(
+        default=FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION,
+        init=False,
+    )
+    domain: str = field(default=FULL_C6_POLICY_BOOTSTRAP_DOMAIN, init=False)
+    _artifact_contract_dialect: str = field(
+        default=CURRENT.name,
+        repr=False,
+        compare=False,
+        kw_only=True,
+    )
 
     def __post_init__(self) -> None:
+        try:
+            dialect = ARTIFACT_CONTRACT_DIALECTS[self._artifact_contract_dialect]
+        except KeyError as exc:
+            raise FullC6PolicyBootstrapError(
+                "artifact policy bootstrap dialect is invalid"
+            ) from exc
+        identity = dialect.identity(POLICY_BOOTSTRAP)
+        object.__setattr__(self, "kind", identity.kind)
+        object.__setattr__(self, "schema_version", identity.schema_version)
+        object.__setattr__(self, "domain", identity.domain)
         if type(self.inputs) is not FullC6PolicyBootstrapInputs:
-            raise FullC6PolicyBootstrapError("Full C6 policy bootstrap inputs are invalid")
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap inputs are invalid")
         _require_sha256(
             self.trusted_owner_public_key_sha256,
             "trusted owner public key",
         )
         if type(self.technical_template) is not FullC6TechnicalPolicyTemplate:
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap technical template is invalid"
+                "artifact policy bootstrap technical template is invalid"
+            )
+        if self.technical_template._artifact_contract_dialect != dialect.name:
+            raise FullC6PolicyBootstrapError(
+                "artifact policy bootstrap contains a mixed template dialect"
             )
         template = self.technical_template
         if (
@@ -312,10 +338,10 @@ class FullC6PolicyBootstrapRequest:
             != self.inputs.combined_authority_partition_sha256
         ):
             raise FullC6PolicyBootstrapError(
-                "Full C6 technical template differs from bootstrap aggregates"
+                "artifact policy technical template differs from bootstrap aggregates"
             )
         if len(self.to_bytes()) > _MAX_BOOTSTRAP_BYTES:
-            raise FullC6PolicyBootstrapError("Full C6 policy bootstrap request is too large")
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap request is too large")
 
     def _payload(self) -> dict[str, object]:
         inputs = self.inputs
@@ -333,9 +359,7 @@ class FullC6PolicyBootstrapRequest:
                         )
                     ],
                     "class_count": len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS),
-                    "observed_component_count": (
-                        inputs.artifact_observed_component_count
-                    ),
+                    "observed_component_count": (inputs.artifact_observed_component_count),
                     "exact_coverage_required": True,
                 },
                 "external_authority": {
@@ -348,9 +372,7 @@ class FullC6PolicyBootstrapRequest:
                         )
                     ],
                     "class_count": len(FULL_C6_EXTERNAL_POLICY_CLASS_IDS),
-                    "observed_component_count": (
-                        inputs.external_observed_component_count
-                    ),
+                    "observed_component_count": (inputs.external_observed_component_count),
                     "exact_coverage_required": True,
                 },
                 "policy_rows": {
@@ -368,24 +390,24 @@ class FullC6PolicyBootstrapRequest:
                 "complete_for_scope_required": True,
             },
             "distribution_authorized": False,
-            "domain": FULL_C6_POLICY_BOOTSTRAP_DOMAIN,
+            "domain": self.domain,
             "input_aggregate_set_sha256": _digest(
                 {
-                    "domain": "rextio.full-c6-policy-bootstrap-input-set.v1",
+                    "domain": ARTIFACT_CONTRACT_DIALECTS[
+                        self._artifact_contract_dialect
+                    ].string_value(POLICY_BOOTSTRAP_INPUT_SET_DOMAIN),
                     "input_aggregates": input_aggregates,
                 }
             ),
             "input_aggregates": input_aggregates,
-            "kind": FULL_C6_POLICY_BOOTSTRAP_KIND,
+            "kind": self.kind,
             "owner_completion_required": True,
-            "schema_version": FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "target": {
                 "build_profile": inputs.build_profile,
                 "target_triple": inputs.target_triple,
             },
-            "trusted_owner_public_key_sha256": (
-                self.trusted_owner_public_key_sha256
-            ),
+            "trusted_owner_public_key_sha256": (self.trusted_owner_public_key_sha256),
             "technical_template_sha256": self.technical_template.template_sha256,
             "technical_template": self.technical_template.to_dict(),
         }
@@ -405,7 +427,7 @@ class FullC6PolicyBootstrapRequest:
             return canonical_json_bytes(self.to_dict())
         except (TypeError, ValueError, RecursionError) as exc:
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap request cannot be serialized"
+                "artifact policy bootstrap request cannot be serialized"
             ) from exc
 
 
@@ -416,10 +438,10 @@ def parse_full_c6_policy_bootstrap_request(
 ) -> FullC6PolicyBootstrapRequest:
     """Parse canonical bounded bootstrap bytes into the exact typed request."""
     if type(value) is not bytes or not value or len(value) > _MAX_BOOTSTRAP_BYTES:
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap bytes are invalid")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap bytes are invalid")
     document = _parse_bootstrap_json(value)
     if canonical_json_bytes(document) != value:
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap JSON is not canonical")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap JSON is not canonical")
     fields = {
         "authority",
         "completion_requirements",
@@ -437,20 +459,36 @@ def parse_full_c6_policy_bootstrap_request(
         "request_sha256",
     }
     if set(document) != fields:
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap schema is invalid")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap schema is invalid")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            POLICY_BOOTSTRAP,
+            kind=document["kind"],
+            schema_version=document["schema_version"],
+            domain=document["domain"],
+        )
+    except ValueError as exc:
+        raise FullC6PolicyBootstrapError(
+            "artifact policy bootstrap claims invalid authority"
+        ) from exc
     if (
-        document["kind"] != FULL_C6_POLICY_BOOTSTRAP_KIND
-        or type(document["schema_version"]) is not int
-        or document["schema_version"] != FULL_C6_POLICY_BOOTSTRAP_SCHEMA_VERSION
-        or document["domain"] != FULL_C6_POLICY_BOOTSTRAP_DOMAIN
-        or document["authority"] != "non-authorizing-observation"
+        document["authority"] != "non-authorizing-observation"
         or document["owner_completion_required"] is not True
         or document["distribution_authorized"] is not False
     ):
-        raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap claims invalid authority"
-        )
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap claims invalid authority")
     template = parse_full_c6_technical_policy_template(document["technical_template"])
+    try:
+        template_dialect = resolve_artifact_contract_dialect(
+            POLICY_TEMPLATE,
+            kind=template.kind,
+            schema_version=template.schema_version,
+            domain=template.domain,
+        )
+    except ValueError as exc:  # pragma: no cover - template parser already enforces this
+        raise FullC6PolicyBootstrapError("artifact policy template metadata is invalid") from exc
+    if template_dialect is not dialect:
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap and template dialects differ")
     aggregates = _bootstrap_dict(
         document["input_aggregates"],
         set(_INPUT_DIGEST_FIELDS),
@@ -470,9 +508,7 @@ def parse_full_c6_policy_bootstrap_request(
             external_class_observed_counts=tuple(
                 item.observed_count for item in template.external_authority.classes
             ),
-            artifact_observed_component_count=(
-                template.artifact_coverage.observed_component_count
-            ),
+            artifact_observed_component_count=(template.artifact_coverage.observed_component_count),
             external_observed_component_count=(
                 template.external_authority.observed_component_count
             ),
@@ -487,27 +523,70 @@ def parse_full_c6_policy_bootstrap_request(
                 "trusted owner public key",
             ),
             technical_template=template,
+            _artifact_contract_dialect=dialect.name,
         )
     except FullC6PolicyBootstrapError:
         raise
     except (TypeError, ValueError) as exc:
-        raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap values are invalid"
-        ) from exc
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap values are invalid") from exc
+    _apply_bootstrap_dialect(request, dialect)
     declared = _require_sha256(document["request_sha256"], "bootstrap request")
     if expected_request_sha256 is not None:
         expected = _require_sha256(expected_request_sha256, "expected bootstrap request")
         if not hmac.compare_digest(declared, expected):
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap request does not match the expected pin"
+                "artifact policy bootstrap request does not match the expected pin"
             )
     if (
         document["technical_template_sha256"] != template.template_sha256
         or not hmac.compare_digest(declared, request.request_sha256)
         or request.to_bytes() != value
     ):
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap request is stale")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap request is stale")
     return request
+
+
+def _apply_bootstrap_dialect(
+    value: FullC6PolicyBootstrapRequest,
+    dialect: ArtifactContractDialect,
+) -> None:
+    identity = dialect.identity(POLICY_BOOTSTRAP)
+    object.__setattr__(value, "kind", identity.kind)
+    object.__setattr__(value, "schema_version", identity.schema_version)
+    object.__setattr__(value, "domain", identity.domain)
+    object.__setattr__(value, "_artifact_contract_dialect", dialect.name)
+
+
+def _bootstrap_request_dialect(
+    value: FullC6PolicyBootstrapRequest,
+) -> ArtifactContractDialect:
+    if type(value) is not FullC6PolicyBootstrapRequest:
+        raise ValueError("policy bootstrap request type is invalid")
+    dialect = resolve_artifact_contract_dialect(
+        POLICY_BOOTSTRAP,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("policy bootstrap dialect marker is inconsistent")
+    return dialect
+
+
+def _technical_template_dialect(
+    value: FullC6TechnicalPolicyTemplate,
+) -> ArtifactContractDialect:
+    if type(value) is not FullC6TechnicalPolicyTemplate:
+        raise ValueError("policy technical template type is invalid")
+    dialect = resolve_artifact_contract_dialect(
+        POLICY_TEMPLATE,
+        kind=value.kind,
+        schema_version=value.schema_version,
+        domain=value.domain,
+    )
+    if value._artifact_contract_dialect != dialect.name:
+        raise ValueError("policy technical template dialect marker is inconsistent")
+    return dialect
 
 
 def _parse_bootstrap_json(value: bytes) -> dict[str, object]:
@@ -516,15 +595,13 @@ def _parse_bootstrap_json(value: bytes) -> dict[str, object]:
         for key, item in pairs:
             if key in result:
                 raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap contains a duplicate object key"
+                    "artifact policy bootstrap contains a duplicate object key"
                 )
             result[key] = item
         return result
 
     def reject_constant(_value: str) -> object:
-        raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap contains non-finite JSON"
-        )
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap contains non-finite JSON")
 
     try:
         parsed = json.loads(
@@ -535,18 +612,16 @@ def _parse_bootstrap_json(value: bytes) -> dict[str, object]:
     except FullC6PolicyBootstrapError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap is not valid JSON"
-        ) from exc
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap is not valid JSON") from exc
     if type(parsed) is not dict:
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap root must be an object")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap root must be an object")
     _assert_bootstrap_depth(parsed, depth=0)
     return parsed
 
 
 def _assert_bootstrap_depth(value: object, *, depth: int) -> None:
     if depth > _MAX_BOOTSTRAP_JSON_DEPTH:
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap nesting is too deep")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap nesting is too deep")
     if type(value) is dict:
         for child in value.values():
             _assert_bootstrap_depth(child, depth=depth + 1)
@@ -561,13 +636,13 @@ def _bootstrap_dict(
     label: str,
 ) -> dict[str, object]:
     if type(value) is not dict or set(value) != fields:
-        raise FullC6PolicyBootstrapError(f"Full C6 policy bootstrap {label} is invalid")
+        raise FullC6PolicyBootstrapError(f"artifact policy bootstrap {label} is invalid")
     return value
 
 
 def _bootstrap_string(value: object, label: str) -> str:
     if type(value) is not str:
-        raise FullC6PolicyBootstrapError(f"Full C6 policy bootstrap {label} is invalid")
+        raise FullC6PolicyBootstrapError(f"artifact policy bootstrap {label} is invalid")
     return value
 
 
@@ -581,12 +656,12 @@ def create_configured_full_c6_policy_bootstrap_request(
     lifecycle = resolve_full_c6_policy_lifecycle(config)
     if lifecycle.status != "bootstrap-required" or not lifecycle.bootstrap_allowed:
         raise FullC6PolicyBootstrapError(
-            "Full C6 owner policy bootstrap is not required by configuration"
+            "artifact policy bootstrap is not required by configuration"
         )
     trusted_key_sha256 = config.build.artifact_trusted_public_key_sha256
     if type(trusted_key_sha256) is not str:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap lacks a trusted public-key digest"
+            "artifact policy bootstrap lacks a trusted public-key digest"
         )
     return create_full_c6_policy_bootstrap_request(
         inputs=inputs,
@@ -602,6 +677,12 @@ def create_full_c6_policy_bootstrap_request(
     technical_template: FullC6TechnicalPolicyTemplate,
 ) -> FullC6PolicyBootstrapRequest:
     """Create the exact request independently of the current lifecycle stage."""
+    try:
+        require_current_dialect(_technical_template_dialect(technical_template))
+    except ValueError as exc:
+        raise FullC6PolicyBootstrapError(
+            "new policy bootstrap requests require the current template dialect"
+        ) from exc
     return FullC6PolicyBootstrapRequest(
         inputs=inputs,
         trusted_owner_public_key_sha256=trusted_owner_public_key_sha256,
@@ -630,9 +711,7 @@ class FullC6PolicyBootstrapMaterialization:
             or self.status != "bootstrap-required"
             or self.distribution_authorized is not False
         ):
-            raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap materialization is invalid"
-            )
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap materialization is invalid")
 
     def to_dict(self) -> dict[str, object]:
         """Return a non-authorizing result without a machine-local path."""
@@ -653,12 +732,21 @@ def materialize_full_c6_policy_bootstrap_request(
 ) -> FullC6PolicyBootstrapMaterialization:
     """Create the canonical private bootstrap file or reuse exact safe bytes."""
     if type(request) is not FullC6PolicyBootstrapRequest:
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap requires a typed request")
+    try:
+        request_dialect = _bootstrap_request_dialect(request)
+        template_dialect = _technical_template_dialect(request.technical_template)
+        require_current_dialect(request_dialect)
+        require_current_dialect(template_dialect)
+    except ValueError as exc:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap requires a typed request"
-        )
+            "legacy policy bootstrap contracts are read/verify-only"
+        ) from exc
+    if request_dialect is not template_dialect:
+        raise FullC6PolicyBootstrapError("policy bootstrap and technical template dialects differ")
     payload = request.to_bytes()
     if not payload or len(payload) > _MAX_BOOTSTRAP_BYTES:
-        raise FullC6PolicyBootstrapError("Full C6 policy bootstrap bytes are invalid")
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap bytes are invalid")
     state_path: Path | str = state_directory
     root_fd = _open_private_state_directory(state_path)
     root_identity = _directory_identity(os.fstat(root_fd))
@@ -666,13 +754,7 @@ def materialize_full_c6_policy_bootstrap_request(
     try:
         _require_no_bootstrap_filename_aliases(root_fd)
         nofollow = _require_nofollow()
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | nofollow
-        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | nofollow
         try:
             descriptor = os.open(
                 FULL_C6_POLICY_BOOTSTRAP_FILENAME,
@@ -684,11 +766,11 @@ def materialize_full_c6_policy_bootstrap_request(
             existing, _stamp = _read_private_file(root_fd)
             if not hmac.compare_digest(existing, payload):
                 raise FullC6PolicyBootstrapError(
-                    "existing Full C6 policy bootstrap bytes differ"
+                    "existing artifact policy bootstrap bytes differ"
                 ) from None
         except OSError as exc:
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap file cannot be created"
+                "artifact policy bootstrap file cannot be created"
             ) from exc
         else:
             created = True
@@ -705,14 +787,14 @@ def materialize_full_c6_policy_bootstrap_request(
                 )
                 if _stat_identity(written) != _stat_identity(linked):
                     raise FullC6PolicyBootstrapError(
-                        "Full C6 policy bootstrap file changed while writing"
+                        "artifact policy bootstrap file changed while writing"
                     )
             except Exception as exc:
                 _unlink_created_file(root_fd, descriptor)
                 if isinstance(exc, FullC6PolicyBootstrapError):
                     raise
                 raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap file changed while writing"
+                    "artifact policy bootstrap file changed while writing"
                 ) from exc
             finally:
                 os.close(descriptor)
@@ -720,14 +802,12 @@ def materialize_full_c6_policy_bootstrap_request(
             if not hmac.compare_digest(observed, payload) or (
                 _stat_identity(stamp) != _stat_identity(written)
             ):
-                raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap final bytes changed"
-                )
+                raise FullC6PolicyBootstrapError("artifact policy bootstrap final bytes changed")
             try:
                 os.fsync(root_fd)
             except OSError as exc:
                 raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap state synchronization failed"
+                    "artifact policy bootstrap state synchronization failed"
                 ) from exc
         _require_no_bootstrap_filename_aliases(root_fd)
         _verify_private_state_directory(state_path, root_identity)
@@ -763,17 +843,12 @@ def materialize_configured_full_c6_policy_bootstrap(
 def _open_private_state_directory(path: Path | str) -> int:
     parts = _validated_absolute_state_path(path)
     nofollow = _require_nofollow()
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0)
-        | nofollow
-    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | nofollow
     try:
         descriptor = os.open("/", flags)
     except OSError as exc:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap filesystem root cannot be opened"
+            "artifact policy bootstrap filesystem root cannot be opened"
         ) from exc
     try:
         for component in parts:
@@ -781,8 +856,7 @@ def _open_private_state_directory(path: Path | str) -> int:
                 child = os.open(component, flags, dir_fd=descriptor)
             except OSError as exc:
                 raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap state path must be a symlink-free "
-                    "directory walk"
+                    "artifact policy bootstrap state path must be a symlink-free directory walk"
                 ) from exc
             try:
                 opened = os.fstat(child)
@@ -791,12 +865,11 @@ def _open_private_state_directory(path: Path | str) -> int:
                     dir_fd=descriptor,
                     follow_symlinks=False,
                 )
-                if (
-                    not stat.S_ISDIR(opened.st_mode)
-                    or _directory_identity(opened) != _directory_identity(linked)
-                ):
+                if not stat.S_ISDIR(opened.st_mode) or _directory_identity(
+                    opened
+                ) != _directory_identity(linked):
                     raise FullC6PolicyBootstrapError(
-                        "Full C6 policy bootstrap state path changed during its "
+                        "artifact policy bootstrap state path changed during its "
                         "symlink-free directory walk"
                     )
             except Exception as exc:
@@ -804,7 +877,7 @@ def _open_private_state_directory(path: Path | str) -> int:
                 if isinstance(exc, FullC6PolicyBootstrapError):
                     raise
                 raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap state path changed during its "
+                    "artifact policy bootstrap state path changed during its "
                     "symlink-free directory walk"
                 ) from exc
             os.close(descriptor)
@@ -816,7 +889,7 @@ def _open_private_state_directory(path: Path | str) -> int:
             or observed.st_uid != os.getuid()
         ):
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap state directory must be owner-owned mode 0700"
+                "artifact policy bootstrap state directory must be owner-owned mode 0700"
             )
     except Exception:
         os.close(descriptor)
@@ -832,7 +905,7 @@ def _verify_private_state_directory(
     try:
         if _directory_identity(os.fstat(descriptor)) != expected_identity:
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap state directory changed during materialization"
+                "artifact policy bootstrap state directory changed during materialization"
             )
     finally:
         os.close(descriptor)
@@ -845,7 +918,7 @@ def _validated_absolute_state_path(path: Path | str) -> tuple[str, ...]:
         value = path
     else:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap state path must be a string or Path"
+            "artifact policy bootstrap state path must be a string or Path"
         )
     if (
         not value.startswith("/")
@@ -855,16 +928,16 @@ def _validated_absolute_state_path(path: Path | str) -> tuple[str, ...]:
         or "\x00" in value
     ):
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap state path must be absolute and lexically canonical"
+            "artifact policy bootstrap state path must be absolute and lexically canonical"
         )
     if unicodedata.normalize("NFC", value) != value:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap state path must be NFC-normalized"
+            "artifact policy bootstrap state path must be NFC-normalized"
         )
     parts = tuple(value.split("/")[1:])
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap state path must be absolute and lexically canonical"
+            "artifact policy bootstrap state path must be absolute and lexically canonical"
         )
     return parts
 
@@ -874,25 +947,23 @@ def _require_no_bootstrap_filename_aliases(root_fd: int) -> None:
         names = os.listdir(root_fd)
     except OSError as exc:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap state directory inventory failed"
+            "artifact policy bootstrap state directory inventory failed"
         ) from exc
     if len(names) > _MAX_STATE_DIRECTORY_ENTRIES:
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap state directory inventory exceeds the bound"
+            "artifact policy bootstrap state directory inventory exceeds the bound"
         )
-    canonical_alias = unicodedata.normalize(
-        "NFC", FULL_C6_POLICY_BOOTSTRAP_FILENAME
-    ).casefold()
+    canonical_alias = unicodedata.normalize("NFC", FULL_C6_POLICY_BOOTSTRAP_FILENAME).casefold()
     for name in names:
         try:
             alias = unicodedata.normalize("NFC", name).casefold()
         except (TypeError, ValueError, UnicodeError) as exc:
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap state directory contains an invalid name"
+                "artifact policy bootstrap state directory contains an invalid name"
             ) from exc
         if alias == canonical_alias and name != FULL_C6_POLICY_BOOTSTRAP_FILENAME:
             raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap canonical filename has a casefold/NFC alias"
+                "artifact policy bootstrap canonical filename has a casefold/NFC alias"
             )
 
 
@@ -911,7 +982,7 @@ def _read_private_file(root_fd: int) -> tuple[bytes, os.stat_result]:
         )
     except OSError as exc:
         raise FullC6PolicyBootstrapError(
-            "existing Full C6 policy bootstrap file is unsafe"
+            "existing artifact policy bootstrap file is unsafe"
         ) from exc
     try:
         before = os.fstat(descriptor)
@@ -921,33 +992,24 @@ def _read_private_file(root_fd: int) -> tuple[bytes, os.stat_result]:
         while remaining:
             chunk = os.read(descriptor, min(remaining, 1024 * 1024))
             if not chunk:
-                raise FullC6PolicyBootstrapError(
-                    "Full C6 policy bootstrap file was truncated"
-                )
+                raise FullC6PolicyBootstrapError("artifact policy bootstrap file was truncated")
             chunks.append(chunk)
             remaining -= len(chunk)
         if os.read(descriptor, 1):
-            raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap file grew while reading"
-            )
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap file grew while reading")
         after = os.fstat(descriptor)
         linked = os.stat(
             FULL_C6_POLICY_BOOTSTRAP_FILENAME,
             dir_fd=root_fd,
             follow_symlinks=False,
         )
-        if (
-            _stat_identity(before) != _stat_identity(after)
-            or _stat_identity(after) != _stat_identity(linked)
-        ):
-            raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap file changed while reading"
-            )
+        if _stat_identity(before) != _stat_identity(after) or _stat_identity(
+            after
+        ) != _stat_identity(linked):
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap file changed while reading")
         return b"".join(chunks), after
     except OSError as exc:
-        raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap file cannot be read"
-        ) from exc
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap file cannot be read") from exc
     finally:
         os.close(descriptor)
 
@@ -966,7 +1028,7 @@ def _require_private_file_stat(
         or (expected_size is not None and observed.st_size != expected_size)
     ):
         raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap must be an owner-owned mode 0600 single-link file"
+            "artifact policy bootstrap must be an owner-owned mode 0600 single-link file"
         )
 
 
@@ -976,11 +1038,9 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         try:
             written = os.write(descriptor, payload[offset:])
         except OSError as exc:
-            raise FullC6PolicyBootstrapError(
-                "Full C6 policy bootstrap write failed"
-            ) from exc
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap write failed") from exc
         if written <= 0:
-            raise FullC6PolicyBootstrapError("Full C6 policy bootstrap write stalled")
+            raise FullC6PolicyBootstrapError("artifact policy bootstrap write stalled")
         offset += written
 
 
@@ -1023,9 +1083,7 @@ def _directory_identity(value: os.stat_result) -> tuple[int, int, int, int]:
 def _require_nofollow() -> int:
     value = getattr(os, "O_NOFOLLOW", None)
     if type(value) is not int or value == 0:
-        raise FullC6PolicyBootstrapError(
-            "Full C6 policy bootstrap requires O_NOFOLLOW support"
-        )
+        raise FullC6PolicyBootstrapError("artifact policy bootstrap requires O_NOFOLLOW support")
     return value
 
 

@@ -1,4 +1,4 @@
-"""Fail-closed, immutable build-input identities for bounded Full C6 work.
+"""Fail-closed, immutable build-input identities for bounded artifact build work.
 
 This module is deliberately independent from artifact evidence and build
 orchestration.  It captures exact regular-file bytes through one no-follow
@@ -19,6 +19,13 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Mapping, Sequence
+
+from rextio.artifacts.contract_dialects import (
+    CARGO_METADATA_SET_DOMAIN,
+    CARGO_PACKAGE_RECEIPTS_DOMAIN,
+    CARGO_PACKAGE_SET_DOMAIN,
+    CURRENT,
+)
 
 if TYPE_CHECKING:
     from rextio.build.full_c6_cargo_workspace import (
@@ -43,20 +50,20 @@ _LOGICAL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+@=-]*$")
 _ROLE_RE = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
 _AGGREGATE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+@=-]*$")
 
-FULL_C6_CARGO_PACKAGE_SET_DOMAIN = "rextio.full-c6-cargo-package-set.v1"
+FULL_C6_CARGO_PACKAGE_SET_DOMAIN = CURRENT.string_value(CARGO_PACKAGE_SET_DOMAIN)
 FULL_C6_CARGO_PACKAGE_RECEIPTS_DOMAIN = (
-    "rextio.full-c6-cargo-package-receipts.v1"
+    CURRENT.string_value(CARGO_PACKAGE_RECEIPTS_DOMAIN)
 )
-FULL_C6_CARGO_METADATA_SET_DOMAIN = "rextio.full-c6-cargo-metadata-set.v1"
+FULL_C6_CARGO_METADATA_SET_DOMAIN = CURRENT.string_value(CARGO_METADATA_SET_DOMAIN)
 FULL_C6_CARGO_INPUT_AGGREGATE_IDS = frozenset(
     {
-        "full-c6-cargo-workspace",
-        "full-c6-cargo-sources",
-        "full-c6-cargo-vendor-tree",
-        "full-c6-cargo-executor-config",
-        "full-c6-cargo-package-set",
-        "full-c6-cargo-package-receipts",
-        "full-c6-cargo-metadata-set",
+        "artifact-evidence-cargo-workspace",
+        "artifact-evidence-cargo-sources",
+        "artifact-evidence-cargo-vendor-tree",
+        "artifact-evidence-cargo-executor-config",
+        "artifact-evidence-cargo-package-set",
+        "artifact-evidence-cargo-package-receipts",
+        "artifact-evidence-cargo-metadata-set",
     }
 )
 
@@ -541,7 +548,7 @@ def bind_full_c6_cargo_workspace_aggregates(
         type(workspace) is not FullC6CargoDependencyWorkspaceReceipt
         or not validate_full_c6_cargo_dependency_workspace_receipt(workspace)
     ):
-        raise BuildInputIdentityError("Full C6 Cargo workspace receipt is not sealed")
+        raise BuildInputIdentityError("artifact build Cargo workspace receipt is not sealed")
 
     package_members = [item.package.to_dict() for item in workspace.packages]
     package_receipt_members = [item.to_dict() for item in workspace.packages]
@@ -571,45 +578,45 @@ def bind_full_c6_cargo_workspace_aggregates(
         sorted(
             (
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-workspace",
+                    aggregate_id="artifact-evidence-cargo-workspace",
                     kind="cargo-workspace",
                     digest=workspace.digest,
                     member_count=package_count,
                     metadata_digest=metadata_set_digest,
                 ),
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-sources",
+                    aggregate_id="artifact-evidence-cargo-sources",
                     kind="cargo-sources",
                     digest=workspace.cargo_sources.digest,
                     member_count=len(workspace.cargo_sources.packages),
                 ),
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-vendor-tree",
+                    aggregate_id="artifact-evidence-cargo-vendor-tree",
                     kind="cargo-vendor-tree",
                     digest=workspace.vendor_tree_sha256,
                     member_count=len(workspace.vendor_entries),
                 ),
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-executor-config",
+                    aggregate_id="artifact-evidence-cargo-executor-config",
                     kind="cargo-executor-config",
                     digest=workspace.executor_config.sha256 or "",
                     member_count=1,
                 ),
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-package-set",
+                    aggregate_id="artifact-evidence-cargo-package-set",
                     kind="cargo-package-set",
                     digest=package_set_digest,
                     member_count=package_count,
                 ),
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-package-receipts",
+                    aggregate_id="artifact-evidence-cargo-package-receipts",
                     kind="cargo-package-receipts",
                     digest=package_receipts_digest,
                     member_count=package_count,
                     metadata_digest=metadata_set_digest,
                 ),
                 BuildInputAggregateIdentity(
-                    aggregate_id="full-c6-cargo-metadata-set",
+                    aggregate_id="artifact-evidence-cargo-metadata-set",
                     kind="cargo-metadata-set",
                     digest=metadata_set_digest,
                     member_count=len(metadata_members),

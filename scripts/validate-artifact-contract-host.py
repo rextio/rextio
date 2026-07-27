@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded Full C6 installed-wheel lifecycle on a supported host."""
+"""Run the bounded strict artifact lifecycle on a supported host."""
 
 from __future__ import annotations
 
@@ -16,7 +16,9 @@ import tempfile
 
 EXPECTED_CARGO_VERSION = "1.93.1"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-FULL_C6_TEST = PROJECT_ROOT / "tests" / "e2e" / "test_full_c6_cli_real_cargo.py"
+ARTIFACT_CONTRACT_TEST = (
+    PROJECT_ROOT / "tests" / "e2e" / "test_full_c6_cli_real_cargo.py"
+)
 _HEAD_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 
@@ -57,7 +59,9 @@ def _preflight_macos() -> None:
     xcode_app = Path("/Applications/Xcode.app")
     expected_developer_root = xcode_app / "Contents" / "Developer"
     if xcode_app.is_symlink() or not xcode_app.is_dir():
-        raise PreflightError("Full C6 requires a non-symlink /Applications/Xcode.app")
+        raise PreflightError(
+            "Strict artifact validation requires a non-symlink /Applications/Xcode.app"
+        )
     developer_root = Path(_capture([str(xcode_select), "-p"]))
     if (
         developer_root != expected_developer_root
@@ -65,7 +69,8 @@ def _preflight_macos() -> None:
         or not developer_root.is_dir()
     ):
         raise PreflightError(
-            "Full C6 requires xcode-select to use /Applications/Xcode.app/Contents/Developer"
+            "Strict artifact validation requires xcode-select to use "
+            "/Applications/Xcode.app/Contents/Developer"
         )
 
     clang = Path(_capture([str(xcrun), "--find", "clang"]))
@@ -121,7 +126,9 @@ def _preflight_linux() -> None:
 def preflight() -> str:
     """Validate the frozen interpreter, target, toolchain, and sandbox scope."""
     if platform.python_implementation() != "CPython" or sys.version_info[:2] != (3, 11):
-        raise PreflightError("Full C6 host validation requires CPython 3.11 exactly")
+        raise PreflightError(
+            "Strict artifact host validation requires CPython 3.11 exactly"
+        )
 
     machine = platform.machine().lower()
     if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
@@ -131,7 +138,9 @@ def preflight() -> str:
         target = "x86_64-unknown-linux-gnu"
         _preflight_linux()
     else:
-        raise PreflightError(f"unsupported Full C6 host: {sys.platform}/{machine}")
+        raise PreflightError(
+            f"unsupported strict artifact host: {sys.platform}/{machine}"
+        )
 
     cargo = shutil.which("cargo")
     if cargo is None:
@@ -140,10 +149,13 @@ def preflight() -> str:
     if len(cargo_version) < 2 or cargo_version[:2] != ["cargo", EXPECTED_CARGO_VERSION]:
         observed = " ".join(cargo_version[:2]) or "unknown"
         raise PreflightError(
-            f"Full C6 requires cargo {EXPECTED_CARGO_VERSION} exactly; observed {observed}"
+            "Strict artifact validation requires cargo "
+            f"{EXPECTED_CARGO_VERSION} exactly; observed {observed}"
         )
-    if not FULL_C6_TEST.is_file():
-        raise PreflightError(f"Full C6 test harness is unavailable: {FULL_C6_TEST}")
+    if not ARTIFACT_CONTRACT_TEST.is_file():
+        raise PreflightError(
+            f"Strict artifact test harness is unavailable: {ARTIFACT_CONTRACT_TEST}"
+        )
     return target
 
 
@@ -172,7 +184,7 @@ def _require_clean_git_state(git: str) -> None:
     )
     if status:
         raise PreflightError(
-            "Full C6 host validation requires a clean Git worktree and index"
+            "Strict artifact host validation requires a clean Git worktree and index"
         )
 
 
@@ -182,7 +194,9 @@ def _stage_tracked_head(destination: Path) -> str:
     if git is None:
         raise PreflightError("git is unavailable on PATH")
     if destination.is_symlink() or not destination.is_dir() or any(destination.iterdir()):
-        raise PreflightError("Full C6 source staging directory must be fresh and empty")
+        raise PreflightError(
+            "Strict artifact source staging directory must be fresh and empty"
+        )
 
     head_commit = _git_output(git, "rev-parse", "--verify", "HEAD^{commit}")
     if _HEAD_COMMIT_PATTERN.fullmatch(head_commit) is None:
@@ -213,10 +227,10 @@ def _stage_tracked_head(destination: Path) -> str:
 
 
 def run_validation() -> int:
-    """Build, install, and run the existing Full C6 lifecycle harness."""
+    """Build, install, and run the strict artifact lifecycle harness."""
     target = preflight()
 
-    with tempfile.TemporaryDirectory(prefix="rextio-full-c6-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="rextio-artifact-contract-") as temporary:
         root = Path(temporary)
         source_root = root / "source"
         build_venv = root / "build-venv"
@@ -228,14 +242,17 @@ def run_validation() -> int:
         run_root.mkdir()
 
         head_commit = _stage_tracked_head(source_root)
-        staged_full_c6_test = (
+        staged_artifact_contract_test = (
             source_root / "tests" / "e2e" / "test_full_c6_cli_real_cargo.py"
         )
-        if not staged_full_c6_test.is_file():
-            raise PreflightError("tracked HEAD snapshot omitted the Full C6 E2E harness")
-        print(f"Full C6 manual host preflight passed: {target}", flush=True)
+        if not staged_artifact_contract_test.is_file():
+            raise PreflightError(
+                "tracked HEAD snapshot omitted the strict artifact E2E harness"
+            )
+        print(f"Strict artifact manual host preflight passed: {target}", flush=True)
         print(
-            f"Full C6 manual source snapshot: HEAD={head_commit} tracked-files-only",
+            "Strict artifact manual source snapshot: "
+            f"HEAD={head_commit} tracked-files-only",
             flush=True,
         )
 
@@ -283,8 +300,8 @@ def run_validation() -> int:
             {
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONNOUSERSITE": "1",
-                "REXTIO_FULL_C6_E2E": "1",
-                "REXTIO_FULL_C6_WHEEL": str(wheels[0].resolve()),
+                "REXTIO_ARTIFACT_CONTRACT_E2E": "1",
+                "REXTIO_ARTIFACT_CONTRACT_WHEEL": str(wheels[0].resolve()),
             }
         )
         completed = subprocess.run(
@@ -294,7 +311,7 @@ def run_validation() -> int:
                 "pytest",
                 "-c",
                 "/dev/null",
-                str(staged_full_c6_test),
+                str(staged_artifact_contract_test),
                 "-q",
                 "-s",
             ],
@@ -309,8 +326,8 @@ def _parser() -> argparse.ArgumentParser:
     """Create the manual validation command-line parser."""
     parser = argparse.ArgumentParser(
         description=(
-            "Validate the bounded Full C6 lifecycle using a clean installed wheel "
-            "on macOS arm64 or Linux x86_64."
+            "Validate the bounded strict artifact lifecycle using a clean "
+            "installed wheel on macOS arm64 or Linux x86_64."
         )
     )
     parser.add_argument(
@@ -327,11 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments.preflight_only:
             target = preflight()
-            print(f"Full C6 manual host preflight passed: {target}")
+            print(f"Strict artifact manual host preflight passed: {target}")
             return 0
         return run_validation()
     except PreflightError as exc:
-        print(f"Full C6 host validation unavailable: {exc}", file=sys.stderr)
+        print(f"Strict artifact host validation unavailable: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:
         return exc.returncode or 1

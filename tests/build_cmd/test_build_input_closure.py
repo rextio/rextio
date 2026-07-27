@@ -215,15 +215,18 @@ def test_cargo_workspace_aggregates_bind_exact_seven_row_set(tmp_path: Path) -> 
     )
     rows = {item.aggregate_id: item for item in bound.aggregates}
     package_count = len(workspace.packages)
-    assert rows["full-c6-cargo-workspace"].member_count == package_count
-    assert rows["full-c6-cargo-sources"].member_count == package_count
-    assert rows["full-c6-cargo-package-set"].member_count == package_count
-    assert rows["full-c6-cargo-package-receipts"].member_count == package_count
-    assert rows["full-c6-cargo-vendor-tree"].member_count == len(
+    assert rows["artifact-evidence-cargo-workspace"].member_count == package_count
+    assert rows["artifact-evidence-cargo-sources"].member_count == package_count
+    assert rows["artifact-evidence-cargo-package-set"].member_count == package_count
+    assert (
+        rows["artifact-evidence-cargo-package-receipts"].member_count
+        == package_count
+    )
+    assert rows["artifact-evidence-cargo-vendor-tree"].member_count == len(
         workspace.vendor_entries
     )
-    assert rows["full-c6-cargo-executor-config"].member_count == 1
-    assert rows["full-c6-cargo-metadata-set"].member_count == len(
+    assert rows["artifact-evidence-cargo-executor-config"].member_count == 1
+    assert rows["artifact-evidence-cargo-metadata-set"].member_count == len(
         workspace.metadata_files
     )
 
@@ -254,11 +257,14 @@ def test_cargo_workspace_aggregates_bind_exact_seven_row_set(tmp_path: Path) -> 
             if item.kind == "file" and item.logical_name in metadata_names
         ],
     )
-    assert rows["full-c6-cargo-package-set"].digest == package_set_digest
-    assert rows["full-c6-cargo-package-receipts"].digest == package_receipts_digest
-    assert rows["full-c6-cargo-metadata-set"].digest == metadata_set_digest
+    assert rows["artifact-evidence-cargo-package-set"].digest == package_set_digest
     assert (
-        rows["full-c6-cargo-package-receipts"].metadata_digest
+        rows["artifact-evidence-cargo-package-receipts"].digest
+        == package_receipts_digest
+    )
+    assert rows["artifact-evidence-cargo-metadata-set"].digest == metadata_set_digest
+    assert (
+        rows["artifact-evidence-cargo-package-receipts"].metadata_digest
         == metadata_set_digest
     )
     assert bound.digest != base.digest

@@ -10,12 +10,13 @@ An index of the project's documentation. See the top-level
 - [Versioning policy](versioning.md) — SemVer with the pre-1.0 caveats and the
   definition of the public contract.
 - [Unsupported features](unsupported-features.md) — the boundaries of the 0.1.x
-  supported subset (published package: **0.1.7** / plugin API 1.7).
+  supported subset (published package: **0.1.8** / plugin API 1.7).
 - [Host source-AOT and native executables](source-aot-and-executables.md) —
   **0.1.5 Experimental Release Train C** source graph, `ModuleInitIR`, artifact
   profile,
   explicit executable fallback, narrow initializer-before-main boundary, and
-  the C5.1 preview plus the frozen Full-C6/C5.2 public technical-template,
+  the external-source preview plus the frozen strict artifact-contract
+  technical template,
   owner-completion/finalization, cache-free host, public support-lock
   bootstrap, path-tokenized semantic production-sandbox receipts, mutable-host
   executable-map denial with explicit capability-only regrant,
@@ -27,7 +28,8 @@ An index of the project's documentation. See the top-level
 ## Specs
 
 - [Machine-readable tooling contract](specs/tooling-contract.md) — draft
-  (current published producer `contract_version` `2.28.0` on core 0.1.7; core 0.1.6
+  (current published producer `contract_version` `3.0.0` on core 0.1.8;
+  core 0.1.7 emitted `2.28.0`; core 0.1.6
   emitted `2.27.0`; core 0.1.5
   emitted `2.24.0`; core 0.1.4
   emitted `2.2.0`; core 0.1.3
@@ -41,29 +43,16 @@ An index of the project's documentation. See the top-level
   plugin API 1.3. Release Train B then completed consumer first — rextio-lsp
   0.1.2 → core 0.1.4 — and advances the contract to `2.2.0`.
   Core 0.1.5 publishes contract `2.24.0`, incorporating unpublished/internal
-  intermediate contract `2.3.0` host source/artifact/executable planning and
-  `2.4.0` standalone plugin capability
-  to `2.5.0` sanitized external-source preview evidence, `2.6.0` C6.1
-  authorization-contract evidence, `2.7.0` C6.2 host-extension wheel evidence,
-  `2.8.0` C6.3 required-evidence gate, `2.9.0` C6.4 sanitized direct native
-  runtime linkage inventory for macOS/Linux, `2.10.0` C6.5 always-blocked
-  distribution-authorization readiness, `2.11.0` C6.6 bounded
-  source-transformation observation, `2.12.0` C6.7 component-license
-  observation, `2.13.0` C6.8 one-hop native path-resolution observation, and
-  `2.14.0` C6.9 bounded static native-runtime graph observation,
-  `2.15.0` C6.10 scoped source-transformation replay verification,
-  `2.16.0` C6.11 scoped Cargo component-license policy verification,
-  `2.17.0` C6.12 scoped project-source license-policy verification,
-  `2.18.0` C6.13 scoped analysis-input verification, `2.19.0` C6.14 compact
-  artifact-policy coverage inventory, `2.20.0` C6.15 scoped artifact-class
-  policy verification, `2.21.0` strict Full-C6 authority/executor/signing/
-  atomic-publication primitives, `2.22.0` bounded C5.2 linkage and initial CLI
-  coordination, historical `2.23.0` exact technical-template/bootstrap v2 plus
-  explicit owner completion and `rextio policy finalize` handoff, and current
-  `2.24.0` public support-lock bootstrap plus path-free semantic
-  sandbox/support receipt surfaces, mutable-volume executable-map denial with
-  explicit bound-capability regrant, and exact/ancestor/descendant protection
-  between its output and every configured source archive. It also
+  contract steps for host source/artifact/executable planning, standalone
+  plugin capability, sanitized external-source planning and authorization,
+  bounded host-extension evidence, required-evidence gating, native-runtime
+  inventory, source and license observations, scoped verification, and the
+  frozen strict artifact-contract authority/executor/signing/publication
+  workflow. It includes the exact technical-template and owner-completion
+  handoff, public support-lock bootstrap, path-free sandbox/support receipts,
+  mutable-volume executable-map denial with explicit bound-capability regrant,
+  and exact/ancestor/descendant protection between its output and every
+  configured source archive. It also
   defines the strict lifecycle report, authorization-request, detached-signature,
   publication-manifest, and policy-finalizer JSON shapes;
   published 0.1.5 is the 2.24.0 producer with plugin API 1.4 and readiness
@@ -80,15 +69,21 @@ An index of the project's documentation. See the top-level
   function-scope RAII guards for used plugins on accepted generated native
   functions. Pre-1.7 providers keep load and generated-output behavior.
 
+  Core 0.1.8 publishes contract `3.0.0`: milestone-derived artifact report,
+  lifecycle, persisted-file, and signing names become semantic
+  `artifact-*` identities. Exact 0.1.7 persisted roots remain legacy
+  read/verify-only; mixed or newly emitted legacy dialects fail closed.
+
 Train C shipped in core 0.1.5 as Experimental/Alpha. Its evidence and local
-artifact-publication authority remain bounded and do not imply broad Full C6,
-general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
-CI certification. The complete macOS arm64 local installed-wheel lifecycle
+artifact-publication authority remain bounded and do not imply general package
+AOT, general hermeticity, CUDA support, or heavy host-lifecycle CI
+certification. The complete macOS arm64 local installed-wheel lifecycle
 through `f9eb5e6` is
 historical evidence. The subsequent installed-input and 2.24.0 support-lock /
 sandbox work is unit-tested; evidence for the current `HEAD` on macOS arm64 and
-Linux x86_64 now requires `python scripts/validate-full-c6-host.py` on the target
-host and is not CI-certified. One local
+Linux x86_64 now requires
+`python scripts/validate-artifact-contract-host.py` on the target host and is
+not CI-certified. One local
 macOS support closure measured roughly 104,645 members / 2.67 GB and about
 45 seconds per full verification; those figures are observations, not
 guarantees.

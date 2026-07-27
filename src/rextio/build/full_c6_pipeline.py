@@ -1,7 +1,7 @@
-"""Strict C5.2 preflight and Full C6 signing/publication coordination.
+"""Strict external-source native linkage preflight and artifact contract signing/publication coordination.
 
-This module is the bridge between the deliberately small C5.2 external-source
-surface and the Full C6 hard gate.  It has two independent responsibilities:
+This module is the bridge between the deliberately small external-source native linkage external-source
+surface and the artifact contract hard gate.  It has two independent responsibilities:
 
 * verify one exact SourceLock v2 transaction, construct the external native
   call registry/runtime guard/output-wheel contract, and require a fresh
@@ -12,7 +12,7 @@ surface and the Full C6 hard gate.  It has two independent responsibilities:
   unsigned run writes only that request.  A signed run must pass the sealed
   gate before the atomic publication adapter is called.
 
-The policy receipt is intentionally a typed programmatic input.  C6 preview
+The policy receipt is intentionally a typed programmatic input.  artifact preview
 evidence and ``rextio.toml`` do not contain enough authority to reconstruct a
 complete SPDX/license/transformation policy, so this module never guesses one.
 """
@@ -32,6 +32,11 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 import unicodedata
 
 from rextio.analyzer.models import ProjectAnalysis
+from rextio.artifacts.contract_dialects import (
+    AUTHORIZATION_REQUEST_FILENAME,
+    CURRENT,
+    require_current_dialect,
+)
 from rextio.artifacts.evidence import canonical_json_bytes
 from rextio.artifacts.full_authorization import full_c6_preauthorization_evidence_digest
 from rextio.build.full_c6_gate import (
@@ -48,6 +53,7 @@ from rextio.build.full_c6_host_inputs import (
 from rextio.build.full_c6_policy import FullC6PolicyReceipt
 from rextio.build.full_c6_policy_manifest import (
     FullC6PolicyManifestError,
+    full_c6_policy_manifest_dialect,
     load_full_c6_policy_manifest,
 )
 from rextio.build.full_c6_publication import FullC6PublicationReceipt
@@ -80,7 +86,7 @@ if TYPE_CHECKING:
 
 
 FULL_C6_DISTRIBUTION_POLICY = "strict-evidence"
-FULL_C6_SIGNING_REQUEST_FILENAME = "rextio.full-c6-final-authorization-request.json"
+FULL_C6_SIGNING_REQUEST_FILENAME = CURRENT.filename(AUTHORIZATION_REQUEST_FILENAME)
 _MAX_PRIVATE_MATERIAL_BYTES = 16 * 1024 * 1024
 _CONTEXT_SEAL = object()
 _PUBLICATION_ADAPTER_SEAL = object()
@@ -90,7 +96,7 @@ _HOST_PATH_TYPE = type(Path())
 
 
 class FullC6PipelineError(RuntimeError):
-    """A strict C5.2/Full C6 pipeline invariant failed closed."""
+    """A strict external-source native linkage/artifact contract pipeline invariant failed closed."""
 
 
 class FullC6TypedPolicyRequiredError(FullC6PipelineError):
@@ -99,7 +105,7 @@ class FullC6TypedPolicyRequiredError(FullC6PipelineError):
 
 @dataclass(frozen=True, slots=True)
 class FullC6ExternalBuildContext:
-    """Sealed same-transaction C5.2 material accepted by the orchestrator.
+    """Sealed same-transaction external-source native linkage material accepted by the orchestrator.
 
     Source bytes and host paths remain available only through the in-memory
     SourceLock verified context.  ``to_dict`` deliberately exposes no such
@@ -115,7 +121,7 @@ class FullC6ExternalBuildContext:
 
     def __post_init__(self) -> None:
         if self._seal is not _CONTEXT_SEAL:
-            raise TypeError("Full C6 external context must come from strict preflight")
+            raise TypeError("artifact contract external context must come from strict preflight")
         if (
             type(self.source_verification) is not SourceLockV2Verification
             or type(self.analysis_scope) is not FullC6AnalysisScope
@@ -125,7 +131,7 @@ class FullC6ExternalBuildContext:
             or type(self.runtime_guard) is not ExternalRuntimeGuard
             or type(self.wheel_contract) is not ExternalWheelContract
         ):
-            raise TypeError("Full C6 external context contains invalid material")
+            raise TypeError("artifact contract external context contains invalid material")
         source = self.source_verification.context
         if (
             self.registry.package != source.plan.package
@@ -140,7 +146,7 @@ class FullC6ExternalBuildContext:
             or self.wheel_contract.external_members
             != _external_wheel_members(source.wheel.entries)
         ):
-            raise ValueError("Full C6 external context identity bindings disagree")
+            raise ValueError("artifact contract external context identity bindings disagree")
 
     def to_dict(self) -> dict[str, object]:
         """Return a path/source-free observation, never reusable authority."""
@@ -169,7 +175,7 @@ class FullC6ExternalPreflightResult:
 
     def __post_init__(self) -> None:
         if type(self.analysis) is not ProjectAnalysis:
-            raise TypeError("Full C6 strict analysis has an invalid type")
+            raise TypeError("artifact contract strict analysis has an invalid type")
         validate_full_c6_external_context(self.context, self.analysis)
 
 
@@ -184,7 +190,7 @@ def prepare_full_c6_external_build(
     analysis_scope: FullC6AnalysisScope,
     reanalyze: FullC6Reanalyzer,
 ) -> FullC6ExternalPreflightResult:
-    """Verify SourceLock v2 and return one freshly reanalyzed C5.2 context.
+    """Verify SourceLock v2 and return one freshly reanalyzed external-source native linkage context.
 
     The initial analysis locates the exact installed-distribution preview.  It
     is not build authority.  SourceLock verification securely reopens the
@@ -197,7 +203,7 @@ def prepare_full_c6_external_build(
         or type(config) is not RextioConfig
         or type(analysis_scope) is not FullC6AnalysisScope
     ):
-        raise FullC6PipelineError("RXT060 Full C6 preflight input is invalid")
+        raise FullC6PipelineError("RXT060 artifact contract preflight input is invalid")
     if config.build.artifact_distribution_policy != FULL_C6_DISTRIBUTION_POLICY:
         raise FullC6PipelineError(
             "RXT060 strict external-source build requires "
@@ -205,7 +211,7 @@ def prepare_full_c6_external_build(
         )
     root = Path(project_root).resolve()
     if initial_analysis.project_root.resolve() != root:
-        raise FullC6PipelineError("RXT060 Full C6 analysis root is stale")
+        raise FullC6PipelineError("RXT060 artifact contract analysis root is stale")
     try:
         require_full_c6_analysis_scope(
             analysis_scope,
@@ -214,11 +220,11 @@ def prepare_full_c6_external_build(
         )
     except FullC6HostInputsError as exc:
         raise FullC6PipelineError(
-            "RXT060 Full C6 analysis scope failed closed"
+            "RXT060 artifact contract analysis scope failed closed"
         ) from exc
     if initial_analysis._full_c6_analysis_scope is not analysis_scope:
         raise FullC6PipelineError(
-            "RXT060 initial analysis does not belong to the sealed Full C6 scope"
+            "RXT060 initial analysis does not belong to the sealed artifact contract scope"
         )
     plan = _require_exact_external_plan(initial_analysis, config)
     package_policy = config.imports.packages[plan.package]
@@ -230,12 +236,12 @@ def prepare_full_c6_external_build(
         package_policy.source_archive,
     )
     if any(type(value) is not str for value in required_paths):
-        raise FullC6PipelineError("RXT060 Full C6 authority paths are incomplete")
+        raise FullC6PipelineError("RXT060 artifact contract authority paths are incomplete")
     if (
         type(build.artifact_trusted_public_key_sha256) is not str
         or type(package_policy.source_archive_sha256) is not str
     ):
-        raise FullC6PipelineError("RXT060 Full C6 authority digests are incomplete")
+        raise FullC6PipelineError("RXT060 artifact contract authority digests are incomplete")
     lock_path, lock_signature_path, public_key_path, wheel_path = (
         _project_path(root, cast(str, value)) for value in required_paths
     )
@@ -319,7 +325,7 @@ def prepare_full_c6_external_build(
         raise
     except Exception as exc:
         raise FullC6PipelineError(
-            "RXT060 strict C5.2 linkage or fresh project analysis failed closed"
+            "RXT060 strict external-source native linkage linkage or fresh project analysis failed closed"
         ) from exc
 
 
@@ -327,9 +333,9 @@ def validate_full_c6_external_context(
     value: FullC6ExternalBuildContext,
     analysis: ProjectAnalysis,
 ) -> FullC6ExternalBuildContext:
-    """Rebuild every derived C5.2 object for one exact fresh analysis."""
+    """Rebuild every derived external-source native linkage object for one exact fresh analysis."""
     if type(value) is not FullC6ExternalBuildContext or value._seal is not _CONTEXT_SEAL:
-        raise FullC6PipelineError("RXT060 direct orchestrator call lacks strict C5.2 context")
+        raise FullC6PipelineError("RXT060 direct orchestrator call lacks strict external-source native linkage context")
     if type(analysis) is not ProjectAnalysis:
         raise FullC6PipelineError("RXT060 strict project analysis is invalid")
     if analysis._full_c6_analysis_scope is not value.analysis_scope:
@@ -374,13 +380,13 @@ def validate_full_c6_external_context(
             or rebuilt_guard != value.runtime_guard
             or rebuilt_contract != value.wheel_contract
         ):
-            raise ValueError("strict C5.2 context is stale")
+            raise ValueError("strict external-source native linkage context is stale")
         value.registry.require_fresh_analysis(analysis)
     except FullC6PipelineError:
         raise
     except Exception as exc:
         raise FullC6PipelineError(
-            "RXT060 strict C5.2 context does not match the exact project analysis"
+            "RXT060 strict external-source native linkage context does not match the exact project analysis"
         ) from exc
     return value
 
@@ -398,15 +404,15 @@ class FullC6PipelineResult:
     def __post_init__(self) -> None:
         if self.status == "signing-required":
             if self.gate is not None or self.publication_receipt is not None:
-                raise ValueError("unsigned Full C6 result cannot contain publication authority")
+                raise ValueError("unsigned artifact contract result cannot contain publication authority")
         elif self.status == "published":
             if (
                 self.gate is None
                 or type(self.publication_receipt) is not FullC6PublicationReceipt
             ):
-                raise ValueError("published Full C6 result requires gate and publication receipts")
+                raise ValueError("published artifact contract result requires gate and publication receipts")
         else:
-            raise ValueError("Full C6 pipeline status is invalid")
+            raise ValueError("artifact contract pipeline status is invalid")
 
     @property
     def distribution_authorized(self) -> bool:
@@ -467,11 +473,11 @@ def finalize_full_c6_distribution(
     )
     if type(publication_adapter) is not FullC6PublicationAdapter:
         raise FullC6PipelineError(
-            "RXT060 a signed Full C6 run requires the sealed atomic publication adapter"
+            "RXT060 a signed artifact contract run requires the sealed atomic publication adapter"
         )
     publication_receipt = publication_adapter(authority, request, gate)
     if type(publication_receipt) is not FullC6PublicationReceipt:
-        raise FullC6PipelineError("RXT060 Full C6 publication returned an invalid receipt")
+        raise FullC6PipelineError("RXT060 artifact contract publication returned an invalid receipt")
     return FullC6PipelineResult(
         status="published",
         request=request,
@@ -513,7 +519,7 @@ def finalize_configured_full_c6_distribution(
     )
     if material.policy is None or configured_policy != material.policy:
         raise FullC6PipelineError(
-            "RXT060 Full C6 production authority does not match the pinned owner policy"
+            "RXT060 artifact contract production authority does not match the pinned owner policy"
         )
     request_output = config.build.artifact_signing_request_output
     public_key = config.build.artifact_trusted_public_key
@@ -523,7 +529,7 @@ def finalize_configured_full_c6_distribution(
         or type(public_key) is not str
         or type(public_key_sha256) is not str
     ):
-        raise FullC6PipelineError("RXT060 configured Full C6 signing paths are incomplete")
+        raise FullC6PipelineError("RXT060 configured artifact contract signing paths are incomplete")
     final_signature = config.build.artifact_final_signature
     return finalize_full_c6_distribution(
         authority=authority,
@@ -559,7 +565,7 @@ def load_configured_full_c6_policy(
         or type(trusted_key_sha256) is not str
     ):
         raise FullC6PipelineError(
-            "RXT060 configured Full C6 owner policy path and digest are incomplete"
+            "RXT060 configured artifact contract owner policy path and digest are incomplete"
         )
     root = Path(project_root).resolve()
     try:
@@ -567,16 +573,17 @@ def load_configured_full_c6_policy(
             _project_path(root, policy_path),
             expected_sha256=policy_sha256,
         )
+        require_current_dialect(full_c6_policy_manifest_dialect(receipt))
     except (FullC6PolicyManifestError, OSError, TypeError, ValueError) as exc:
         raise FullC6PipelineError(
-            "RXT060 configured Full C6 owner policy manifest failed closed"
+            "RXT060 configured artifact contract owner policy manifest failed closed"
         ) from exc
     if not hmac.compare_digest(
         receipt.trusted_owner_public_key_sha256,
         trusted_key_sha256,
     ):
         raise FullC6PipelineError(
-            "RXT060 Full C6 owner policy and trusted public-key pin disagree"
+            "RXT060 artifact contract owner policy and trusted public-key pin disagree"
         )
     return receipt
 
@@ -593,7 +600,7 @@ def _validated_full_c6_finalization_material(
 
         if type(authority) is not FullC6ProductionAuthority:
             raise FullC6PipelineError(
-                "RXT060 Full C6 finalization requires exact production authority"
+                "RXT060 artifact contract finalization requires exact production authority"
             )
         material = _validated_full_c6_production_material(authority)
         gate_inputs = _validated_production_gate_inputs(authority)
@@ -618,14 +625,14 @@ def _validated_full_c6_finalization_material(
             != gate_inputs.expected_public_key_sha256
         ):
             raise FullC6PipelineError(
-                "RXT060 Full C6 production authority is split or incomplete"
+                "RXT060 artifact contract production authority is split or incomplete"
             )
         return material
     except FullC6PipelineError:
         raise
     except Exception as exc:
         raise FullC6PipelineError(
-            "RXT060 Full C6 production authority failed finalization validation"
+            "RXT060 artifact contract production authority failed finalization validation"
         ) from exc
 
 
@@ -646,7 +653,7 @@ def _require_configured_finalization_paths(
         or type(public_key_value) is not str
         or (signature_value is not None and type(signature_value) is not str)
     ):
-        raise FullC6PipelineError("RXT060 configured Full C6 signing paths are incomplete")
+        raise FullC6PipelineError("RXT060 configured artifact contract signing paths are incomplete")
     expected_request = _project_path(material.project_root, request_value)
     expected_public_key = _project_path(material.project_root, public_key_value)
     expected_signature = (
@@ -684,7 +691,7 @@ class FullC6PublicationAdapter:
 
     def __post_init__(self) -> None:
         if self._seal is not _PUBLICATION_ADAPTER_SEAL:
-            raise TypeError("Full C6 publication adapter must come from its factory")
+            raise TypeError("artifact contract publication adapter must come from its factory")
         if (
             any(
                 not isinstance(value, Path)
@@ -699,7 +706,7 @@ class FullC6PublicationAdapter:
             or type(self.bundle_name) is not str
             or not self.bundle_name
         ):
-            raise TypeError("Full C6 publication adapter configuration is invalid")
+            raise TypeError("artifact contract publication adapter configuration is invalid")
         _validated_full_c6_finalization_material(self.authority)
         object.__setattr__(self, "_binding", _publication_adapter_binding(self))
 
@@ -725,13 +732,13 @@ class FullC6PublicationAdapter:
         _require_valid_publication_adapter(self)
         if authority is not self.authority:
             raise FullC6PipelineError(
-                "RXT060 Full C6 publication authority is not the retained authority"
+                "RXT060 artifact contract publication authority is not the retained authority"
             )
         material = _validated_full_c6_finalization_material(authority)
         gate_inputs = _validated_production_gate_inputs(authority)
         _require_publication_adapter_paths(self, material, gate_inputs.subject_path)
         if material.supply_chain is not gate_inputs.supply_chain:
-            raise FullC6PipelineError("RXT060 Full C6 publication authority is split")
+            raise FullC6PipelineError("RXT060 artifact contract publication authority is split")
         trusted_request = _rebuild_request(request)
         trusted_gate = _rebuild_gate_result(gate)
         expected_request = _full_c6_finalization_request(authority)
@@ -741,16 +748,16 @@ class FullC6PublicationAdapter:
             or trusted_gate.preauthorization_evidence != expected_preauthorization
         ):
             raise FullC6PipelineError(
-                "RXT060 Full C6 publication request or gate replaced retained authority"
+                "RXT060 artifact contract publication request or gate replaced retained authority"
             )
         supply_chain = gate_inputs.supply_chain
         payloads = {
             "rextio.cyclonedx.json": supply_chain.sbom_json,
             "rextio.slsa-provenance.json": supply_chain.provenance_json,
-            "rextio.full-c6-evidence.json": canonical_json_bytes(
+            "rextio.artifact-bundle-evidence.json": canonical_json_bytes(
                 trusted_gate.evidence.to_dict()
             ),
-            "rextio.full-c6-authorization.json": canonical_json_bytes(
+            "rextio.artifact-bundle-authorization.json": canonical_json_bytes(
                 trusted_gate.authorization.to_dict()
             ),
         }
@@ -765,10 +772,10 @@ class FullC6PublicationAdapter:
                 ROLE_WHEEL: self.subject_path,
                 ROLE_CYCLONEDX: materialized["rextio.cyclonedx.json"],
                 ROLE_SLSA_PROVENANCE: materialized["rextio.slsa-provenance.json"],
-                ROLE_FINAL_EVIDENCE: materialized["rextio.full-c6-evidence.json"],
+                ROLE_FINAL_EVIDENCE: materialized["rextio.artifact-bundle-evidence.json"],
                 ROLE_DETACHED_SIGNATURE: self.final_signature_path,
                 ROLE_DISTRIBUTION_AUTHORIZATION: materialized[
-                    "rextio.full-c6-authorization.json"
+                    "rextio.artifact-bundle-authorization.json"
                 ],
             },
             request=trusted_request,
@@ -817,14 +824,14 @@ def _require_publication_adapter_paths(
         or type(signature_value) is not str
     ):
         raise FullC6PipelineError(
-            "RXT060 Full C6 publication requires retained publication config"
+            "RXT060 artifact contract publication requires retained publication config"
         )
     expected_request = _project_path(material.project_root, request_value)
     expected_public_key = _project_path(material.project_root, public_key_value)
     expected_signature = _project_path(material.project_root, signature_value)
     wheel_name = retained_subject_path.name
     expected_publication_root = material.project_root / "dist"
-    expected_bundle_name = f"{wheel_name.removesuffix('.whl')}.full-c6"
+    expected_bundle_name = f"{wheel_name.removesuffix('.whl')}.artifact-bundle"
     if (
         not retained_subject_path.is_absolute()
         or _WHEEL_FILENAME_RE.fullmatch(wheel_name) is None
@@ -868,10 +875,10 @@ def _require_valid_publication_adapter(value: FullC6PublicationAdapter) -> None:
         )
     except Exception as exc:
         raise FullC6PipelineError(
-            "RXT060 Full C6 publication adapter seal is invalid"
+            "RXT060 artifact contract publication adapter seal is invalid"
         ) from exc
     if not valid:
-        raise FullC6PipelineError("RXT060 Full C6 publication adapter seal is invalid")
+        raise FullC6PipelineError("RXT060 artifact contract publication adapter seal is invalid")
 
 
 def _full_c6_finalization_request(
@@ -897,10 +904,10 @@ def _require_exact_external_plan(
     plan = analysis.external_source_plan
     if type(plan) is not ExternalSourcePlan or plan.status != "preview-ready":
         raise FullC6PipelineError(
-            "RXT060 Full C6 requires one preview-ready exact external source plan"
+            "RXT060 artifact contract requires one preview-ready exact external source plan"
         )
     if len(config.imports.packages) != 1 or plan.package not in config.imports.packages:
-        raise FullC6PipelineError("RXT060 Full C6 external package declaration changed")
+        raise FullC6PipelineError("RXT060 artifact contract external package declaration changed")
     package_policy = config.imports.packages[plan.package]
     if (
         package_policy.policy != "try-native"
@@ -909,7 +916,7 @@ def _require_exact_external_plan(
         or package_policy.distribution != plan.distribution
         or package_policy.version != plan.requested_version
     ):
-        raise FullC6PipelineError("RXT060 Full C6 external package identity changed")
+        raise FullC6PipelineError("RXT060 artifact contract external package identity changed")
     return plan
 
 
@@ -939,12 +946,12 @@ def _project_path(root: Path, value: str) -> Path:
         or any(part in {"", ".", ".."} for part in path.parts)
         or "\\" in value
     ):
-        raise FullC6PipelineError("RXT060 Full C6 path is not project-relative")
+        raise FullC6PipelineError("RXT060 artifact contract path is not project-relative")
     result = root.joinpath(*path.parts)
     try:
         result.relative_to(root)
     except ValueError as exc:  # defensive if pathlib semantics ever widen
-        raise FullC6PipelineError("RXT060 Full C6 path escapes the project") from exc
+        raise FullC6PipelineError("RXT060 artifact contract path escapes the project") from exc
     return result
 
 
@@ -955,7 +962,7 @@ def _materialize_private_bytes(root: Path, name: str, data: bytes) -> Path:
         or len(data) > _MAX_PRIVATE_MATERIAL_BYTES
         or PurePosixPath(name).name != name
     ):
-        raise FullC6PipelineError("RXT060 Full C6 private material is invalid")
+        raise FullC6PipelineError("RXT060 artifact contract private material is invalid")
     _require_private_directory(root)
     path = root / name
     flags = (
@@ -970,25 +977,25 @@ def _materialize_private_bytes(root: Path, name: str, data: bytes) -> Path:
     except FileExistsError:
         existing = _read_private_file(path)
         if not hmac.compare_digest(existing, data):
-            raise FullC6PipelineError("RXT060 Full C6 private material already differs") from None
+            raise FullC6PipelineError("RXT060 artifact contract private material already differs") from None
         return path
     except OSError as exc:
-        raise FullC6PipelineError("RXT060 Full C6 private material cannot be created") from exc
+        raise FullC6PipelineError("RXT060 artifact contract private material cannot be created") from exc
     try:
         offset = 0
         while offset < len(data):
             written = os.write(descriptor, data[offset:])
             if written <= 0:
-                raise FullC6PipelineError("RXT060 Full C6 private material write failed")
+                raise FullC6PipelineError("RXT060 artifact contract private material write failed")
             offset += written
         os.fsync(descriptor)
         observed = os.fstat(descriptor)
         if not stat.S_ISREG(observed.st_mode) or observed.st_size != len(data):
-            raise FullC6PipelineError("RXT060 Full C6 private material changed")
+            raise FullC6PipelineError("RXT060 artifact contract private material changed")
     finally:
         os.close(descriptor)
     if not hmac.compare_digest(_read_private_file(path), data):
-        raise FullC6PipelineError("RXT060 Full C6 private material final bytes changed")
+        raise FullC6PipelineError("RXT060 artifact contract private material final bytes changed")
     return path
 
 
@@ -996,14 +1003,14 @@ def _require_private_directory(path: Path) -> None:
     try:
         observed = path.lstat()
     except OSError as exc:
-        raise FullC6PipelineError("RXT060 Full C6 state directory is unavailable") from exc
+        raise FullC6PipelineError("RXT060 artifact contract state directory is unavailable") from exc
     if (
         not stat.S_ISDIR(observed.st_mode)
         or stat.S_IMODE(observed.st_mode) != 0o700
         or observed.st_uid != os.getuid()
     ):
         raise FullC6PipelineError(
-            "RXT060 Full C6 state directory must be owner-owned mode 0700"
+            "RXT060 artifact contract state directory must be owner-owned mode 0700"
         )
 
 
@@ -1012,7 +1019,7 @@ def _read_private_file(path: Path) -> bytes:
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise FullC6PipelineError("RXT060 Full C6 private material cannot be opened") from exc
+        raise FullC6PipelineError("RXT060 artifact contract private material cannot be opened") from exc
     try:
         before = os.fstat(descriptor)
         if (
@@ -1021,13 +1028,13 @@ def _read_private_file(path: Path) -> bytes:
             or before.st_size <= 0
             or before.st_size > _MAX_PRIVATE_MATERIAL_BYTES
         ):
-            raise FullC6PipelineError("RXT060 Full C6 private material is unsafe")
+            raise FullC6PipelineError("RXT060 artifact contract private material is unsafe")
         chunks: list[bytes] = []
         remaining = before.st_size
         while remaining:
             chunk = os.read(descriptor, min(remaining, 1024 * 1024))
             if not chunk:
-                raise FullC6PipelineError("RXT060 Full C6 private material was truncated")
+                raise FullC6PipelineError("RXT060 artifact contract private material was truncated")
             chunks.append(chunk)
             remaining -= len(chunk)
         after = os.fstat(descriptor)
@@ -1041,7 +1048,7 @@ def _read_private_file(path: Path) -> bytes:
                 value.st_mtime_ns,
             )
         if identity(before) != identity(after):
-            raise FullC6PipelineError("RXT060 Full C6 private material changed while reading")
+            raise FullC6PipelineError("RXT060 artifact contract private material changed while reading")
         return b"".join(chunks)
     finally:
         os.close(descriptor)

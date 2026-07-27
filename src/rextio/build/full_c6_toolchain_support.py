@@ -1,9 +1,9 @@
-"""Private fixed-profile discovery for Full C6 toolchain support inputs.
+"""Private fixed-profile discovery for artifact build toolchain support inputs.
 
 The configured support lock is useful only when its opaque roles are joined to
 one independently discovered set of host paths.  This module owns that join.
 It deliberately supports only the two Alpha host profiles already admitted by
-Full C6: Xcode on macOS arm64 and a bounded GNU userspace on Linux x86_64.
+artifact build: Xcode on macOS arm64 and a bounded GNU userspace on Linux x86_64.
 
 Plans are process-sealed, path-private, immutable capabilities.  Generation
 and verification consume the same plan so a future CLI cannot discover one
@@ -61,7 +61,7 @@ from rextio.config.schema import ImportPackagePolicy, ImportsConfig, RextioConfi
 
 
 FULL_C6_TOOLCHAIN_SUPPORT_PLAN_DOMAIN = (
-    "rextio.full-c6-toolchain-support-plan.v1"
+    "rextio.artifact-toolchain-support-plan.v2"
 )
 FULL_C6_TOOLCHAIN_SUPPORT_VIRTUAL_ROOT = PurePosixPath("/rextio/support")
 FULL_C6_TOOLCHAIN_VIRTUAL_ROOT = PurePosixPath("/rextio/toolchain")
@@ -200,7 +200,7 @@ class FullC6ToolchainSupportBootstrapResult:
             or _canonical_project_relative_output(self.output) != self.output
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock bootstrap result is invalid"
+                "artifact build support-lock bootstrap result is invalid"
             )
 
     @property
@@ -214,7 +214,7 @@ class FullC6ToolchainSupportBootstrapResult:
     def to_dict(self) -> dict[str, object]:
         """Return the host-path-free public bootstrap projection."""
         return {
-            "status": "full-c6-toolchain-support-lock-bootstrapped",
+            "status": "artifact-toolchain-support-lock-bootstrapped",
             "result": self.result,
             "target": self.target,
             "manifest_roles": list(self.manifest_roles),
@@ -260,7 +260,7 @@ class _PlatformAnchoredToolBinding:
             or self.anchor_sha256 != self.anchor_sha256.lower()
             or re.fullmatch(r"[0-9a-f]{64}", self.anchor_sha256) is None
         ):
-            raise ValueError("Full C6 platform-anchored tool binding is invalid")
+            raise ValueError("artifact build platform-anchored tool binding is invalid")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -284,7 +284,7 @@ class FullC6SupportNamespaceMapping:
                 host_path=self.host_path,
             )
         ):
-            raise ValueError("Full C6 support namespace mapping is invalid")
+            raise ValueError("artifact build support namespace mapping is invalid")
         expected_kind = {
             "runtime-loader-mirror": "file",
             "support-landlock-launcher": "file",
@@ -303,7 +303,7 @@ class FullC6SupportNamespaceMapping:
             "toolchain-rust-sysroot": "tree",
         }.get(self.logical_role)
         if expected_kind is not None and self.kind != expected_kind:
-            raise ValueError("Full C6 support namespace mapping kind is invalid")
+            raise ValueError("artifact build support namespace mapping kind is invalid")
 
     def __repr__(self) -> str:
         return (
@@ -345,7 +345,7 @@ class FullC6ToolchainSupportPlan:
     _target_triple: str
 
     def __init__(self) -> None:
-        raise TypeError("Full C6 toolchain support plans require discovery")
+        raise TypeError("artifact build toolchain support plans require discovery")
 
     def __repr__(self) -> str:
         return (
@@ -354,25 +354,25 @@ class FullC6ToolchainSupportPlan:
         )
 
     def __setattr__(self, _name: str, _value: object) -> None:
-        raise TypeError("Full C6 toolchain support plans are immutable")
+        raise TypeError("artifact build toolchain support plans are immutable")
 
     def __delattr__(self, _name: str) -> None:
-        raise TypeError("Full C6 toolchain support plans are immutable")
+        raise TypeError("artifact build toolchain support plans are immutable")
 
     def __copy__(self) -> object:
-        raise TypeError("Full C6 toolchain support plans cannot be copied")
+        raise TypeError("artifact build toolchain support plans cannot be copied")
 
     def __deepcopy__(self, _memo: object) -> object:
-        raise TypeError("Full C6 toolchain support plans cannot be copied")
+        raise TypeError("artifact build toolchain support plans cannot be copied")
 
     def __reduce__(self) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 toolchain support plans cannot be serialized")
+        raise TypeError("artifact build toolchain support plans cannot be serialized")
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> str | tuple[object, ...]:
-        raise TypeError("Full C6 toolchain support plans cannot be serialized")
+        raise TypeError("artifact build toolchain support plans cannot be serialized")
 
     def __getstate__(self) -> object:
-        raise TypeError("Full C6 toolchain support plans cannot be serialized")
+        raise TypeError("artifact build toolchain support plans cannot be serialized")
 
     @property
     def target_triple(self) -> str:
@@ -454,7 +454,7 @@ def expected_full_c6_toolchain_support_roles(
         return MACOS_MANIFEST_ROLES, MACOS_ROOT_ROLES
     if target_triple == "x86_64-unknown-linux-gnu":
         return LINUX_MANIFEST_ROLES, LINUX_ROOT_ROLES
-    raise FullC6ToolchainSupportError("Full C6 support target is unsupported")
+    raise FullC6ToolchainSupportError("artifact build support target is unsupported")
 
 
 def resolve_full_c6_linker_and_inspector(
@@ -472,7 +472,7 @@ def resolve_full_c6_linker_and_inspector(
         )
         if Path(developer) != MACOS_DEVELOPER_DIR:
             raise FullC6ToolchainSupportError(
-                "Full C6 macOS requires the exact full Xcode.app developer root"
+                "artifact build macOS requires the exact full Xcode.app developer root"
             )
         clang = _stable_absolute_output(
             [os.fspath(MACOS_XCRUN), "--find", "clang"],
@@ -482,7 +482,7 @@ def resolve_full_c6_linker_and_inspector(
         expected = MACOS_XCODE_TOOL_BIN / "clang"
         if clang != expected:
             raise FullC6ToolchainSupportError(
-                "Full C6 macOS Xcode clang selection is not canonical"
+                "artifact build macOS Xcode clang selection is not canonical"
             )
         return _require_real_file(
             clang,
@@ -492,7 +492,7 @@ def resolve_full_c6_linker_and_inspector(
         return _resolved_real_file(LINUX_CC, executable=True), _resolved_real_file(
             LINUX_READELF, executable=True
         )
-    raise FullC6ToolchainSupportError("Full C6 support target is unsupported")
+    raise FullC6ToolchainSupportError("artifact build support target is unsupported")
 
 
 def discover_full_c6_toolchain_support(
@@ -508,7 +508,7 @@ def discover_full_c6_toolchain_support(
 ) -> FullC6ToolchainSupportPlan:
     """Discover one fixed path-bearing support plan from selected exact tools."""
     if target_triple not in FULL_C6_TOOLCHAIN_SUPPORT_TARGETS:
-        raise FullC6ToolchainSupportError("Full C6 support target is unsupported")
+        raise FullC6ToolchainSupportError("artifact build support target is unsupported")
     selected = (
         *(
             _require_real_file(path, executable=True)
@@ -522,13 +522,13 @@ def discover_full_c6_toolchain_support(
     )
     if len(set(selected)) != len(selected):
         raise FullC6ToolchainSupportError(
-            "Full C6 selected support tools are aliased"
+            "artifact build selected support tools are aliased"
         )
     python, cargo, rustc, linker, inspector = selected
     if target_triple == "aarch64-apple-darwin":
         if type(platform_inspector_identity) is not ToolIdentity:
             raise FullC6ToolchainSupportError(
-                "Full C6 macOS platform inspector identity is missing"
+                "artifact build macOS platform inspector identity is missing"
             )
         return _discover_macos_support(
             cwd=cwd,
@@ -541,7 +541,7 @@ def discover_full_c6_toolchain_support(
         )
     if platform_inspector_identity is not None:
         raise FullC6ToolchainSupportError(
-            "Full C6 Linux cannot accept a platform-anchored inspector"
+            "artifact build Linux cannot accept a platform-anchored inspector"
         )
     return _discover_linux_support(
         cwd=cwd,
@@ -566,7 +566,7 @@ def generate_full_c6_toolchain_support_lock(
         )
     except ToolchainSupportLockError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support lock generation failed closed"
+            "artifact build support lock generation failed closed"
         ) from exc
 
 
@@ -607,11 +607,11 @@ def materialize_full_c6_toolchain_support_lock(
         or not hmac.compare_digest(lock.raw_sha256, expected_raw_sha256)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 generated support lock differs from the configured SHA-256"
+            "artifact build generated support lock differs from the configured SHA-256"
         )
     if not verify_full_c6_toolchain_support_lock(trusted_plan, lock):
         raise FullC6ToolchainSupportError(
-            "Full C6 generated support lock failed verification"
+            "artifact build generated support lock failed verification"
         )
     created = _atomic_create_or_exact_reuse_support_lock(
         project_root=root,
@@ -679,7 +679,7 @@ def _load_full_c6_support_bootstrap_config(
             parsed = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock bootstrap could not load rextio.toml"
+                "artifact build support-lock bootstrap could not load rextio.toml"
             ) from exc
         unknown_sections = set(parsed) - set(loader.CONFIG_KEYS)
         if unknown_sections:
@@ -734,14 +734,14 @@ def _load_full_c6_support_bootstrap_config(
     configured_pin = build["artifact_toolchain_support_lock_sha256"]
     if (configured_path is None) != (configured_pin is None):
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock path and SHA-256 must be configured together"
+            "artifact build support-lock path and SHA-256 must be configured together"
         )
     if configured_path is None:
         build["artifact_toolchain_support_lock"] = output
         build["artifact_toolchain_support_lock_sha256"] = "0" * 64
     elif configured_path != output:
         raise FullC6ToolchainSupportError(
-            "Full C6 configured support-lock path differs from --output"
+            "artifact build configured support-lock path differs from --output"
         )
     try:
         config = loader._build_config(
@@ -758,7 +758,7 @@ def _load_full_c6_support_bootstrap_config(
         )
     except loader.ConfigError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock bootstrap configuration is invalid"
+            "artifact build support-lock bootstrap configuration is invalid"
         ) from exc
     return config, configured_pin if isinstance(configured_pin, str) else None
 
@@ -768,12 +768,12 @@ def _configured_full_c6_artifact_paths(
 ) -> tuple[str, ...]:
     if type(config) is not RextioConfig:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock bootstrap configuration is invalid"
+            "artifact build support-lock bootstrap configuration is invalid"
         )
     imports = config.imports
     if type(imports) is not ImportsConfig or type(imports.packages) is not dict:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock bootstrap configuration is invalid"
+            "artifact build support-lock bootstrap configuration is invalid"
         )
     packages = imports.packages
     if any(
@@ -781,7 +781,7 @@ def _configured_full_c6_artifact_paths(
         for package, package_policy in packages.items()
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock bootstrap configuration is invalid"
+            "artifact build support-lock bootstrap configuration is invalid"
         )
     source_archives = tuple(
         package_policy.source_archive
@@ -803,7 +803,7 @@ def _configured_full_c6_artifact_paths(
     )
     if any(value is not None and type(value) is not str for value in values):
         raise FullC6ToolchainSupportError(
-            "Full C6 configured artifact path is invalid"
+            "artifact build configured artifact path is invalid"
         )
     return tuple(value for value in values if type(value) is str)
 
@@ -840,7 +840,7 @@ def _discover_full_c6_bootstrap_plan(
         )
         if Path(sys.executable).resolve(strict=True) != python_path:
             raise FullC6ToolchainSupportError(
-                "Full C6 bootstrap Python differs from the running interpreter"
+                "artifact build bootstrap Python differs from the running interpreter"
             )
         preliminary_environment = host._minimal_build_environment(cargo_path)
         probe_environment = {
@@ -868,7 +868,7 @@ def _discover_full_c6_bootstrap_plan(
             environment=probe_environment,
         ) != target_triple:
             raise FullC6ToolchainSupportError(
-                "Full C6 bootstrap rustc host differs from target triple"
+                "artifact build bootstrap rustc host differs from target triple"
             )
         host._require_version_pin(
             "CPython",
@@ -920,7 +920,7 @@ def _discover_full_c6_bootstrap_plan(
             environment=probe_environment,
         ) != target_triple:
             raise FullC6ToolchainSupportError(
-                "Full C6 bootstrap tool version changed during identity capture"
+                "artifact build bootstrap tool version changed during identity capture"
             )
         for path, identity in zip(paths, identities, strict=True):
             verify_tool_identity(path, identity)
@@ -960,14 +960,14 @@ def _discover_full_c6_bootstrap_plan(
             environment=final_probe_environment,
         ) != target_triple:
             raise FullC6ToolchainSupportError(
-                "Full C6 bootstrap tool identity changed under the support environment"
+                "artifact build bootstrap tool identity changed under the support environment"
             )
         return revalidate_full_c6_toolchain_support_plan(plan)
     except FullC6ToolchainSupportError:
         raise
     except (host.FullC6HostInputsError, ToolchainIdentityError, OSError, TypeError, ValueError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 toolchain support bootstrap discovery failed closed"
+            "artifact build toolchain support bootstrap discovery failed closed"
         ) from exc
 
 
@@ -979,7 +979,7 @@ def verify_full_c6_toolchain_support_lock(
     revalidate_full_c6_toolchain_support_plan(plan)
     if type(lock) is not ToolchainSupportLock:
         raise FullC6ToolchainSupportError(
-            "Full C6 support verification requires an exact typed lock"
+            "artifact build support verification requires an exact typed lock"
         )
     expected_manifests, expected_roots = expected_full_c6_toolchain_support_roles(
         plan._target_triple
@@ -996,7 +996,7 @@ def verify_full_c6_toolchain_support_lock(
         != expected_roots
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support lock roles, kinds, or target differ from discovery"
+            "artifact build support lock roles, kinds, or target differ from discovery"
         )
     try:
         return verify_toolchain_support_lock(
@@ -1006,7 +1006,7 @@ def verify_full_c6_toolchain_support_lock(
         )
     except ToolchainSupportLockError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support bytes differ from the exact configured lock"
+            "artifact build support bytes differ from the exact configured lock"
         ) from exc
 
 
@@ -1015,7 +1015,7 @@ def require_full_c6_toolchain_support_plan(
 ) -> FullC6ToolchainSupportPlan:
     """Validate only the immutable process seal without rewalking host roots."""
     if type(value) is not FullC6ToolchainSupportPlan:
-        raise FullC6ToolchainSupportError("Full C6 support plan is invalid")
+        raise FullC6ToolchainSupportError("artifact build support plan is invalid")
     try:
         seal_valid = type(value._seal) is bytes and hmac.compare_digest(
             value._seal,
@@ -1023,10 +1023,10 @@ def require_full_c6_toolchain_support_plan(
         )
     except Exception as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support plan seal is invalid"
+            "artifact build support plan seal is invalid"
         ) from exc
     if not seal_valid:
-        raise FullC6ToolchainSupportError("Full C6 support plan seal is invalid")
+        raise FullC6ToolchainSupportError("artifact build support plan seal is invalid")
     return value
 
 
@@ -1038,14 +1038,14 @@ def revalidate_full_c6_toolchain_support_plan(
     for expected in plan._bindings:
         if _capture_path_binding(expected.path, kind=expected.kind) != expected:
             raise FullC6ToolchainSupportError(
-                "Full C6 critical support path changed"
+                "artifact build critical support path changed"
             )
     if plan._anchor is not None:
         try:
             AppleAPFSPlatformAnchorProvider().verify_active_anchor(plan._anchor)
         except FullC6ReadSandboxError as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 authenticated macOS platform anchor changed"
+                "artifact build authenticated macOS platform anchor changed"
             ) from exc
     for binding in plan._platform_anchored_tools:
         if (
@@ -1053,13 +1053,13 @@ def revalidate_full_c6_toolchain_support_plan(
             or binding.anchor_sha256 != plan._anchor.digest
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 platform-anchored tool lost its platform binding"
+                "artifact build platform-anchored tool lost its platform binding"
             )
         try:
             verify_tool_identity(binding.path, binding.identity)
         except ToolchainIdentityError as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 platform-anchored tool bytes changed"
+                "artifact build platform-anchored tool bytes changed"
             ) from exc
     return plan
 
@@ -1080,7 +1080,7 @@ def _discover_python_runtime(
         document = json.loads(raw)
     except (json.JSONDecodeError, UnicodeError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 Python runtime discovery returned invalid JSON"
+            "artifact build Python runtime discovery returned invalid JSON"
         ) from exc
     fields = {
         "executable",
@@ -1098,7 +1098,7 @@ def _discover_python_runtime(
     }
     if type(document) is not dict or set(document) != fields:
         raise FullC6ToolchainSupportError(
-            "Full C6 Python runtime discovery shape is invalid"
+            "artifact build Python runtime discovery shape is invalid"
         )
     if (
         document["implementation"] != "cpython"
@@ -1109,7 +1109,7 @@ def _discover_python_runtime(
         or document["no_site"] != 1
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support runtime requires CPython 3.11 exactly"
+            "artifact build support runtime requires CPython 3.11 exactly"
         )
     text_fields = ("executable", "stdlib", "platstdlib", "libdir", "ldlibrary")
     if any(
@@ -1121,12 +1121,12 @@ def _discover_python_runtime(
         for name in text_fields
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 Python runtime discovery contains an invalid path"
+            "artifact build Python runtime discovery contains an invalid path"
         )
     executable = _resolved_real_file(Path(document["executable"]), executable=True)
     if executable != python:
         raise FullC6ToolchainSupportError(
-            "Full C6 Python runtime executable differs from the selected tool"
+            "artifact build Python runtime executable differs from the selected tool"
         )
     optional_text_fields = ("framework", "framework_install_dir")
     if any(
@@ -1137,13 +1137,13 @@ def _discover_python_runtime(
         for name in optional_text_fields
     ) or bool(document["framework"]) != bool(document["framework_install_dir"]):
         raise FullC6ToolchainSupportError(
-            "Full C6 Python framework discovery is invalid"
+            "artifact build Python framework discovery is invalid"
         )
     stdlib = _resolved_real_directory(Path(document["stdlib"]))
     platstdlib = _resolved_real_directory(Path(document["platstdlib"]))
     if stdlib != platstdlib:
         raise FullC6ToolchainSupportError(
-            "Full C6 Python stdlib and platform stdlib roots differ"
+            "artifact build Python stdlib and platform stdlib roots differ"
         )
     _require_within(_require_real_file(stdlib / "encodings" / "__init__.py"), stdlib)
     _require_within(_require_real_directory(stdlib / "lib-dynload"), stdlib)
@@ -1157,7 +1157,7 @@ def _discover_python_runtime(
             or "\\" in framework_name
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 Python framework name is unsafe"
+                "artifact build Python framework name is unsafe"
             )
         framework = _resolved_real_directory(
             Path(document["framework_install_dir"])
@@ -1173,7 +1173,7 @@ def _discover_python_runtime(
             or "\\" in library_name
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 Python runtime library name is unsafe"
+                "artifact build Python runtime library name is unsafe"
             )
         library = _resolved_real_file(libdir / library_name)
         _require_within(library, libdir)
@@ -1197,7 +1197,7 @@ def _discover_macos_support(
     )
     if linker != expected_linker or inspector != expected_inspector:
         raise FullC6ToolchainSupportError(
-            "Full C6 selected macOS linker or inspector differs from Xcode"
+            "artifact build selected macOS linker or inspector differs from Xcode"
         )
     if (
         platform_inspector_identity.name != "otool"
@@ -1205,13 +1205,13 @@ def _discover_macos_support(
         != "toolchain/otool"
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 macOS platform inspector identity is invalid"
+            "artifact build macOS platform inspector identity is invalid"
         )
     try:
         verify_tool_identity(inspector, platform_inspector_identity)
     except ToolchainIdentityError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 macOS platform inspector bytes differ from tool identity"
+            "artifact build macOS platform inspector bytes differ from tool identity"
         ) from exc
     sysroot, components = _discover_rust_sysroot(
         rustc,
@@ -1226,7 +1226,7 @@ def _discover_macos_support(
     xcode_bin = linker.parent
     expected_bin = MACOS_XCODE_TOOL_BIN
     if xcode_bin != expected_bin:
-        raise FullC6ToolchainSupportError("Full C6 Xcode tool bin root changed")
+        raise FullC6ToolchainSupportError("artifact build Xcode tool bin root changed")
     ld = _xcrun_tool("ld", cwd=cwd, environment=environment, root=xcode_bin)
     ar = _xcrun_tool("ar", cwd=cwd, environment=environment, root=xcode_bin)
     ranlib = _xcrun_tool(
@@ -1256,7 +1256,7 @@ def _discover_macos_support(
     )
     if sdk != canonical_sdk:
         raise FullC6ToolchainSupportError(
-            "Full C6 Xcode macOS SDK selection is not canonical"
+            "artifact build Xcode macOS SDK selection is not canonical"
         )
     sdk = _require_real_directory(sdk)
     sdk_settings = _require_real_file(sdk / "SDKSettings.json")
@@ -1272,13 +1272,13 @@ def _discover_macos_support(
     dyld_profile = _require_real_file(MACOS_SANDBOX_DYLD_PROFILE)
     if _sandbox_imports(system_profile) != ("dyld-support.sb",):
         raise FullC6ToolchainSupportError(
-            "Full C6 system.sb import closure differs from the fixed profile"
+            "artifact build system.sb import closure differs from the fixed profile"
         )
     try:
         anchor = capture_active_macos_platform_anchor()
     except FullC6ReadSandboxError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 macOS authenticated SSV anchor is unavailable"
+            "artifact build macOS authenticated SSV anchor is unavailable"
         ) from exc
     manifests = _locators(
         {
@@ -1365,7 +1365,7 @@ def _discover_linux_support(
     )
     if linker != expected_linker or inspector != expected_inspector:
         raise FullC6ToolchainSupportError(
-            "Full C6 selected Linux linker or inspector differs from policy"
+            "artifact build selected Linux linker or inspector differs from policy"
         )
     bwrap = _require_real_file(LINUX_BWRAP, executable=True)
     runtime_root = _require_real_directory(LINUX_RUNTIME_ROOT)
@@ -1396,7 +1396,7 @@ def _discover_linux_support(
     )
     if python_library.name != LINUX_PYTHON_RUNTIME_LIBRARY_NAME:
         raise FullC6ToolchainSupportError(
-            "Full C6 Linux requires the exact CPython 3.11 runtime library basename"
+            "artifact build Linux requires the exact CPython 3.11 runtime library basename"
         )
     python_library_root = _require_real_directory(python_library.parent)
     launcher = _require_real_file(LINUX_LANDLOCK_LAUNCHER)
@@ -1415,7 +1415,7 @@ def _discover_linux_support(
         )
         if _resolved_real_file(member).parent != gcc_root:
             raise FullC6ToolchainSupportError(
-                "Full C6 GCC private CRT support escaped its exact root"
+                "artifact build GCC private CRT support escaped its exact root"
             )
     for name in ("crt1.o", "crti.o", "crtn.o"):
         member = _stable_resolved_file_output(
@@ -1569,7 +1569,7 @@ def _new_plan(
         or any(item.kind != "tree" for item in roots)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 discovered support roles or kinds are incomplete"
+            "artifact build discovered support roles or kinds are incomplete"
         )
     environment = _validated_environment(base_environment)
     runtime_files = tuple(sorted(set(elf_runtime_files), key=os.fspath))
@@ -1579,7 +1579,7 @@ def _new_plan(
         or (target_triple.endswith("apple-darwin") and runtime_files)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 ELF runtime closure is outside its fixed bound"
+            "artifact build ELF runtime closure is outside its fixed bound"
         )
     platform_anchored_tools: tuple[_PlatformAnchoredToolBinding, ...]
     if target_triple.endswith("apple-darwin"):
@@ -1589,7 +1589,7 @@ def _new_plan(
             or platform_inspector_identity.name != "otool"
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 macOS platform-anchored tool binding is incomplete"
+                "artifact build macOS platform-anchored tool binding is incomplete"
             )
         platform_anchored_tools = (
             _PlatformAnchoredToolBinding(
@@ -1601,7 +1601,7 @@ def _new_plan(
         )
     elif anchor is not None or platform_inspector_identity is not None:
         raise FullC6ToolchainSupportError(
-            "Full C6 Linux platform-anchored tool binding is invalid"
+            "artifact build Linux platform-anchored tool binding is invalid"
         )
     else:
         platform_anchored_tools = ()
@@ -1615,11 +1615,11 @@ def _new_plan(
             or xcode_clang_locator._absolute_path != linker
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 Xcode clang evidence differs from the selected linker"
+                "artifact build Xcode clang evidence differs from the selected linker"
             )
     elif xcode_clang_locator is not None:
         raise FullC6ToolchainSupportError(
-            "Full C6 Linux support unexpectedly contains Xcode clang evidence"
+            "artifact build Linux support unexpectedly contains Xcode clang evidence"
         )
     rust_sysroot_locator = next(
         (item for item in roots if item.logical_role == "rust-sysroot"),
@@ -1631,7 +1631,7 @@ def _new_plan(
         or rustc != rust_sysroot_locator._absolute_path / "bin" / "rustc"
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 selected Cargo or rustc differs from the exact Rust sysroot leaves"
+            "artifact build selected Cargo or rustc differs from the exact Rust sysroot leaves"
         )
     rust_sysroot_namespace_path = rust_sysroot_locator._absolute_path
     if target_triple == "x86_64-unknown-linux-gnu":
@@ -1708,7 +1708,7 @@ def _new_plan(
         elif locator.logical_role == "xcode-clang":
             if target_triple != "aarch64-apple-darwin":
                 raise FullC6ToolchainSupportError(
-                    "Full C6 Xcode clang namespace target is invalid"
+                    "artifact build Xcode clang namespace target is invalid"
                 )
             continue
         elif locator.logical_role == "rust-sysroot":
@@ -1746,7 +1746,7 @@ def _new_plan(
         or linker_mappings[0].kind != "file"
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 selected linker has no exact namespace owner"
+            "artifact build selected linker has no exact namespace owner"
         )
     if (
         len({item.logical_role for item in mappings}) != len(mappings)
@@ -1754,7 +1754,7 @@ def _new_plan(
         or len({item.host_path for item in mappings}) != len(mappings)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support namespace mappings are ambiguous"
+            "artifact build support namespace mappings are ambiguous"
         )
     plan = object.__new__(FullC6ToolchainSupportPlan)
     object.__setattr__(plan, "_target_triple", target_triple)
@@ -1805,7 +1805,7 @@ def _discover_linux_elf_runtime(
     roots = tuple(dict.fromkeys(_require_real_directory(path) for path in search_roots))
     if not roots or runtime_root not in roots:
         raise FullC6ToolchainSupportError(
-            "Full C6 ELF dependency search roots are incomplete"
+            "artifact build ELF dependency search roots are incomplete"
         )
     pending = list(dict.fromkeys(seeds))
     visited: set[Path] = set()
@@ -1818,7 +1818,7 @@ def _discover_linux_elf_runtime(
         visited.add(image)
         if len(visited) > MAX_FULL_C6_ELF_RUNTIME_FILES:
             raise FullC6ToolchainSupportError(
-                "Full C6 ELF runtime closure exceeds its file bound"
+                "artifact build ELF runtime closure exceeds its file bound"
             )
         program = _stable_output(
             [os.fspath(inspector), "-W", "-l", os.fspath(image)],
@@ -1835,7 +1835,7 @@ def _discover_linux_elf_runtime(
         )
         if len(interpreter_rows) > 1:
             raise FullC6ToolchainSupportError(
-                "Full C6 ELF image has ambiguous PT_INTERP"
+                "artifact build ELF image has ambiguous PT_INTERP"
             )
         if interpreter_rows:
             loader = _resolved_real_file(Path(interpreter_rows[0]), executable=True)
@@ -1845,7 +1845,7 @@ def _discover_linux_elf_runtime(
         needed = tuple(match.group("name") for match in _ELF_NEEDED_RE.finditer(dynamic))
         if len(needed) > MAX_FULL_C6_ELF_NEEDED_PER_IMAGE or len(set(needed)) != len(needed):
             raise FullC6ToolchainSupportError(
-                "Full C6 ELF DT_NEEDED set is ambiguous or outside the bound"
+                "artifact build ELF DT_NEEDED set is ambiguous or outside the bound"
             )
         for name in needed:
             if (
@@ -1856,7 +1856,7 @@ def _discover_linux_elf_runtime(
                 or any(ord(character) < 33 or ord(character) > 126 for character in name)
             ):
                 raise FullC6ToolchainSupportError(
-                    "Full C6 ELF DT_NEEDED name is unsafe"
+                    "artifact build ELF DT_NEEDED name is unsafe"
                 )
             dependency = _resolve_linux_needed_dependency(name, roots)
             runtime_files.add(dependency)
@@ -1864,7 +1864,7 @@ def _discover_linux_elf_runtime(
                 pending.append(dependency)
     if len(loaders) != 1:
         raise FullC6ToolchainSupportError(
-            "Full C6 ELF closure requires one exact dynamic loader"
+            "artifact build ELF closure requires one exact dynamic loader"
         )
     return tuple(sorted(runtime_files, key=os.fspath)), next(iter(loaders))
 
@@ -1883,24 +1883,24 @@ def _resolve_linux_needed_dependency(
             continue
         except OSError as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 ELF dependency candidate could not be inspected"
+                "artifact build ELF dependency candidate could not be inspected"
             ) from exc
         try:
             resolved = candidate.resolve(strict=True)
         except OSError as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 ELF dependency candidate could not be resolved"
+                "artifact build ELF dependency candidate could not be resolved"
             ) from exc
         resolved = _require_real_file(resolved)
         _require_within(resolved, root)
         matches.add(resolved)
     if not matches:
         raise FullC6ToolchainSupportError(
-            "Full C6 ELF dependency is missing from the fixed search roots"
+            "artifact build ELF dependency is missing from the fixed search roots"
         )
     if len(matches) != 1:
         raise FullC6ToolchainSupportError(
-            "Full C6 ELF dependency resolution is ambiguous"
+            "artifact build ELF dependency resolution is ambiguous"
         )
     return next(iter(matches))
 
@@ -1920,12 +1920,12 @@ def _xcrun_tool(
     )
     if path.parent != root or path.name != name:
         raise FullC6ToolchainSupportError(
-            f"Full C6 Xcode {name} selection is not canonical"
+            f"artifact build Xcode {name} selection is not canonical"
         )
     if path.is_symlink():
         if not allow_symlink:
             raise FullC6ToolchainSupportError(
-                f"Full C6 Xcode {name} selection is an unexpected symlink"
+                f"artifact build Xcode {name} selection is an unexpected symlink"
             )
         _require_support_symlink(path)
         _require_real_file(_resolve_inside(path, root), executable=True)
@@ -1937,7 +1937,7 @@ def _require_fixed_macos_clang_resource(path: Path) -> Path:
     """Admit only clang 17 from the fixed XcodeDefault toolchain layout."""
     if path != MACOS_XCODE_CLANG_RESOURCE:
         raise FullC6ToolchainSupportError(
-            "Full C6 Xcode clang resource differs from the fixed version profile"
+            "artifact build Xcode clang resource differs from the fixed version profile"
         )
     return path
 
@@ -1966,7 +1966,7 @@ def _stable_absolute_output(
         or len(os.fsencode(value)) > MAX_FULL_C6_SUPPORT_PATH_BYTES
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support discovery returned a noncanonical absolute path"
+            "artifact build support discovery returned a noncanonical absolute path"
         )
     return path
 
@@ -1987,13 +1987,13 @@ def _stable_resolved_file_output(
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support discovery returned an invalid absolute file path"
+            "artifact build support discovery returned an invalid absolute file path"
         )
     try:
         resolved = Path(value).resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support discovery file could not be resolved"
+            "artifact build support discovery file could not be resolved"
         ) from exc
     return _require_real_file(resolved)
 
@@ -2008,7 +2008,7 @@ def _stable_one_line(
     lines = tuple(line.strip() for line in first.splitlines() if line.strip())
     if len(lines) != 1:
         raise FullC6ToolchainSupportError(
-            "Full C6 support discovery output is missing or ambiguous"
+            "artifact build support discovery output is missing or ambiguous"
         )
     value = lines[0]
     if (
@@ -2017,7 +2017,7 @@ def _stable_one_line(
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support discovery output is invalid"
+            "artifact build support discovery output is invalid"
         )
     return value
 
@@ -2040,17 +2040,17 @@ def _stable_output(
         )
         if completed.returncode != 0:
             raise FullC6ToolchainSupportError(
-                "Full C6 support discovery command failed closed"
+                "artifact build support discovery command failed closed"
             )
         output = completed.stdout or ""
         if not output or len(output.encode("utf-8")) > MAX_FULL_C6_SUPPORT_OUTPUT_BYTES:
             raise FullC6ToolchainSupportError(
-                "Full C6 support discovery output is empty or too large"
+                "artifact build support discovery output is empty or too large"
             )
         outputs.append(output)
     if outputs[0] != outputs[1]:
         raise FullC6ToolchainSupportError(
-            "Full C6 support discovery output changed across probes"
+            "artifact build support discovery output changed across probes"
         )
     return outputs[0]
 
@@ -2071,7 +2071,7 @@ def _locators(
         )
     except ToolchainSupportLockError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support locator discovery failed closed"
+            "artifact build support locator discovery failed closed"
         ) from exc
 
 
@@ -2080,17 +2080,17 @@ def _sandbox_imports(path: Path) -> tuple[str, ...]:
         data = path.read_bytes()
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 sandbox support profile could not be read"
+            "artifact build sandbox support profile could not be read"
         ) from exc
     if len(data) > 1024 * 1024:
         raise FullC6ToolchainSupportError(
-            "Full C6 sandbox support profile exceeds its bound"
+            "artifact build sandbox support profile exceeds its bound"
         )
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 sandbox support profile is not UTF-8"
+            "artifact build sandbox support profile is not UTF-8"
         ) from exc
     imports = tuple(
         match.group(1)
@@ -2102,7 +2102,7 @@ def _sandbox_imports(path: Path) -> tuple[str, ...]:
 def _validated_environment(value: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
     if not isinstance(value, Mapping) or not value:
         raise FullC6ToolchainSupportError(
-            "Full C6 support environment is missing"
+            "artifact build support environment is missing"
         )
     rows: list[tuple[str, str]] = []
     for name, item in value.items():
@@ -2114,7 +2114,7 @@ def _validated_environment(value: Mapping[str, str]) -> tuple[tuple[str, str], .
             or len(item.encode("utf-8")) > MAX_FULL_C6_SUPPORT_ENV_BYTES
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support environment is invalid"
+                "artifact build support environment is invalid"
             )
         rows.append((name, item))
     return tuple(sorted(rows))
@@ -2122,7 +2122,7 @@ def _validated_environment(value: Mapping[str, str]) -> tuple[tuple[str, str], .
 
 def _capture_path_binding(path: Path, *, kind: str) -> _PathBinding:
     if kind not in {"file", "symlink", "tree"}:
-        raise FullC6ToolchainSupportError("Full C6 support path kind is invalid")
+        raise FullC6ToolchainSupportError("artifact build support path kind is invalid")
     if kind == "file":
         expected = _require_real_file(path)
     elif kind == "symlink":
@@ -2133,7 +2133,7 @@ def _capture_path_binding(path: Path, *, kind: str) -> _PathBinding:
         before = os.lstat(expected)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 critical support path is unavailable"
+            "artifact build critical support path is unavailable"
         ) from exc
     raw_sha256: str | None = None
     if kind == "file":
@@ -2144,7 +2144,7 @@ def _capture_path_binding(path: Path, *, kind: str) -> _PathBinding:
                     digest.update(chunk)
         except OSError as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 critical support file could not be read"
+                "artifact build critical support file could not be read"
             ) from exc
         raw_sha256 = digest.hexdigest()
     elif kind == "symlink":
@@ -2152,18 +2152,18 @@ def _capture_path_binding(path: Path, *, kind: str) -> _PathBinding:
             target = os.readlink(expected)
         except OSError as exc:
             raise FullC6ToolchainSupportError(
-                "Full C6 critical support symlink could not be read"
+                "artifact build critical support symlink could not be read"
             ) from exc
         raw_sha256 = hashlib.sha256(os.fsencode(target)).hexdigest()
     try:
         after = os.lstat(expected)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 critical support path changed"
+            "artifact build critical support path changed"
         ) from exc
     if _stat_key(before) != _stat_key(after):
         raise FullC6ToolchainSupportError(
-            "Full C6 critical support path changed during capture"
+            "artifact build critical support path changed during capture"
         )
     return _PathBinding(
         path=expected,
@@ -2184,7 +2184,7 @@ def _require_real_file(path: Path, *, executable: bool = False) -> Path:
         observed = os.lstat(path)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support file is unavailable"
+            "artifact build support file is unavailable"
         ) from exc
     if (
         stat.S_ISLNK(observed.st_mode)
@@ -2193,7 +2193,7 @@ def _require_real_file(path: Path, *, executable: bool = False) -> Path:
         or (executable and not os.access(path, os.X_OK))
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support file is unsafe or aliased"
+            "artifact build support file is unsafe or aliased"
         )
     return path
 
@@ -2205,7 +2205,7 @@ def _require_support_symlink(path: Path) -> Path:
         target = os.readlink(path)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support symlink is unavailable"
+            "artifact build support symlink is unavailable"
         ) from exc
     if (
         not stat.S_ISLNK(observed.st_mode)
@@ -2217,7 +2217,7 @@ def _require_support_symlink(path: Path) -> Path:
         or len(os.fsencode(target)) > MAX_FULL_C6_SUPPORT_PATH_BYTES
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support symlink is unsafe or aliased"
+            "artifact build support symlink is unsafe or aliased"
         )
     return path
 
@@ -2227,13 +2227,13 @@ def _require_platform_anchored_macos_tool(path: Path) -> Path:
     path = _canonical_absolute(path)
     if path != MACOS_OTOOL:
         raise FullC6ToolchainSupportError(
-            "Full C6 platform-anchored macOS tool is outside the fixed profile"
+            "artifact build platform-anchored macOS tool is outside the fixed profile"
         )
     try:
         observed = os.lstat(path)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 platform-anchored macOS tool is unavailable"
+            "artifact build platform-anchored macOS tool is unavailable"
         ) from exc
     if (
         stat.S_ISLNK(observed.st_mode)
@@ -2242,7 +2242,7 @@ def _require_platform_anchored_macos_tool(path: Path) -> Path:
         or not os.access(path, os.X_OK)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 platform-anchored macOS tool is unsafe"
+            "artifact build platform-anchored macOS tool is unsafe"
         )
     return path
 
@@ -2253,7 +2253,7 @@ def _resolved_real_file(path: Path, *, executable: bool = False) -> Path:
         resolved = canonical.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support executable could not be resolved"
+            "artifact build support executable could not be resolved"
         ) from exc
     return _require_real_file(resolved, executable=executable)
 
@@ -2263,7 +2263,7 @@ def _resolved_real_directory(path: Path) -> Path:
         resolved = _canonical_absolute(path).resolve(strict=True)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support directory could not be resolved"
+            "artifact build support directory could not be resolved"
         ) from exc
     return _require_real_directory(resolved)
 
@@ -2274,11 +2274,11 @@ def _require_real_directory(path: Path) -> Path:
         observed = os.lstat(path)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support directory is unavailable"
+            "artifact build support directory is unavailable"
         ) from exc
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
         raise FullC6ToolchainSupportError(
-            "Full C6 support directory is unsafe or aliased"
+            "artifact build support directory is unsafe or aliased"
         )
     return path
 
@@ -2289,7 +2289,7 @@ def _resolve_inside(path: Path, root: Path) -> Path:
         resolved.relative_to(root)
     except (OSError, ValueError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support selection escaped its fixed root"
+            "artifact build support selection escaped its fixed root"
         ) from exc
     return resolved
 
@@ -2299,7 +2299,7 @@ def _require_within(path: Path, root: Path) -> None:
         path.relative_to(root)
     except ValueError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support dependency escaped its fixed root"
+            "artifact build support dependency escaped its fixed root"
         ) from exc
 
 
@@ -2314,7 +2314,7 @@ def _canonical_absolute(path: Path) -> Path:
         or len(os.fsencode(value)) > MAX_FULL_C6_SUPPORT_PATH_BYTES
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support path is not canonical absolute NFC"
+            "artifact build support path is not canonical absolute NFC"
         )
     return Path(value)
 
@@ -2334,7 +2334,7 @@ def _stat_key(value: os.stat_result) -> tuple[int, ...]:
 
 def _path_digest(path: Path) -> str:
     return hashlib.sha256(
-        b"rextio.full-c6-support-private-path.v1\0" + os.fsencode(path)
+        b"rextio.artifact-support-private-path.v2\0" + os.fsencode(path)
     ).hexdigest()
 
 
@@ -2380,16 +2380,16 @@ def _support_virtual_path(
             or "\\" in host_path.name
         ):
             raise ValueError(
-                "Full C6 Python runtime library namespace path is invalid"
+                "artifact build Python runtime library namespace path is invalid"
             )
         return PurePosixPath(FULL_C6_LINUX_PYTHON_ROOT) / "lib" / host_path.name
     if logical_role in special:
         return special[logical_role]
     if not logical_role.startswith("support-"):
-        raise ValueError("Full C6 support namespace role is invalid")
+        raise ValueError("artifact build support namespace role is invalid")
     leaf = logical_role.removeprefix("support-")
     if _ROLE_RE.fullmatch(leaf) is None:
-        raise ValueError("Full C6 support namespace leaf is invalid")
+        raise ValueError("artifact build support namespace leaf is invalid")
     return FULL_C6_TOOLCHAIN_SUPPORT_VIRTUAL_ROOT / leaf
 
 
@@ -2397,7 +2397,7 @@ def _joined_unique_paths(paths: Sequence[Path]) -> str:
     canonical = tuple(dict.fromkeys(_require_real_directory(path) for path in paths))
     if not canonical:
         raise FullC6ToolchainSupportError(
-            "Full C6 support path list is empty"
+            "artifact build support path list is empty"
         )
     return os.pathsep.join(os.fspath(path) for path in canonical)
 
@@ -2488,7 +2488,7 @@ def _canonical_project_relative_output(value: object) -> str:
     )
     if not path.endswith(".json"):
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output is not a canonical project-relative JSON path"
+            "artifact build support-lock output is not a canonical project-relative JSON path"
         )
     return path
 
@@ -2496,7 +2496,7 @@ def _canonical_project_relative_output(value: object) -> str:
 def _canonical_project_relative_path(value: object, *, label: str) -> str:
     if type(value) is not str:
         raise FullC6ToolchainSupportError(
-            f"Full C6 {label} must be project-relative text"
+            f"artifact build {label} must be project-relative text"
         )
     posix = PurePosixPath(value)
     windows = PureWindowsPath(value)
@@ -2515,7 +2515,7 @@ def _canonical_project_relative_path(value: object, *, label: str) -> str:
         or any(part in {"", ".", ".."} for part in value.split("/"))
     ):
         raise FullC6ToolchainSupportError(
-            f"Full C6 {label} is not a canonical project-relative path"
+            f"artifact build {label} is not a canonical project-relative path"
         )
     return value
 
@@ -2525,7 +2525,7 @@ def _canonical_absolute_project_root(value: Path | str) -> Path:
         text = os.fspath(value)
     except TypeError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock project root is invalid"
+            "artifact build support-lock project root is invalid"
         ) from exc
     if (
         type(text) is not str
@@ -2534,12 +2534,12 @@ def _canonical_absolute_project_root(value: Path | str) -> Path:
         or text != unicodedata.normalize("NFC", text)
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock project root is invalid"
+            "artifact build support-lock project root is invalid"
         )
     root = Path(os.path.abspath(text))
     if len(os.fsencode(root)) > MAX_FULL_C6_SUPPORT_PATH_BYTES:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock project root exceeds its path bound"
+            "artifact build support-lock project root exceeds its path bound"
         )
     return root
 
@@ -2551,7 +2551,7 @@ def _require_nonaliased_support_output(
 ) -> None:
     if isinstance(configured_artifact_paths, (str, bytes)):
         raise FullC6ToolchainSupportError(
-            "Full C6 configured artifact paths are invalid"
+            "artifact build configured artifact paths are invalid"
         )
     candidate = _alias_path_parts(output)
     for configured in configured_artifact_paths:
@@ -2566,7 +2566,7 @@ def _require_nonaliased_support_output(
             or other_parts[: len(candidate)] == candidate
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock output aliases another configured artifact path"
+                "artifact build support-lock output aliases another configured artifact path"
             )
 
 
@@ -2589,7 +2589,7 @@ def _atomic_create_or_exact_reuse_support_lock(
         or len(payload) > MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES
     ):
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output bytes are invalid"
+            "artifact build support-lock output bytes are invalid"
         )
     parent_fd, name = _open_support_output_parent(
         project_root,
@@ -2605,7 +2605,7 @@ def _atomic_create_or_exact_reuse_support_lock(
         if existing is not None:
             if not hmac.compare_digest(existing, payload):
                 raise FullC6ToolchainSupportError(
-                    "existing Full C6 support-lock output bytes differ"
+                    "existing artifact build support-lock output bytes differ"
                 )
             return False
         flags = (
@@ -2628,7 +2628,7 @@ def _atomic_create_or_exact_reuse_support_lock(
             or stat.S_IMODE(observed.st_mode) != 0o600
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock temporary output is unsafe"
+                "artifact build support-lock temporary output is unsafe"
             )
         os.close(descriptor)
         descriptor = -1
@@ -2644,7 +2644,7 @@ def _atomic_create_or_exact_reuse_support_lock(
             concurrent = _read_support_output(parent_fd, name)
             if concurrent is None or not hmac.compare_digest(concurrent, payload):
                 raise FullC6ToolchainSupportError(
-                    "concurrent Full C6 support-lock output bytes differ"
+                    "concurrent artifact build support-lock output bytes differ"
                 ) from None
             return False
         os.unlink(temporary, dir_fd=parent_fd)
@@ -2653,14 +2653,14 @@ def _atomic_create_or_exact_reuse_support_lock(
         final = _read_support_output(parent_fd, name)
         if final is None or not hmac.compare_digest(final, payload):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock final bytes changed"
+                "artifact build support-lock final bytes changed"
             )
         return True
     except FullC6ToolchainSupportError:
         raise
     except (OSError, TypeError, ValueError) as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output transaction failed"
+            "artifact build support-lock output transaction failed"
         ) from exc
     finally:
         if descriptor >= 0:
@@ -2688,7 +2688,7 @@ def _open_support_output_parent(
         descriptor = os.open(project_root.anchor, flags)
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock project root is unavailable"
+            "artifact build support-lock project root is unavailable"
         ) from exc
     try:
         for part in project_root.parts[1:]:
@@ -2703,7 +2703,7 @@ def _open_support_output_parent(
             or stat.S_IMODE(parent.st_mode) != 0o700
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock output parent must be owner-private mode 0700"
+                "artifact build support-lock output parent must be owner-private mode 0700"
             )
         return descriptor, output.name
     except Exception:
@@ -2714,7 +2714,7 @@ def _open_support_output_parent(
 def _open_child_directory(parent_fd: int, name: str, flags: int) -> int:
     if name in {"", ".", ".."} or "/" in name or "\\" in name:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output parent is unsafe"
+            "artifact build support-lock output parent is unsafe"
         )
     child = -1
     try:
@@ -2725,7 +2725,7 @@ def _open_child_directory(parent_fd: int, name: str, flags: int) -> int:
         if child >= 0:
             os.close(child)
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output parent is unavailable or linked"
+            "artifact build support-lock output parent is unavailable or linked"
         ) from exc
     if (
         not stat.S_ISDIR(opened.st_mode)
@@ -2734,7 +2734,7 @@ def _open_child_directory(parent_fd: int, name: str, flags: int) -> int:
     ):
         os.close(child)
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output parent changed"
+            "artifact build support-lock output parent changed"
         )
     os.close(parent_fd)
     return child
@@ -2753,7 +2753,7 @@ def _read_support_output(parent_fd: int, name: str) -> bytes | None:
         return None
     except OSError as exc:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock output is unsafe"
+            "artifact build support-lock output is unsafe"
         ) from exc
     try:
         before = os.fstat(descriptor)
@@ -2766,7 +2766,7 @@ def _read_support_output(parent_fd: int, name: str) -> bytes | None:
             or before.st_size > MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock output is not one private regular file"
+                "artifact build support-lock output is not one private regular file"
             )
         data = bytearray()
         while len(data) <= MAX_TOOLCHAIN_SUPPORT_LOCK_BYTES:
@@ -2784,7 +2784,7 @@ def _read_support_output(parent_fd: int, name: str) -> bytes | None:
             or _support_stat_key(before) != _support_stat_key(after)
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock output changed while reading"
+                "artifact build support-lock output changed while reading"
             )
         return bytes(data)
     finally:
@@ -2810,7 +2810,7 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         written = os.write(descriptor, payload[offset:])
         if written <= 0:
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock output write stalled"
+                "artifact build support-lock output write stalled"
             )
         offset += written
 
@@ -2819,7 +2819,7 @@ def _require_nofollow() -> int:
     value = getattr(os, "O_NOFOLLOW", None)
     if type(value) is not int or value == 0:
         raise FullC6ToolchainSupportError(
-            "Full C6 support-lock bootstrap requires O_NOFOLLOW"
+            "artifact build support-lock bootstrap requires O_NOFOLLOW"
         )
     return value
 

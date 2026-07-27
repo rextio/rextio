@@ -12,6 +12,12 @@ import pytest
 
 import rextio.build.full_c6_policy_bootstrap as bootstrap_module
 from rextio.build.full_c6_pipeline import FULL_C6_DISTRIBUTION_POLICY
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    LEGACY_0_1_7,
+    POLICY_BOOTSTRAP_INPUT_SET_DOMAIN,
+    ArtifactContractDialect,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
     artifact_policy_coverage_inventory_digest,
@@ -25,6 +31,7 @@ from rextio.build.full_c6_policy_bootstrap import (
     FULL_C6_POLICY_BOOTSTRAP_FILENAME,
     FullC6PolicyBootstrapError,
     FullC6PolicyBootstrapInputs,
+    FullC6PolicyBootstrapRequest,
     create_configured_full_c6_policy_bootstrap_request,
     materialize_configured_full_c6_policy_bootstrap,
     materialize_full_c6_policy_bootstrap_request,
@@ -61,23 +68,20 @@ def test_policy_bootstrap_uses_canonical_distribution_policy_constant() -> None:
 
 
 def _config_text(*, policy_sha256: bool, final_signature: bool = False) -> str:
-    digest = (
-        f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n'
-        if policy_sha256
-        else ""
-    )
+    digest = f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n' if policy_sha256 else ""
     signature = (
         'artifact_final_signature = "signatures/final-authorization.sig.json"\n'
         if final_signature
         else ""
     )
-    return f"""
+    return (
+        f"""
 [build]
 artifact_evidence_policy = "required"
 artifact_distribution_policy = "strict-evidence"
 artifact_source_lock_manifest = "locks/source-lock.v2.json"
 artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
-artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
+artifact_policy_manifest = "locks/rextio.artifact-policy.json"
 {digest}artifact_cargo_vendor = "vendor/cargo"
 artifact_cargo_vendor_sha256 = "{_SHA_A}"
 artifact_cargo_lock = "locks/Cargo.lock"
@@ -86,7 +90,7 @@ artifact_toolchain_support_lock = "locks/toolchain-support.lock.json"
 artifact_toolchain_support_lock_sha256 = "{_SHA_C}"
 artifact_trusted_public_key = "keys/release.pub"
 artifact_trusted_public_key_sha256 = "{_SHA_A}"
-artifact_signing_request_output = "state/rextio.full-c6-final-authorization-request.json"
+artifact_signing_request_output = "state/rextio.artifact-authorization-request.json"
 {signature}artifact_repeat_builds = 2
 
 [imports]
@@ -99,7 +103,9 @@ distribution = "demo-math"
 version = "1.2.3"
 source_archive = "vendor/demo_math-1.2.3-py3-none-any.whl"
 source_archive_sha256 = "{_SHA_B}"
-""".strip() + "\n"
+""".strip()
+        + "\n"
+    )
 
 
 def _config(
@@ -129,18 +135,10 @@ def _inputs(**replacements: object) -> FullC6PolicyBootstrapInputs:
         "external_authority_partition_sha256": _SHA_1,
         "license_materials_transaction_sha256": _SHA_2,
         "source_lock_verification_sha256": _SHA_3,
-        "artifact_class_observed_counts": (1,) * len(
-            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
-        ),
-        "external_class_observed_counts": (1,) * len(
-            FULL_C6_EXTERNAL_POLICY_CLASS_IDS
-        ),
-        "artifact_observed_component_count": len(
-            ARTIFACT_POLICY_COVERAGE_CLASS_IDS
-        ),
-        "external_observed_component_count": len(
-            FULL_C6_EXTERNAL_POLICY_CLASS_IDS
-        ),
+        "artifact_class_observed_counts": (1,) * len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS),
+        "external_class_observed_counts": (1,) * len(FULL_C6_EXTERNAL_POLICY_CLASS_IDS),
+        "artifact_observed_component_count": len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS),
+        "external_observed_component_count": len(FULL_C6_EXTERNAL_POLICY_CLASS_IDS),
         "required_transformation_count": 3,
         "target_triple": "aarch64-apple-darwin",
         "build_profile": "release",
@@ -158,11 +156,53 @@ def _request(tmp_path: Path):
     )
 
 
-def _technical_template() -> FullC6TechnicalPolicyTemplate:
-    receipt = _POLICY["_receipt"]()
-    external_file = _POLICY["_file"](
-        "external/pkg-1.0.dist-info/licenses/LICENSE"
+def _legacy_template(
+    template: FullC6TechnicalPolicyTemplate,
+) -> FullC6TechnicalPolicyTemplate:
+    legacy = _technical_template(dialect=LEGACY_0_1_7)
+    assert legacy.observed_owner_identity == template.observed_owner_identity
+    return parse_full_c6_technical_policy_template(legacy.to_dict())
+
+
+def _legacy_request(
+    request: FullC6PolicyBootstrapRequest,
+) -> FullC6PolicyBootstrapRequest:
+    template = _legacy_template(request.technical_template)
+    inputs = replace(
+        request.inputs,
+        artifact_coverage_inventory_sha256=(
+            artifact_policy_coverage_inventory_digest(template.artifact_coverage)
+        ),
+        artifact_authority_partition_sha256=(template.artifact_coverage.canonical_partition_sha256),
+        combined_authority_partition_sha256=(template.authority_partition_sha256),
+        external_authority_partition_sha256=(
+            template.external_authority.canonical_partition_sha256
+        ),
+        artifact_class_observed_counts=tuple(
+            item.observed_count for item in template.artifact_coverage.classes
+        ),
+        external_class_observed_counts=tuple(
+            item.observed_count for item in template.external_authority.classes
+        ),
+        artifact_observed_component_count=(template.artifact_coverage.observed_component_count),
+        external_observed_component_count=(template.external_authority.observed_component_count),
+        required_transformation_count=len(template.transformations),
     )
+    legacy = FullC6PolicyBootstrapRequest(
+        inputs=inputs,
+        trusted_owner_public_key_sha256=(request.trusted_owner_public_key_sha256),
+        technical_template=template,
+        _artifact_contract_dialect=LEGACY_0_1_7.name,
+    )
+    return parse_full_c6_policy_bootstrap_request(legacy.to_bytes())
+
+
+def _technical_template(
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6TechnicalPolicyTemplate:
+    receipt = _POLICY["_receipt"](dialect=dialect)
+    external_file = _POLICY["_file"]("external/pkg-1.0.dist-info/licenses/LICENSE")
     external_receipt = "c" * 64
     external_observation = FullC6ExternalLicenseObservation(
         declared_spdx="MIT",
@@ -172,8 +212,10 @@ def _technical_template() -> FullC6TechnicalPolicyTemplate:
             "MIT",
             (external_file,),
             source_detector_receipt_sha256=external_receipt,
+            _artifact_contract_dialect=dialect.name,
         ),
         license_files=(external_file,),
+        _artifact_contract_dialect=dialect.name,
     )
     project_file = _POLICY["_file"]("licenses/PROJECT-LICENSE")
     project_receipt = "7" * 64
@@ -187,8 +229,10 @@ def _technical_template() -> FullC6TechnicalPolicyTemplate:
             "MIT",
             (project_file,),
             source_detector_receipt_sha256=project_receipt,
+            _artifact_contract_dialect=dialect.name,
         ),
         license_files=(project_file,),
+        _artifact_contract_dialect=dialect.name,
     )
     cargo_identity = next(
         row.canonical_identity
@@ -207,8 +251,10 @@ def _technical_template() -> FullC6TechnicalPolicyTemplate:
             "MIT",
             (cargo_file,),
             source_detector_receipt_sha256=cargo_receipt,
+            _artifact_contract_dialect=dialect.name,
         ),
         license_files=(cargo_file,),
+        _artifact_contract_dialect=dialect.name,
     )
     internal_observations = tuple(
         sorted(
@@ -252,6 +298,7 @@ def _technical_template() -> FullC6TechnicalPolicyTemplate:
                     )
                 )
             ),
+            _artifact_contract_dialect=dialect.name,
         )
         for row in receipt.rows
     )
@@ -263,6 +310,7 @@ def _technical_template() -> FullC6TechnicalPolicyTemplate:
         internal_license_observations=internal_observations,
         external_license_observation=external_observation,
         observed_owner_identity=receipt.owner_declaration.owner_identity,
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -273,9 +321,7 @@ def _coherent_inputs(
         artifact_coverage_inventory_sha256=(
             artifact_policy_coverage_inventory_digest(template.artifact_coverage)
         ),
-        artifact_authority_partition_sha256=(
-            template.artifact_coverage.canonical_partition_sha256
-        ),
+        artifact_authority_partition_sha256=(template.artifact_coverage.canonical_partition_sha256),
         combined_authority_partition_sha256=template.authority_partition_sha256,
         external_authority_partition_sha256=(
             template.external_authority.canonical_partition_sha256
@@ -286,12 +332,8 @@ def _coherent_inputs(
         external_class_observed_counts=tuple(
             item.observed_count for item in template.external_authority.classes
         ),
-        artifact_observed_component_count=(
-            template.artifact_coverage.observed_component_count
-        ),
-        external_observed_component_count=(
-            template.external_authority.observed_component_count
-        ),
+        artifact_observed_component_count=(template.artifact_coverage.observed_component_count),
+        external_observed_component_count=(template.external_authority.observed_component_count),
         required_transformation_count=len(template.transformations),
     )
 
@@ -306,18 +348,14 @@ def _private_state(tmp_path: Path) -> Path:
 def test_policy_lifecycle_distinguishes_bootstrap_signing_and_publication(
     tmp_path: Path,
 ) -> None:
-    bootstrap = resolve_full_c6_policy_lifecycle(
-        _config(tmp_path, policy_sha256=False)
-    )
+    bootstrap = resolve_full_c6_policy_lifecycle(_config(tmp_path, policy_sha256=False))
     assert bootstrap.status == "bootstrap-required"
     assert bootstrap.bootstrap_allowed is True
     assert bootstrap.signing_request_allowed is False
     assert bootstrap.publication_attempt_allowed is False
     assert bootstrap.published is False
 
-    signing = resolve_full_c6_policy_lifecycle(
-        _config(tmp_path, policy_sha256=True)
-    )
+    signing = resolve_full_c6_policy_lifecycle(_config(tmp_path, policy_sha256=True))
     assert signing.status == "signing-required"
     assert signing.owner_policy_pinned is True
     assert signing.signing_request_allowed is True
@@ -353,19 +391,20 @@ def test_bootstrap_request_is_deterministic_exact_and_non_authorizing(
 
     assert repeated.to_bytes() == payload
     assert payload == canonical_json_bytes(document)
-    assert request.request_sha256 == hashlib.sha256(
-        canonical_json_bytes(
-            {key: value for key, value in document.items() if key != "request_sha256"}
-        )
-    ).hexdigest()
+    assert (
+        request.request_sha256
+        == hashlib.sha256(
+            canonical_json_bytes(
+                {key: value for key, value in document.items() if key != "request_sha256"}
+            )
+        ).hexdigest()
+    )
     assert document["authority"] == "non-authorizing-observation"
     assert document["distribution_authorized"] is False
     assert document["owner_completion_required"] is True
     assert document["trusted_owner_public_key_sha256"] == _SHA_A
     assert document["technical_template"] == request.technical_template.to_dict()
-    assert document["technical_template_sha256"] == (
-        request.technical_template.template_sha256
-    )
+    assert document["technical_template_sha256"] == (request.technical_template.template_sha256)
     assert document["target"] == {
         "build_profile": "release",
         "target_triple": "aarch64-apple-darwin",
@@ -387,7 +426,7 @@ def test_bootstrap_request_is_deterministic_exact_and_non_authorizing(
     ]
     text = payload.decode("ascii")
     assert str(tmp_path) not in text
-    assert "locks/rextio.full-c6-policy.json" not in text
+    assert "locks/rextio.artifact-policy.json" not in text
     assert "source bytes" not in text
     assert "private" not in text
     assert "signature" not in text
@@ -425,6 +464,21 @@ def test_bootstrap_factory_refuses_a_pinned_owner_policy(tmp_path: Path) -> None
         )
 
 
+def test_bootstrap_factory_rejects_a_parsed_legacy_template(
+    tmp_path: Path,
+) -> None:
+    template = _legacy_template(_technical_template())
+    with pytest.raises(
+        FullC6PolicyBootstrapError,
+        match="current template dialect",
+    ):
+        create_configured_full_c6_policy_bootstrap_request(
+            config=_config(tmp_path, policy_sha256=False),
+            inputs=_coherent_inputs(template),
+            technical_template=template,
+        )
+
+
 def test_materialization_creates_exact_private_file_and_reuses_exact_bytes(
     tmp_path: Path,
 ) -> None:
@@ -453,6 +507,23 @@ def test_materialization_creates_exact_private_file_and_reuses_exact_bytes(
     assert reused.created is False
     assert reused.request_sha256 == created.request_sha256
     assert path.read_bytes() == request.to_bytes()
+
+
+def test_materialization_rejects_parsed_legacy_before_filesystem_access(
+    tmp_path: Path,
+) -> None:
+    request = _legacy_request(_request(tmp_path))
+    absent_state = tmp_path / "must-not-be-opened"
+    assert not absent_state.exists()
+    with pytest.raises(
+        FullC6PolicyBootstrapError,
+        match="read/verify-only",
+    ):
+        materialize_full_c6_policy_bootstrap_request(
+            state_directory=absent_state,
+            request=request,
+        )
+    assert not absent_state.exists()
 
 
 def test_configured_materialization_uses_only_bootstrap_lifecycle(
@@ -653,20 +724,20 @@ def test_request_input_aggregate_set_digest_is_exact(tmp_path: Path) -> None:
     document = _request(tmp_path).to_dict()
     aggregates = document["input_aggregates"]
 
-    assert document["input_aggregate_set_sha256"] == hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "domain": "rextio.full-c6-policy-bootstrap-input-set.v1",
-                "input_aggregates": aggregates,
-            }
-        )
-    ).hexdigest()
+    assert (
+        document["input_aggregate_set_sha256"]
+        == hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "domain": CURRENT.string_value(POLICY_BOOTSTRAP_INPUT_SET_DOMAIN),
+                    "input_aggregates": aggregates,
+                }
+            )
+        ).hexdigest()
+    )
     assert isinstance(aggregates, dict)
     assert len(aggregates) == 9
-    assert all(
-        isinstance(value, str) and len(value) == 64
-        for value in aggregates.values()
-    )
+    assert all(isinstance(value, str) and len(value) == 64 for value in aggregates.values())
 
 
 def test_request_bytes_are_canonical_json_without_duplicate_keys(tmp_path: Path) -> None:

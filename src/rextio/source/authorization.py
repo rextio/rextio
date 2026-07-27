@@ -1,15 +1,15 @@
-"""Train C6.1 external-source authorization (SourceLock) gate.
+"""External-source authorization (SourceLock) gate.
 
 This module verifies a project-owned lock document that binds one available
-C5.1 ``external_source_plan`` to exact distribution identity, verified content
+``external_source_plan`` to exact distribution identity, verified content
 hashes and sizes, a custom source inventory, provenance, and a closed
 license attestation.  Verification never imports or executes external
 packages, never contacts the network, and never grants legal advice or
 automatic license approval.
 
 Even a verified lock does not authorize source-native lowering, packaging, or
-redistribution: remaining C5.2 call-site linkage, body lowerability, Rust
-codegen, and packaging are still unimplemented.
+redistribution: call-site linkage, body lowerability, Rust codegen, and
+packaging must still be available and authorized.
 
 Trust boundary: the project/VCS review that authors the lock. This preview has
 no cryptographic signature verification.
@@ -120,7 +120,7 @@ _REASON_PLAN_UNAVAILABLE = "external source plan is unavailable and cannot be au
 
 @dataclass(frozen=True)
 class ExternalSourceAuthorization:
-    """Sanitized C6.1 SourceLock verification evidence (never absolute paths)."""
+    """Sanitized SourceLock verification evidence (never absolute paths)."""
 
     status: str
     path: str = SOURCE_LOCK_FILENAME

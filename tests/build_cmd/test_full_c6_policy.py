@@ -1,4 +1,4 @@
-"""Focused adversarial tests for the strict final Full C6 policy receipt."""
+"""Focused adversarial tests for the strict final artifact-policy receipt."""
 
 from __future__ import annotations
 
@@ -8,6 +8,17 @@ import json
 import pytest
 
 import rextio.build.full_c6_policy as policy_module
+from rextio.artifacts.contract_dialects import (
+    ANALYSIS_RECEIPT_KIND,
+    ARTIFACT_COMPONENT_URN_PREFIX,
+    CURRENT,
+    EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
+    LOWERED_IR_RECEIPT_KIND,
+    OWNER_ACKNOWLEDGEMENT,
+    OWNER_AUTHENTICATION,
+    POLICY_LICENSE_DETECTOR_RECEIPT_KIND,
+    ArtifactContractDialect,
+)
 from rextio.artifacts.evidence import (
     ANALYSIS_INPUT_VERIFICATION_KIND,
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
@@ -21,9 +32,7 @@ from rextio.artifacts.evidence import (
 )
 from rextio.artifacts.full_authorization import FULL_C6_SCOPE
 from rextio.build.full_c6_policy import (
-    FULL_C6_ANALYSIS_RECEIPT_KIND,
     FULL_C6_EXTERNAL_POLICY_CLASS_IDS,
-    FULL_C6_LOWERED_IR_RECEIPT_KIND,
     FULL_C6_OWNER_ACKNOWLEDGEMENT,
     FULL_C6_OWNER_ACTION_SCOPES,
     FULL_C6_OWNER_AUTHENTICATION,
@@ -128,31 +137,53 @@ _COVERAGE_SEMANTICS = (
 )
 
 
-def _artifact_identity(class_id: str, index: int = 1) -> str:
-    return f"urn:rextio:artifact-component:{class_id}:{index:064x}"
+def _artifact_identity(
+    class_id: str,
+    index: int = 1,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> str:
+    return f"{dialect.string_value(ARTIFACT_COMPONENT_URN_PREFIX)}{class_id}:{index:064x}"
+
+
+def _external_identity(
+    class_id: str,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> str:
+    current = full_c6_external_authority_identity(class_id, {"index": 1})
+    return (
+        f"{dialect.string_value(EXTERNAL_AUTHORITY_IDENTITY_SCHEME)}:"
+        f"{class_id}:{current.rsplit(':', 1)[-1]}"
+    )
 
 
 def _authority_sets(
     *,
     zero_artifact: frozenset[str] = frozenset(),
     zero_external: frozenset[str] = frozenset(),
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     artifact: dict[str, tuple[str, ...]] = {
-        class_id: (() if class_id in zero_artifact else (_artifact_identity(class_id),))
+        class_id: (
+            () if class_id in zero_artifact else (_artifact_identity(class_id, dialect=dialect),)
+        )
         for class_id in ARTIFACT_POLICY_COVERAGE_CLASS_IDS
     }
     external: dict[str, tuple[str, ...]] = {
         class_id: (
-            ()
-            if class_id in zero_external
-            else (full_c6_external_authority_identity(class_id, {"index": 1}),)
+            () if class_id in zero_external else (_external_identity(class_id, dialect=dialect),)
         )
         for class_id in FULL_C6_EXTERNAL_POLICY_CLASS_IDS
     }
     return artifact, external
 
 
-def _coverage(identities: dict[str, tuple[str, ...]]) -> ArtifactPolicyCoverageInventory:
+def _coverage(
+    identities: dict[str, tuple[str, ...]],
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> ArtifactPolicyCoverageInventory:
     classes = tuple(
         ArtifactPolicyCoverageClass(
             class_id=class_id,
@@ -160,6 +191,7 @@ def _coverage(identities: dict[str, tuple[str, ...]]) -> ArtifactPolicyCoverageI
             canonical_identity_set_sha256=artifact_policy_identity_set_digest(
                 class_id,
                 identities[class_id],
+                _artifact_contract_dialect=dialect.name,
             ),
             identity_state=identity_state,
             license_policy_state=license_state,
@@ -190,6 +222,8 @@ def _coverage(identities: dict[str, tuple[str, ...]]) -> ArtifactPolicyCoverageI
 
 def _external_partition(
     identities: dict[str, tuple[str, ...]],
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6ExternalAuthorityPartition:
     classes = tuple(
         FullC6ExternalAuthorityClass(
@@ -198,6 +232,7 @@ def _external_partition(
             canonical_identity_set_sha256=full_c6_external_authority_identity_set_digest(
                 class_id,
                 identities[class_id],
+                _artifact_contract_dialect=dialect.name,
             ),
         )
         for class_id in FULL_C6_EXTERNAL_POLICY_CLASS_IDS
@@ -205,7 +240,11 @@ def _external_partition(
     return FullC6ExternalAuthorityPartition(
         classes=classes,
         observed_component_count=sum(item.observed_count for item in classes),
-        canonical_partition_sha256=full_c6_external_authority_partition_digest(classes),
+        canonical_partition_sha256=full_c6_external_authority_partition_digest(
+            classes,
+            _artifact_contract_dialect=dialect.name,
+        ),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -227,6 +266,7 @@ def _license(
     files: tuple[FullC6PolicyFileIdentity, ...] | None = None,
     source_detector_receipt_sha256: str = "c" * 64,
     detector_payload_sha256: str = "b" * 64,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6LicenseEvidence:
     return FullC6LicenseEvidence(
         declared_spdx=declared,
@@ -237,6 +277,8 @@ def _license(
         source_detector_receipt_sha256=source_detector_receipt_sha256,
         detector_payload_sha256=detector_payload_sha256,
         license_files=files or (_file("licenses/PROJECT-LICENSE"),),
+        detector_receipt_kind=dialect.string_value(POLICY_LICENSE_DETECTOR_RECEIPT_KIND),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -256,6 +298,8 @@ def _rows(
     artifact_identities: dict[str, tuple[str, ...]],
     external_identities: dict[str, tuple[str, ...]],
     authority_partition_sha256: str,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> tuple[FullC6PolicyInputRow, ...]:
     result: list[FullC6PolicyInputRow] = []
     for class_index, class_id in enumerate(FULL_C6_POLICY_CLASS_IDS, start=1):
@@ -299,10 +343,12 @@ def _rows(
                         _license(
                             authority_identity=authority_identity,
                             authority_partition_sha256=authority_partition_sha256,
+                            dialect=dialect,
                         )
                         if license_disposition == "owner-approved-allow"
                         else None
                     ),
+                    _artifact_contract_dialect=dialect.name,
                 )
             )
     return tuple(result)
@@ -320,18 +366,21 @@ def _record(
     analysis_sha256: str,
     lowered_ir_sha256: str,
     generator_sha256: str = "c" * 64,
-    analysis_receipt_kind: str = FULL_C6_ANALYSIS_RECEIPT_KIND,
-    lowered_ir_receipt_kind: str = FULL_C6_LOWERED_IR_RECEIPT_KIND,
+    analysis_receipt_kind: str | None = None,
+    lowered_ir_receipt_kind: str | None = None,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6TransformationRecord:
     source_set = full_c6_transformation_source_set_digest(
         source_identities,
         source_identity_sha256s,
+        _artifact_contract_dialect=dialect.name,
     )
     analysis_receipt = full_c6_analysis_receipt_digest(
         authority_partition_sha256=authority_partition_sha256,
         source_identity_set_sha256=source_set,
         output_identity_sha256=output_identity_sha256,
         analysis_sha256=analysis_sha256,
+        _artifact_contract_dialect=dialect.name,
     )
     ir_receipt = full_c6_lowered_ir_receipt_digest(
         authority_partition_sha256=authority_partition_sha256,
@@ -341,6 +390,7 @@ def _record(
         generator_sha256=generator_sha256,
         analysis_receipt_sha256=analysis_receipt,
         lowered_ir_sha256=lowered_ir_sha256,
+        _artifact_contract_dialect=dialect.name,
     )
     return FullC6TransformationRecord(
         record_id=record_id,
@@ -356,14 +406,21 @@ def _record(
         analysis_receipt_sha256=analysis_receipt,
         lowered_ir_sha256=lowered_ir_sha256,
         lowered_ir_receipt_sha256=ir_receipt,
-        analysis_receipt_kind=analysis_receipt_kind,
-        lowered_ir_receipt_kind=lowered_ir_receipt_kind,
+        analysis_receipt_kind=(
+            analysis_receipt_kind or dialect.string_value(ANALYSIS_RECEIPT_KIND)
+        ),
+        lowered_ir_receipt_kind=(
+            lowered_ir_receipt_kind or dialect.string_value(LOWERED_IR_RECEIPT_KIND)
+        ),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
 def _transformations(
     rows: tuple[FullC6PolicyInputRow, ...],
     authority_partition_sha256: str,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> tuple[FullC6TransformationRecord, ...]:
     sources = tuple(
         sorted(
@@ -389,16 +446,24 @@ def _transformations(
             authority_partition_sha256=authority_partition_sha256,
             analysis_sha256=f"{index + 100:064x}",
             lowered_ir_sha256=f"{index + 200:064x}",
+            dialect=dialect,
         )
         for index, output in enumerate(outputs, start=1)
     )
 
 
-def _owner(**changes: object) -> FullC6OwnerDeclaration:
+def _owner(
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+    **changes: object,
+) -> FullC6OwnerDeclaration:
     values: dict[str, object] = {
         "owner_identity": "Acme Engineering",
         "owner_role": "organization-owner",
         "trusted_public_key_sha256": "f" * 64,
+        "acknowledgement": dialect.string_value(OWNER_ACKNOWLEDGEMENT),
+        "authentication": dialect.string_value(OWNER_AUTHENTICATION),
+        "_artifact_contract_dialect": dialect.name,
     }
     values.update(changes)
     return FullC6OwnerDeclaration(**values)  # type: ignore[arg-type]
@@ -408,6 +473,7 @@ def _fixture(
     *,
     zero_artifact: frozenset[str] = frozenset(),
     zero_external: frozenset[str] = frozenset(),
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> tuple[
     tuple[FullC6PolicyInputRow, ...],
     tuple[FullC6TransformationRecord, ...],
@@ -417,23 +483,42 @@ def _fixture(
     artifact_ids, external_ids = _authority_sets(
         zero_artifact=zero_artifact,
         zero_external=zero_external,
+        dialect=dialect,
     )
-    coverage = _coverage(artifact_ids)
-    external = _external_partition(external_ids)
-    partition = full_c6_authority_partition_digest(coverage, external)
-    rows = _rows(artifact_ids, external_ids, partition)
-    return rows, _transformations(rows, partition), coverage, external
+    coverage = _coverage(artifact_ids, dialect=dialect)
+    external = _external_partition(external_ids, dialect=dialect)
+    partition = full_c6_authority_partition_digest(
+        coverage,
+        external,
+        _artifact_contract_dialect=dialect.name,
+    )
+    rows = _rows(
+        artifact_ids,
+        external_ids,
+        partition,
+        dialect=dialect,
+    )
+    return (
+        rows,
+        _transformations(rows, partition, dialect=dialect),
+        coverage,
+        external,
+    )
 
 
-def _receipt() -> FullC6PolicyReceipt:
-    rows, transformations, coverage, external = _fixture()
+def _receipt(
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6PolicyReceipt:
+    rows, transformations, coverage, external = _fixture(dialect=dialect)
     return FullC6PolicyReceipt(
         rows=rows,
         transformations=transformations,
-        owner_declaration=_owner(),
+        owner_declaration=_owner(dialect=dialect),
         artifact_coverage=coverage,
         external_authority=external,
         bootstrap_request_sha256="d" * 64,
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -545,7 +630,10 @@ def test_rows_must_equal_actual_c614_and_c52_count_set_partitions(mutation: str)
         )
         candidate_external = _external_partition(external_ids)
 
-    with pytest.raises(FullC6PolicyError, match="exact C6.14|exact C5.2"):
+    with pytest.raises(
+        FullC6PolicyError,
+        match="exact artifact-evidence coverage|exact external-source authority",
+    ):
         _digest(
             candidate_rows,
             transformations,

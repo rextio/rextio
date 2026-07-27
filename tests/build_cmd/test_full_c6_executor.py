@@ -1,4 +1,4 @@
-"""Adversarial tests for the strict Full C6 two-build executor."""
+"""Adversarial tests for the strict artifact-build two-build executor."""
 
 from __future__ import annotations
 
@@ -231,17 +231,14 @@ def test_native_sandbox_stderr_classifier_accepts_exact_launcher_stage_only(
 ) -> None:
     import rextio.build.full_c6_executor as executor
 
-    marker = f"Rextio Full C6 Linux launcher failed closed: {stage}\n"
+    marker = f"Rextio artifact build Linux launcher failed closed: {stage}\n"
 
-    assert executor._classify_native_sandbox_stderr(marker) == (
-        f"linux-launcher-{stage}"
+    assert executor._classify_native_sandbox_stderr(marker) == (f"linux-launcher-{stage}")
+    assert executor._classify_native_sandbox_stderr(marker + "permission denied") is None
+    assert (
+        executor._classify_native_sandbox_stderr(marker.replace(stage, "private-arbitrary-stage"))
+        is None
     )
-    assert executor._classify_native_sandbox_stderr(
-        marker + "permission denied"
-    ) is None
-    assert executor._classify_native_sandbox_stderr(
-        marker.replace(stage, "private-arbitrary-stage")
-    ) is None
     assert executor._classify_native_sandbox_stderr(marker.upper()) is None
 
 
@@ -282,10 +279,7 @@ def test_native_sandbox_stderr_classifier_returns_bounded_macos_categories(
     plan, paths = _macos_diagnostic_plan()
     diagnostics = {
         "sandbox-apply": "sandbox-exec: sandbox_apply: Operation not permitted",
-        "mach-lookup": (
-            "Sandbox: cargo(42) deny(1) mach-lookup "
-            "com.example.private-service"
-        ),
+        "mach-lookup": ("Sandbox: cargo(42) deny(1) mach-lookup com.example.private-service"),
         "sysctl": "Sandbox: cargo(42) deny(1) sysctl-read hw.ncpu",
         "build": f"Sandbox: cargo(42) deny(1) file-write {paths['build']}/target",
         "project": f"Sandbox: cargo(42) deny(1) file-read {paths['project']}/src",
@@ -294,10 +288,7 @@ def test_native_sandbox_stderr_classifier_returns_bounded_macos_categories(
         "dev": "Sandbox: cargo(42) deny(1) file-read /dev/null",
         "private-var": "Sandbox: cargo(42) deny(1) file-read /private/var/db/private",
         "library": "Sandbox: cargo(42) deny(1) file-read /Library/Private/file",
-        "preboot": (
-            "Sandbox: cargo(42) deny(1) file-read "
-            "/System/Volumes/Preboot/private"
-        ),
+        "preboot": ("Sandbox: cargo(42) deny(1) file-read /System/Volumes/Preboot/private"),
         "unmatched": "error: access to an unknown capability: Permission denied",
     }
 
@@ -348,36 +339,54 @@ def test_native_sandbox_stderr_macos_cargo_cpu_count_phrase_is_exact_and_bounded
     phrase = "failed to determine the amount of parallelism available"
     diagnostic = f"error: {phrase}\nCaused by:\nOperation not permitted"
 
-    assert executor._classify_native_sandbox_stderr(
-        diagnostic,
-        sandbox_plan=plan,
-        target_triple="aarch64-apple-darwin",
-    ) == "native-macos-permission-sysctl-cpu-count"
-    assert executor._classify_native_sandbox_stderr(
-        f"error: {phrase}",
-        sandbox_plan=plan,
-        target_triple="aarch64-apple-darwin",
-    ) == "native-compile"
-    assert executor._classify_native_sandbox_stderr(
-        f"error: {phrase}: /private/owner-input\nOperation not permitted",
-        sandbox_plan=plan,
-        target_triple="aarch64-apple-darwin",
-    ) == "native-macos-permission-unmatched"
-    assert executor._classify_native_sandbox_stderr(
-        "error: parallelism unavailable\nOperation not permitted",
-        sandbox_plan=plan,
-        target_triple="aarch64-apple-darwin",
-    ) == "native-macos-permission-unmatched"
-    assert executor._classify_native_sandbox_stderr(
-        diagnostic,
-        sandbox_plan=plan,
-        target_triple="x86_64-unknown-linux-gnu",
-    ) == "native-permission"
-    assert executor._classify_native_sandbox_stderr(
-        f"{'x' * (64 * 1024)}\n{diagnostic}",
-        sandbox_plan=plan,
-        target_triple="aarch64-apple-darwin",
-    ) == "native-permission"
+    assert (
+        executor._classify_native_sandbox_stderr(
+            diagnostic,
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-macos-permission-sysctl-cpu-count"
+    )
+    assert (
+        executor._classify_native_sandbox_stderr(
+            f"error: {phrase}",
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-compile"
+    )
+    assert (
+        executor._classify_native_sandbox_stderr(
+            f"error: {phrase}: /private/owner-input\nOperation not permitted",
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-macos-permission-unmatched"
+    )
+    assert (
+        executor._classify_native_sandbox_stderr(
+            "error: parallelism unavailable\nOperation not permitted",
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-macos-permission-unmatched"
+    )
+    assert (
+        executor._classify_native_sandbox_stderr(
+            diagnostic,
+            sandbox_plan=plan,
+            target_triple="x86_64-unknown-linux-gnu",
+        )
+        == "native-permission"
+    )
+    assert (
+        executor._classify_native_sandbox_stderr(
+            f"{'x' * (64 * 1024)}\n{diagnostic}",
+            sandbox_plan=plan,
+            target_triple="aarch64-apple-darwin",
+        )
+        == "native-permission"
+    )
 
 
 def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact() -> None:
@@ -417,51 +426,67 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         "native-linux-permission-unclassified-no-known-operation",
     )
     parallelism = "error: failed to determine the amount of parallelism available"
-    assert classify(f"{parallelism}\nOperation not permitted") == (
-        "native-linux-cargo-parallelism"
+    assert classify(f"{parallelism}\nOperation not permitted") == ("native-linux-cargo-parallelism")
+    assert (
+        classify(f"{parallelism}\n/rextio/build/target: Operation not permitted")
+        == "native-linux-cargo-parallelism"
     )
-    assert classify(
-        f"{parallelism}\n/rextio/build/target: Operation not permitted"
-    ) == "native-linux-cargo-parallelism"
     assert classify(f"{parallelism}: private\nOperation not permitted") == (
         "native-linux-permission-unclassified-no-known-operation"
     )
     assert classify("error: parallelism unavailable\nOperation not permitted") == (
         "native-linux-permission-unclassified-no-known-operation"
     )
-    assert classify(
-        "error: could not execute process '/rextio/toolchain/bin/rustc --crate-name x'\n"
-        "Permission denied"
-    ) == "native-linux-rustc-exec-permission"
-    assert classify(
-        "error: could not execute process '/rextio/toolchain/bin/rustc-private'\n"
-        "Permission denied"
-    ) == "native-linux-permission-toolchain-root"
+    assert (
+        classify(
+            "error: could not execute process '/rextio/toolchain/bin/rustc --crate-name x'\n"
+            "Permission denied"
+        )
+        == "native-linux-rustc-exec-permission"
+    )
+    assert (
+        classify(
+            "error: could not execute process '/rextio/toolchain/bin/rustc-private'\n"
+            "Permission denied"
+        )
+        == "native-linux-permission-toolchain-root"
+    )
     assert classify("  failed to acquire package cache lock\nPermission denied") == (
         "native-linux-cargo-cache-lock"
     )
-    assert classify(
-        "failed to acquire package cache lock\n"
-        "/rextio/build/cargo-home: Permission denied"
-    ) == "native-linux-cargo-cache-lock"
-    assert classify(
-        "failed to acquire package cache lock: private\nPermission denied"
-    ) == "native-linux-permission-unclassified-no-known-operation"
-    assert classify(
-        "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
-    ) == "native-linux-permission-gcc-lto-plugin"
-    assert classify(
-        "error loading plugin: "
-        "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so\n"
-        "Operation not permitted"
-    ) == "native-linux-permission-gcc-lto-plugin"
-    assert classify(
-        "/rextio/support/gcc-toolchain/liblto_plugin.so and "
-        "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so: Permission denied"
-    ) == "native-linux-permission-gcc-lto-plugin"
-    assert classify(
-        "/rextio/support/gcc-toolchain/liblto_plugin.so-private: Permission denied"
-    ) == "native-linux-permission-support-root"
+    assert (
+        classify(
+            "failed to acquire package cache lock\n/rextio/build/cargo-home: Permission denied"
+        )
+        == "native-linux-cargo-cache-lock"
+    )
+    assert (
+        classify("failed to acquire package cache lock: private\nPermission denied")
+        == "native-linux-permission-unclassified-no-known-operation"
+    )
+    assert (
+        classify("/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied")
+        == "native-linux-permission-gcc-lto-plugin"
+    )
+    assert (
+        classify(
+            "error loading plugin: "
+            "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so\n"
+            "Operation not permitted"
+        )
+        == "native-linux-permission-gcc-lto-plugin"
+    )
+    assert (
+        classify(
+            "/rextio/support/gcc-toolchain/liblto_plugin.so and "
+            "/libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so: Permission denied"
+        )
+        == "native-linux-permission-gcc-lto-plugin"
+    )
+    assert (
+        classify("/rextio/support/gcc-toolchain/liblto_plugin.so-private: Permission denied")
+        == "native-linux-permission-support-root"
+    )
     for near_miss in (
         "/private/rextio/support/gcc-toolchain/liblto_plugin.so",
         "/libexec/gcc/x86_64-linux-gnu/14/liblto_plugin.so",
@@ -470,10 +495,12 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         assert classify(f"{near_miss}: Permission denied") == (
             "native-linux-permission-unclassified-no-known-operation"
         )
-    assert classify(
-        "/rextio/support/gcc-toolchain/opaque-plugin: error loading plugin\n"
-        "Permission denied"
-    ) == "native-linux-permission-gcc-lto-plugin"
+    assert (
+        classify(
+            "/rextio/support/gcc-toolchain/opaque-plugin: error loading plugin\nPermission denied"
+        )
+        == "native-linux-permission-gcc-lto-plugin"
+    )
     root_cases = (
         ("/rextio/toolchain/bin/cargo", "native-linux-permission-toolchain-root"),
         ("/rextio/python/bin/python3.11", "native-linux-permission-python-root"),
@@ -504,9 +531,10 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
         assert classify(f"{near_miss}: Permission denied") == (
             "native-linux-permission-unclassified-no-known-operation"
         )
-    assert classify(
-        "/rextio/build/target and /rextio/project/src: Permission denied"
-    ) == "native-permission"
+    assert (
+        classify("/rextio/build/target and /rextio/project/src: Permission denied")
+        == "native-permission"
+    )
     operation_cases = (
         ("failed to create jobserver", "native-linux-permission-jobserver-creation"),
         ("could not create pipe", "native-linux-permission-pipe-creation"),
@@ -520,9 +548,10 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     )
     for phrase, reason in operation_cases:
         assert classify(f"{phrase}: Permission denied") == reason
-    assert classify(
-        "/tmp/cargo-pipe: failed to create pipe\nPermission denied"
-    ) == "native-linux-permission-tmp-root"
+    assert (
+        classify("/tmp/cargo-pipe: failed to create pipe\nPermission denied")
+        == "native-linux-permission-tmp-root"
+    )
     for near_miss in (
         "failed create jobserver",
         "failed to create jobservers",
@@ -540,23 +569,31 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     assert classify("opaque failure: Permission denied") == (
         "native-linux-permission-unclassified-no-known-operation"
     )
-    assert classify(
-        "failed to create pipe\nfailed to create socketpair\nPermission denied"
-    ) == "native-permission"
-    assert classify(
-        "/rextio/support/gcc-toolchain/liblto_plugin.so and "
-        "/rextio/build/target: Permission denied"
-    ) == "native-linux-permission-gcc-lto-plugin"
+    assert (
+        classify("failed to create pipe\nfailed to create socketpair\nPermission denied")
+        == "native-permission"
+    )
+    assert (
+        classify(
+            "/rextio/support/gcc-toolchain/liblto_plugin.so and "
+            "/rextio/build/target: Permission denied"
+        )
+        == "native-linux-permission-gcc-lto-plugin"
+    )
     assert classify(f"{'x' * (64 * 1024)}\n{parallelism}\nPermission denied") == (
         "native-linux-permission-diagnostic-overflow"
     )
-    assert classify(
-        f"{'x' * (64 * 1024)}\n"
-        "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
-    ) == "native-linux-permission-diagnostic-overflow"
-    assert classify(
-        f"{'😀' * ((64 * 1024) // 4)}\nPermission denied"
-    ) == "native-linux-permission-diagnostic-overflow"
+    assert (
+        classify(
+            f"{'x' * (64 * 1024)}\n"
+            "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
+        )
+        == "native-linux-permission-diagnostic-overflow"
+    )
+    assert (
+        classify(f"{'😀' * ((64 * 1024) // 4)}\nPermission denied")
+        == "native-linux-permission-diagnostic-overflow"
+    )
     assert classify("x" * (64 * 1024 + 1)) is None
     forged = SimpleNamespace(
         target_triple="x86_64-unknown-linux-gnu",
@@ -566,22 +603,29 @@ def test_native_sandbox_stderr_linux_permission_categories_are_closed_and_exact(
     assert classify(f"{parallelism}\nPermission denied", active_plan=forged) == (
         "native-permission"
     )
-    lto_stderr = (
-        "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
-    )
+    lto_stderr = "/rextio/support/gcc-toolchain/liblto_plugin.so: Permission denied"
     assert classify(lto_stderr, active_plan=forged) == "native-permission"
-    assert classify(
-        "/tmp/rustc-output: Permission denied",
-        active_plan=forged,
-    ) == "native-permission"
-    assert classify(
-        "failed to create pipe: Permission denied",
-        active_plan=forged,
-    ) == "native-permission"
-    assert classify(
-        "opaque failure: Permission denied",
-        active_plan=forged,
-    ) == "native-permission"
+    assert (
+        classify(
+            "/tmp/rustc-output: Permission denied",
+            active_plan=forged,
+        )
+        == "native-permission"
+    )
+    assert (
+        classify(
+            "failed to create pipe: Permission denied",
+            active_plan=forged,
+        )
+        == "native-permission"
+    )
+    assert (
+        classify(
+            "opaque failure: Permission denied",
+            active_plan=forged,
+        )
+        == "native-permission"
+    )
     overflow_stderr = f"{'x' * (64 * 1024)}\nPermission denied"
     assert classify(overflow_stderr, active_plan=forged) == "native-permission"
     assert (
@@ -606,20 +650,17 @@ def test_native_sandbox_stderr_macos_classifier_is_bounded_and_path_exact() -> N
             target_triple="aarch64-apple-darwin",
         )
 
-    assert classify("x" * (64 * 1024) + "\nPermission denied") == (
-        "native-permission"
-    )
+    assert classify("x" * (64 * 1024) + "\nPermission denied") == ("native-permission")
     assert classify("😀" * 20_000 + "\nPermission denied") == "native-permission"
-    assert classify("x" * (64 * 1024) + "\nerror[E0308]: mismatched types") == (
-        "native-compile"
+    assert classify("x" * (64 * 1024) + "\nerror[E0308]: mismatched types") == ("native-compile")
+    assert (
+        classify(f"Permission denied\nnearby detail\noutside context\n{paths['build']}/target")
+        == "native-macos-permission-unmatched"
     )
-    assert classify(
-        "Permission denied\nnearby detail\noutside context\n"
-        f"{paths['build']}/target"
-    ) == "native-macos-permission-unmatched"
-    assert classify(
-        f"Sandbox: cargo(42) deny(1) file-write {paths['build']}-evil/target"
-    ) == "native-macos-permission-denied-private-var"
+    assert (
+        classify(f"Sandbox: cargo(42) deny(1) file-write {paths['build']}-evil/target")
+        == "native-macos-permission-denied-private-var"
+    )
 
 
 def test_native_sandbox_stderr_macos_context_has_strict_preceding_line_bound() -> None:
@@ -638,9 +679,10 @@ def test_native_sandbox_stderr_macos_context_has_strict_preceding_line_bound() -
     assert classify(f"{path_line}\n\nCaused by:\nPermission denied") == (
         "native-macos-permission-build-root"
     )
-    assert classify(
-        f"{path_line}\n\nwhile compiling dependency\nCaused by:\nPermission denied"
-    ) == "native-macos-permission-unmatched"
+    assert (
+        classify(f"{path_line}\n\nwhile compiling dependency\nCaused by:\nPermission denied")
+        == "native-macos-permission-unmatched"
+    )
 
 
 def test_native_sandbox_stderr_macos_error_contains_only_static_category() -> None:
@@ -656,9 +698,7 @@ def test_native_sandbox_stderr_macos_error_contains_only_static_category() -> No
     )
 
     assert error is not None
-    assert str(error) == (
-        "strict native sandbox build failed: native-macos-permission-unmatched"
-    )
+    assert str(error) == ("strict native sandbox build failed: native-macos-permission-unmatched")
     assert error.args == (str(error),)
     assert injected_reason not in str(error)
     assert private_service not in str(error)
@@ -669,6 +709,7 @@ def _external_contract():
         ExternalWheelContract,
         ExternalWheelMemberIdentity,
     )
+
     paths = (
         "vendor-1.0.dist-info/METADATA",
         "vendor-1.0.dist-info/RECORD",
@@ -824,7 +865,10 @@ def _native_inputs(tmp_path: Path, project: Path):
 
 
 def _native_project(tmp_path: Path, *, target: str = "aarch64-apple-darwin"):
-    from rextio.build.full_c6_executor import full_c6_native_driver_manifest_bytes
+    from rextio.build.full_c6_executor import (
+        FULL_C6_NATIVE_DRIVER_MANIFEST,
+        full_c6_native_driver_manifest_bytes,
+    )
 
     root = _project(tmp_path)
     (root / "Cargo.toml").write_text(
@@ -833,7 +877,7 @@ def _native_project(tmp_path: Path, *, target: str = "aarch64-apple-darwin"):
         encoding="utf-8",
     )
     (root / "Cargo.lock").write_text(
-        'version = 4\n\n'
+        "version = 4\n\n"
         '[[package]]\nname = "demo"\nversion = "0.1.0"\n'
         'dependencies = ["demo-dep"]\n\n'
         '[[package]]\nname = "demo-dep"\nversion = "1.2.3"\n'
@@ -844,7 +888,7 @@ def _native_project(tmp_path: Path, *, target: str = "aarch64-apple-darwin"):
     package = root / "python-staging" / "app"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
-    (root / "rextio.full-c6-native-driver.json").write_bytes(
+    (root / FULL_C6_NATIVE_DRIVER_MANIFEST).write_bytes(
         full_c6_native_driver_manifest_bytes(
             target_triple=target,
             distribution_name="demo-artifact",
@@ -906,7 +950,13 @@ def _outputs(root: Path, *, wheel: bytes = b"reproducible-wheel"):
     provenance = output / "provenance.json"
     wheel_path.write_bytes(wheel)
     sbom.write_text('{"bomFormat":"CycloneDX","components":[]}', encoding="utf-8")
-    provenance.write_text('{"buildType":"rextio/full-c6","externalParameters":{}}', encoding="utf-8")
+    provenance.write_text(
+        (
+            '{"buildType":"https://rextio.dev/buildtypes/'
+            'artifact-evidence-host-extension-wheel/v2","externalParameters":{}}'
+        ),
+        encoding="utf-8",
+    )
     return ReproducibilityBuildOutputs(wheel_path, sbom, provenance)
 
 
@@ -933,16 +983,15 @@ def test_executor_freezes_two_independent_copies_and_returns_path_free_receipt(
         assert "HTTP_PROXY" not in environment
         assert Path(environment["HOME"]).is_relative_to(request.context.build_root)
         assert Path(environment["CARGO_HOME"]).is_relative_to(request.context.build_root)
-        assert Path(environment["CARGO_TARGET_DIR"]).is_relative_to(
-            request.context.build_root
-        )
+        assert Path(environment["CARGO_TARGET_DIR"]).is_relative_to(request.context.build_root)
         remaps = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
         assert len(remaps) == 2
         assert all(item.startswith("--remap-path-prefix=") for item in remaps)
         assert stat.S_IMODE(request.context.project_root.stat().st_mode) == 0o700
-        assert stat.S_IMODE(
-            request.context.project_root.joinpath("Cargo.toml").stat().st_mode
-        ) == 0o644
+        assert (
+            stat.S_IMODE(request.context.project_root.joinpath("Cargo.toml").stat().st_mode)
+            == 0o644
+        )
         return _outputs(request.context.build_root)
 
     receipt = execute_full_c6_two_build(
@@ -1021,11 +1070,10 @@ def test_executor_receipt_is_stable_across_fresh_private_roots(
             )
         )
 
-    assert observed_environments[0]["CARGO_HOME"] != observed_environments[2][
-        "CARGO_HOME"
-    ]
-    assert observed_environments[0]["CARGO_ENCODED_RUSTFLAGS"] != (
-        observed_environments[2]["CARGO_ENCODED_RUSTFLAGS"]
+    assert observed_environments[0]["CARGO_HOME"] != observed_environments[2]["CARGO_HOME"]
+    assert (
+        observed_environments[0]["CARGO_ENCODED_RUSTFLAGS"]
+        != (observed_environments[2]["CARGO_ENCODED_RUSTFLAGS"])
     )
     assert receipts[0].invocations == receipts[1].invocations
     assert receipts[0].digest == receipts[1].digest
@@ -1209,10 +1257,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         )
         assert config.read_text(encoding="utf-8").endswith("offline = true\n")
         assert env["CARGO_BUILD_TARGET"] == "aarch64-apple-darwin"
-        assert (
-            env["CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"]
-            == str(native_tools.linker)
-        )
+        assert env["CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"] == str(native_tools.linker)
         assert "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" not in env
         assert "PYO3_PYTHON" not in env
         assert set(name for name in env if name.startswith("PYO3_")) == {
@@ -1257,7 +1302,7 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert runs[0][4] != runs[1][4]
     assert runs[0][2]["TMPDIR"] != runs[1][2]["TMPDIR"]
     assert receipt.execution_driver == executor.FULL_C6_NATIVE_EXECUTION_DRIVER
-    assert receipt.execution_driver == "rextio-native-orchestrator-v1"
+    assert receipt.execution_driver == "rextio-artifact-native-orchestrator-v2"
     assert receipt.postprocessor == executor.FULL_C6_NATIVE_POSTPROCESSOR
     assert receipt.target_triple == "aarch64-apple-darwin"
     assert receipt.pyo3_config_sha256 == _pyo3_identity().sha256
@@ -1265,13 +1310,9 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert receipt.pyo3_config_profile_sha256 == _pyo3_identity().digest
     assert receipt.invocations[0].environment == receipt.invocations[1].environment
     tmpdir_binding = next(
-        item
-        for item in receipt.invocations[0].environment
-        if item.name == "TMPDIR"
+        item for item in receipt.invocations[0].environment if item.name == "TMPDIR"
     )
-    assert tmpdir_binding.value_sha256 == hashlib.sha256(
-        b"/rextio/build/tmp"
-    ).hexdigest()
+    assert tmpdir_binding.value_sha256 == hashlib.sha256(b"/rextio/build/tmp").hexdigest()
     for invocation in receipt.invocations:
         assert invocation.sandbox_engine == "macos-sandbox-exec-v1"
         assert invocation.sandbox_plan_sha256 == "7" * 64
@@ -1302,9 +1343,12 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
     assert runs[0][2]["PYO3_CONFIG_FILE"] == runs[1][2]["PYO3_CONFIG_FILE"]
     assert runs[0][5] == runs[1][5]
     assert not Path(runs[0][2]["PYO3_CONFIG_FILE"]).exists()
-    assert receipt.postprocessor_manifest_sha256 == hashlib.sha256(
-        (source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST).read_bytes()
-    ).hexdigest()
+    assert (
+        receipt.postprocessor_manifest_sha256
+        == hashlib.sha256(
+            (source / executor.FULL_C6_NATIVE_DRIVER_MANIFEST).read_bytes()
+        ).hexdigest()
+    )
     assert receipt.reproducibility.reproducible is True
     public = receipt.to_dict()
     assert public["cargo_workspace_sha256"] == cargo_workspace.digest
@@ -1329,13 +1373,16 @@ def test_native_orchestrator_builds_and_verifies_identical_external_wheels(
         ):
             data = (root / "verified-output" / name).read_bytes()
             document = json.loads(data)
-            assert data == json.dumps(
-                document,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            ).encode()
+            assert (
+                data
+                == json.dumps(
+                    document,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode()
+            )
             if name.endswith("sbom.json"):
                 posture = document["rextio"]
             else:
@@ -1365,9 +1412,7 @@ def test_native_executor_performs_exactly_two_full_support_rewalks(
     def full_rewalk(*_args, **_kwargs):
         full_rewalks.append(len(full_rewalks) + 1)
         if fail_final_rewalk and len(full_rewalks) == 2:
-            raise executor.FullC6ExecutorError(
-                "simulated final support mutation"
-            )
+            raise executor.FullC6ExecutorError("simulated final support mutation")
         return support_plan
 
     monkeypatch.setattr(executor, "_require_native_toolchain_support", full_rewalk)
@@ -1575,9 +1620,10 @@ def test_native_linux_seccomp_boundary_hashes_live_descriptor_bytes(
     object.__setattr__(launch, "seccomp_sha256", hashlib.sha256(payload).hexdigest())
     object.__setattr__(launch, "seccomp_lease", lease)
     try:
-        assert executor._verify_native_linux_seccomp_launch(launch) == hashlib.sha256(
-            payload
-        ).hexdigest()
+        assert (
+            executor._verify_native_linux_seccomp_launch(launch)
+            == hashlib.sha256(payload).hexdigest()
+        )
         os.ftruncate(descriptor, len(payload) - 1)
         with pytest.raises(executor.FullC6ExecutorError, match="bytes or identity"):
             executor._verify_native_linux_seccomp_launch(launch)
@@ -1881,19 +1927,14 @@ def test_linux_payload_environment_projects_receipted_runtime_topology(
         "/rextio/support/python-library-root",
         "/x86_64-linux-gnu",
     ]
-    assert projected["PATH"] == (
-        "/rextio/toolchain/bin:/rextio/python/bin"
-    )
+    assert projected["PATH"] == ("/rextio/toolchain/bin:/rextio/python/bin")
     assert projected["PWD"] == "/rextio/project"
     assert projected["LIBRARY_PATH"].split(":") == [
         "/rextio/support/gcc-toolchain",
         "/x86_64-linux-gnu",
     ]
     assert projected["TMPDIR"] == "/tmp"
-    assert all(
-        "/rextio/support/runtime-libs" not in value
-        for value in projected.values()
-    )
+    assert all("/rextio/support/runtime-libs" not in value for value in projected.values())
 
 
 def test_native_linker_flags_bind_reproducible_macho_identity_only_on_macos(
@@ -1972,9 +2013,7 @@ def test_native_owned_macho_linker_flags_fail_closed(
     if mutation == "missing-install-name":
         flags.remove(install_name)
     elif mutation == "wrong-install-name":
-        flags[flags.index(install_name)] = (
-            "link-arg=-Wl,-install_name,@rpath/lib_other.dylib"
-        )
+        flags[flags.index(install_name)] = "link-arg=-Wl,-install_name,@rpath/lib_other.dylib"
     elif mutation == "forbidden-no-uuid":
         flags.extend(("-C", "link-arg=-Wl,-no_uuid"))
     else:
@@ -2072,9 +2111,7 @@ def test_native_authority_is_process_sealed_noncopyable_and_bytes_private(
     assert authority.authorizes_distribution is False
     public = authority.to_dict()
     assert len(public["wheel_captures"]) == 2
-    assert public["wheel_captures"][0]["wheel_sha256"] == (
-        authority.reproducibility.wheel_sha256
-    )
+    assert public["wheel_captures"][0]["wheel_sha256"] == (authority.reproducibility.wheel_sha256)
     assert public["driver_manifest_sha256"] == authority.postprocessor_manifest_sha256
     assert public["wheel_filename"] == authority.wheel_filename
     assert public["external_wheel_contract"]["requirement"] == "vendor==1.0"
@@ -2349,10 +2386,7 @@ def test_native_executor_rejects_vendor_mutation_after_cargo(
     )
 
     def fake_run(command, *, cwd, **_kwargs):
-        artifact = (
-            Path(cwd).parent
-            / "target/aarch64-apple-darwin/release/lib_rextio_native.dylib"
-        )
+        artifact = Path(cwd).parent / "target/aarch64-apple-darwin/release/lib_rextio_native.dylib"
         artifact.parent.mkdir(parents=True)
         artifact.write_bytes(b"native")
         (Path(cwd) / "vendor/demo-dep-1.2.3/src/lib.rs").write_bytes(b"mutated")
@@ -2558,9 +2592,7 @@ def test_native_orchestrator_binds_current_python_and_base_environment(
         tmp_path / "environment",
         source,
     )
-    changed_environment = {
-        "PATH": f"{base_environment['PATH']}{os.pathsep}/usr/bin"
-    }
+    changed_environment = {"PATH": f"{base_environment['PATH']}{os.pathsep}/usr/bin"}
     with pytest.raises(executor.FullC6ExecutorError, match="base environment"):
         executor.execute_full_c6_native_two_build(
             source,
@@ -2680,12 +2712,7 @@ def test_native_orchestrator_rejects_concurrent_artifact_ancestor_swap(
 
     def fake_run(command, *, cwd, **_kwargs):
         nonlocal release_path
-        release_path = (
-            Path(cwd).parent
-            / "target"
-            / "aarch64-apple-darwin"
-            / "release"
-        )
+        release_path = Path(cwd).parent / "target" / "aarch64-apple-darwin" / "release"
         release_path.mkdir(parents=True)
         (release_path / "lib_rextio_native.dylib").write_bytes(b"trusted-native")
         outside = Path(cwd).parent / "substitute-release"
@@ -2915,9 +2942,7 @@ def test_native_orchestrator_rejects_wheel_member_different_from_cargo_artifact(
     real_builder = executor.build_artifact_wheel
 
     def mismatched_builder(project_root, python_dir, dist_dir, **kwargs):
-        (Path(python_dir) / "_rextio_native.cpython-311-test.so").write_bytes(
-            b"different-native"
-        )
+        (Path(python_dir) / "_rextio_native.cpython-311-test.so").write_bytes(b"different-native")
         return real_builder(project_root, python_dir, dist_dir, **kwargs)
 
     monkeypatch.setattr(executor, "run_build_tool", fake_run)
@@ -3011,7 +3036,16 @@ def test_native_orchestrator_materializes_the_exact_captured_wheel_bytes(
     (
         ("cargo", "build", "--release"),
         ("cargo", "build", "--release", "--locked", "--offline"),
-        ("cargo", "build", "--release", "--locked", "--offline", "--frozen", "--config", "net.offline=false"),
+        (
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--offline",
+            "--frozen",
+            "--config",
+            "net.offline=false",
+        ),
         ("not-cargo", "build", "--locked", "--offline", "--frozen"),
     ),
 )

@@ -9,6 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    LINUX_LAUNCHER_DOMAIN,
+    PYO3_CONFIG_DOMAIN,
+)
 from rextio.build import full_c6_linux_launcher as launcher
 
 
@@ -28,12 +33,8 @@ def _environment() -> dict[str, str]:
         "CARGO_HOME": "/rextio/build/cargo-home",
         "CARGO_NET_OFFLINE": "true",
         "CARGO_TARGET_DIR": "/rextio/build/target",
-        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": (
-            "/rextio/toolchain/bin/linker"
-        ),
-        "COMPILER_PATH": (
-            "/rextio/toolchain/bin:/rextio/support/gcc-toolchain"
-        ),
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": ("/rextio/toolchain/bin/linker"),
+        "COMPILER_PATH": ("/rextio/toolchain/bin:/rextio/support/gcc-toolchain"),
         "HOME": "/rextio/build/home",
         "LANG": "C",
         "LC_ALL": "C",
@@ -43,14 +44,10 @@ def _environment() -> dict[str, str]:
             "/rextio/support/python-library-root:"
             "/x86_64-linux-gnu"
         ),
-        "LIBRARY_PATH": (
-            "/rextio/support/gcc-toolchain:/x86_64-linux-gnu"
-        ),
+        "LIBRARY_PATH": ("/rextio/support/gcc-toolchain:/x86_64-linux-gnu"),
         "PATH": "/rextio/toolchain/bin:/rextio/python/bin",
         "PYO3_CONFIG_FILE": "/rextio/support/pyo3-config",
-        "PYO3_ENVIRONMENT_SIGNATURE": (
-            launcher.expected_linux_pyo3_environment_signature()
-        ),
+        "PYO3_ENVIRONMENT_SIGNATURE": (launcher.expected_linux_pyo3_environment_signature()),
         "PWD": "/rextio/project",
         "PYTHONHASHSEED": "0",
         "RANLIB": "/rextio/toolchain/bin/ranlib",
@@ -72,6 +69,11 @@ def _argv(environment: dict[str, str]) -> tuple[str, ...]:
     )
 
 
+def test_launcher_domains_match_the_current_semantic_contract() -> None:
+    assert launcher.FULL_C6_LINUX_LAUNCHER_DOMAIN == CURRENT.string_value(LINUX_LAUNCHER_DOMAIN)
+    assert launcher.FULL_C6_LINUX_PYO3_CONFIG_DOMAIN == CURRENT.string_value(PYO3_CONFIG_DOMAIN)
+
+
 def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
     environment = _environment()
     rows = launcher.canonical_linux_payload_environment(environment)
@@ -85,9 +87,7 @@ def test_payload_environment_is_closed_canonical_and_digest_bound() -> None:
         "-C",
         "linker=/rextio/toolchain/bin/linker",
     ]
-    assert {
-        character for character in encoded if ord(character) < 32
-    } == {"\x1f"}
+    assert {character for character in encoded if ord(character) < 32} == {"\x1f"}
     assert environment["COMPILER_PATH"].split(":") == [
         "/rextio/toolchain/bin",
         "/rextio/support/gcc-toolchain",
@@ -145,9 +145,10 @@ def test_payload_environment_rejects_changed_fixed_or_variable_values(
 def test_launcher_argv_requires_digest_and_mapped_toolchain_payload() -> None:
     environment = _environment()
 
-    assert launcher.validate_linux_launcher_argv(
-        _argv(environment), environment
-    ) == (launcher.FULL_C6_LINUX_CARGO, "build")
+    assert launcher.validate_linux_launcher_argv(_argv(environment), environment) == (
+        launcher.FULL_C6_LINUX_CARGO,
+        "build",
+    )
 
     changed = list(_argv(environment))
     changed[2] = "e" * 64
@@ -353,12 +354,10 @@ def test_landlock_old_abi_and_device_execute_fail_closed() -> None:
             prctl=lambda *_args: 0,
         )
     with pytest.raises(launcher.FullC6LinuxLauncherError, match="device"):
-        launcher._landlock_access(
-            "read-execute", directory=False, character_device=True
-        )
-    assert launcher._landlock_access(
-        "read-write", directory=False, character_device=True
-    ) == (1 << 1) | (1 << 2)
+        launcher._landlock_access("read-execute", directory=False, character_device=True)
+    assert launcher._landlock_access("read-write", directory=False, character_device=True) == (
+        1 << 1
+    ) | (1 << 2)
 
 
 def test_launcher_orders_validation_fd_close_landlock_then_exec(
@@ -392,9 +391,7 @@ def test_launcher_orders_validation_fd_close_landlock_then_exec(
     monkeypatch.setattr(
         launcher.os,
         "execve",
-        lambda executable, payload, env: calls.append(
-            ("execve", executable, payload, env)
-        ),
+        lambda executable, payload, env: calls.append(("execve", executable, payload, env)),
     )
 
     with pytest.raises(launcher.FullC6LinuxLauncherError, match="returned"):
@@ -494,10 +491,9 @@ def test_launcher_main_emits_only_the_exact_static_failure_stage(
     assert writes == [
         (
             2,
-            (
-                "Rextio Full C6 Linux launcher failed closed: "
-                f"{failure_stage}\n"
-            ).encode("ascii"),
+            (f"Rextio artifact build Linux launcher failed closed: {failure_stage}\n").encode(
+                "ascii"
+            ),
         )
     ]
     assert private.encode("utf-8") not in writes[0][1]
@@ -544,6 +540,7 @@ def test_launcher_main_classifies_exact_environment_argv_failures(
     elif case == "variable-value":
         environment["SOURCE_DATE_EPOCH"] = "private-owner-value"
     elif case == "malformed-row":
+
         class EqualStr(str):
             pass
 
@@ -570,9 +567,7 @@ def test_launcher_main_classifies_exact_environment_argv_failures(
     )
 
     assert launcher._main() == 125
-    assert writes == [
-        (2, launcher.linux_launcher_failure_marker(expected_stage))
-    ]
+    assert writes == [(2, launcher.linux_launcher_failure_marker(expected_stage))]
     marker = writes[0][1]
     for private in (
         b"PRIVATE_OWNER_KEY",
@@ -592,7 +587,7 @@ def test_launcher_main_rejects_injected_environment_argv_error_text(
 
     def injected_failure(*_args: object) -> tuple[str, ...]:
         raise launcher.FullC6LinuxLauncherError(
-            f"Full C6 Linux fixed environment value differs: {private}"
+            f"artifact build Linux fixed environment value differs: {private}"
         )
 
     monkeypatch.setattr(launcher.sys, "argv", list(_argv(environment)))
@@ -606,9 +601,7 @@ def test_launcher_main_rejects_injected_environment_argv_error_text(
     )
 
     assert launcher._main() == 125
-    assert writes == [
-        (2, launcher.linux_launcher_failure_marker("environment-argv"))
-    ]
+    assert writes == [(2, launcher.linux_launcher_failure_marker("environment-argv"))]
     assert private.encode("utf-8") not in writes[0][1]
 
 

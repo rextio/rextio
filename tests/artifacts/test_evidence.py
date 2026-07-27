@@ -602,10 +602,10 @@ def test_native_runtime_sbom_reuses_wheel_entry_and_provenance_observes_not_mate
         native_runtime_inventory=inventory,
     )
     native_ref = (
-        f"urn:rextio:wheel-entry:{native_entry.sha256}:"
+        f"urn:rextio:artifact-evidence:component:wheel-entry:{native_entry.sha256}:"
         f"{sha256_hex(native_entry.name.encode('utf-8'))[:16]}"
     )
-    root_ref = f"urn:rextio:wheel:{subject.sha256}"
+    root_ref = f"urn:rextio:artifact-evidence:wheel:{subject.sha256}"
     rows = {row["ref"]: row["dependsOn"] for row in cdx["dependencies"]}
     native_components = [
         component
@@ -1352,8 +1352,8 @@ def test_cyclonedx_named_license_and_input_bomref_identity() -> None:
     log = next(c for c in cdx["components"] if c["name"] == "log")
     assert log["licenses"] == [{"license": {"name": "custom internal license text"}}]
     inp = next(c for c in cdx["components"] if c["name"] == "app.py")
-    assert inp["bom-ref"] != f"urn:rextio:input:{'2' * 64}"
-    assert inp["bom-ref"].startswith("urn:rextio:input:")
+    assert inp["bom-ref"] != f"urn:rextio:artifact-evidence:input:{'2' * 64}"
+    assert inp["bom-ref"].startswith("urn:rextio:artifact-evidence:input:")
 
 
 def test_cargo_dependency_edges_reject_self_and_dangling_endpoints() -> None:

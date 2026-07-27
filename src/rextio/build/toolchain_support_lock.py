@@ -1,4 +1,4 @@
-"""Bounded exact support-file locks for the Full C6 host toolchain.
+"""Bounded exact support-file locks for the artifact build host toolchain.
 
 This module is deliberately independent from tool discovery and execution.  A
 caller supplies explicit, path-bearing locators; capture turns them into a
@@ -34,10 +34,13 @@ import sys
 from typing import Any, Protocol, SupportsIndex, TypeVar, cast
 import unicodedata
 
+from rextio.artifacts.contract_dialects import CURRENT, TOOLCHAIN_SUPPORT_LOCK
 
-TOOLCHAIN_SUPPORT_LOCK_KIND = "full-c6-toolchain-support-lock"
-TOOLCHAIN_SUPPORT_LOCK_DOMAIN = "rextio.full-c6-toolchain-support-lock.v5"
-TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = 5
+
+_CURRENT_SUPPORT_LOCK_IDENTITY = CURRENT.identity(TOOLCHAIN_SUPPORT_LOCK)
+TOOLCHAIN_SUPPORT_LOCK_KIND = _CURRENT_SUPPORT_LOCK_IDENTITY.kind
+TOOLCHAIN_SUPPORT_LOCK_DOMAIN = _CURRENT_SUPPORT_LOCK_IDENTITY.domain
+TOOLCHAIN_SUPPORT_LOCK_SCHEMA_VERSION = _CURRENT_SUPPORT_LOCK_IDENTITY.schema_version
 TOOLCHAIN_SUPPORT_SCOPE = "cpython-3.11-pyo3-host-cdylib-v1"
 TOOLCHAIN_SUPPORT_TARGETS = (
     "aarch64-apple-darwin",
@@ -67,19 +70,18 @@ MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES = 1024 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ROLE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _XCODE_DEFAULT_TOOLCHAIN = Path(
-    "/Applications/Xcode.app/Contents/Developer/Toolchains/"
-    "XcodeDefault.xctoolchain"
+    "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"
 )
 _XCODE_APP_BOUNDARY = Path("/Applications/Xcode.app")
 _XCODE_HARDLINK_ROLE = "xcode-clang-resource"
 _XCODE_RESOURCE_ROOT = _XCODE_DEFAULT_TOOLCHAIN / "usr/lib/clang/17"
 _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256 = (
-    "b1651ac788182662f8cb83412e9bd39c0997fd955e675067ce577bc212f40d78"
+    "bcb76a6b15ad173634bfa4d78b98f8d77b5f270398c2424bd88102b10d3e4a75"
 )
 _XCODE_VERSION_MANIFEST_ROLE = "xcode-version-plist"
 _XCODE_VERSION_MANIFEST = _XCODE_APP_BOUNDARY / "Contents/version.plist"
 _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256 = (
-    "4bc0a3ad0c28086639932a1adb600483885d7a67afbd61310b638c7d647ac0f5"
+    "02105955057bb4e62cc80273765b0177fb6793caef399b8d8c9c176c350ee675"
 )
 _XCODE_VERSION_MANIFEST_RAW_SHA256 = (
     "b44fcf33ce9e1ac6759f5e71f682bcf734743e6ecd8ad6263116338236b25926"
@@ -92,11 +94,10 @@ _XCODE_HARDLINK_POLICY_MERKLE_SHA256 = (
 )
 _XCODE_SDK_HARDLINK_ROLE = "xcode-sdk"
 _XCODE_SDK_ROOT = (
-    _XCODE_APP_BOUNDARY
-    / "Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    _XCODE_APP_BOUNDARY / "Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
 )
 _XCODE_SDK_ROOT_LOCATOR_PATH_SHA256 = (
-    "06a2a3aad7cf447c6c6606bfbffc69f1de90229943e1b7d73e4b0534c73c35d0"
+    "055869e89e011970fa999b830233a8cc1f7e25c181bed91dd562c216ab8bc327"
 )
 _XCODE_SDK_HARDLINK_GROUP_COUNT = 4_626
 _XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT = 8_605
@@ -111,29 +112,25 @@ _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP = 128
 _LINUX_CASEFOLD_ROLE = "linux-runtime-support"
 _LINUX_CASEFOLD_GROUP_COUNT = 10
 _LINUX_CASEFOLD_MEMBER_COUNT = 20
-_LINUX_CASEFOLD_TOPOLOGY_SHA256 = (
-    "54895f5f13d52076ce8637e71aa7daa1d980741478f6f0c108745907af465562"
-)
+_LINUX_CASEFOLD_TOPOLOGY_SHA256 = "54895f5f13d52076ce8637e71aa7daa1d980741478f6f0c108745907af465562"
 _MAX_CASEFOLD_GROUPS = 16
 _MAX_CASEFOLD_GROUP_MEMBERS = 16
 _LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256 = (
-    "023ed662ba1d5597854b981623cc146009db9f4b1b2111c3498b420fb5f10d69"
+    "7f9e3d2f18e2b98198e3afc4cd6892a255156a2847e96d1472a13aa921c47eca"
 )
 _LINUX_MODE_DISPOSITION_ROOT = Path("/usr/lib/x86_64-linux-gnu")
 _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256 = (
-    "8cb7b098c3bba9a6c8a0257da50a363ac54fbe6eb28b46be38a5231be7b5e80a"
+    "abd82f79634b9a3d8fa2a8f6adda9cc323508f07834171836c744deeb43a03d1"
 )
 _LINUX_MODE_DISPOSITION_RELATIVE_PATH = "utempter/utempter"
 _LINUX_MODE_DISPOSITION_MODE = 0o2755
 _LINUX_UNMAPPED_SYMLINK_ROOT = Path("/usr/lib/x86_64-linux-gnu")
 _LINUX_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256 = (
-    "8cb7b098c3bba9a6c8a0257da50a363ac54fbe6eb28b46be38a5231be7b5e80a"
+    "abd82f79634b9a3d8fa2a8f6adda9cc323508f07834171836c744deeb43a03d1"
 )
-_LINUX_GCC_UNMAPPED_SYMLINK_ROOT = Path(
-    "/usr/lib/gcc/x86_64-linux-gnu/13"
-)
+_LINUX_GCC_UNMAPPED_SYMLINK_ROOT = Path("/usr/lib/gcc/x86_64-linux-gnu/13")
 _LINUX_GCC_UNMAPPED_SYMLINK_ROOT_LOCATOR_PATH_SHA256 = (
-    "fc92c0ab8a96a0a6c852f2b7289a763216bbbc99a2faae062fa8ed08a624e528"
+    "db1476fc2b64f5458732705e7dbfe23a2dfa932684268fd7ce7c42a0ade481c9"
 )
 _LOCK_FIELDS = {
     "kind",
@@ -248,6 +245,8 @@ _CASEFOLD_DISPOSITION_FIELDS = {
     "topology_sha256",
     "merkle_sha256",
 }
+
+
 class _RoleReceipt(Protocol):
     @property
     def logical_role(self) -> str: ...
@@ -311,24 +310,17 @@ class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
         if (
             type(manifest_difference_count) is not int
             or isinstance(manifest_difference_count, bool)
-            or not 0
-            <= manifest_difference_count
-            <= MAX_TOOLCHAIN_SUPPORT_LOCATORS
+            or not 0 <= manifest_difference_count <= MAX_TOOLCHAIN_SUPPORT_LOCATORS
             or type(root_difference_count) is not int
             or isinstance(root_difference_count, bool)
             or not 0 <= root_difference_count <= MAX_TOOLCHAIN_SUPPORT_LOCATORS
             or manifest_difference_count + root_difference_count == 0
             or first_difference_kind not in {"manifest", "root"}
-            or (
-                first_difference_kind == "manifest"
-                and manifest_difference_count == 0
-            )
+            or (first_difference_kind == "manifest" and manifest_difference_count == 0)
             or first_difference_kind == "root"
             and root_difference_count == 0
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support verification drift shape is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support verification drift shape is invalid")
         role = _validate_role(first_logical_role)
         before = _require_sha256(
             before_merkle_sha256,
@@ -351,9 +343,7 @@ class ToolchainSupportVerificationDriftError(ToolchainSupportLockError):
             or any(type(field) is not str for field in tree_changed_fields)
             or tree_changed_fields
             != tuple(
-                field
-                for field in _TREE_VERIFICATION_CHANGED_FIELDS
-                if field in tree_changed_fields
+                field for field in _TREE_VERIFICATION_CHANGED_FIELDS if field in tree_changed_fields
             )
             or (first_difference_kind == "manifest" and tree_changed_fields)
             or (first_difference_kind == "root" and not tree_changed_fields)
@@ -413,9 +403,7 @@ class ToolchainSupportLocator:
     def __init__(self, *, logical_role: str, path: Path | str, kind: str) -> None:
         _validate_role(logical_role)
         if kind not in {"file", "tree"}:
-            raise ToolchainSupportLockError(
-                "toolchain support locator kind must be file or tree"
-            )
+            raise ToolchainSupportLockError("toolchain support locator kind must be file or tree")
         absolute = _validate_absolute_locator(path)
         object.__setattr__(self, "_logical_role", logical_role)
         object.__setattr__(self, "_absolute_path", absolute)
@@ -449,7 +437,7 @@ class ToolchainSupportLocator:
 
 @dataclass(frozen=True, slots=True)
 class ToolchainSupportScope:
-    """The one fixed Full C6 host-extension profile and selected host target."""
+    """The one fixed artifact-build host-extension profile and selected host target."""
 
     target_triple: str
     profile: str = TOOLCHAIN_SUPPORT_SCOPE
@@ -511,13 +499,9 @@ class ToolchainSupportFileReceipt:
         _validate_mode(self.mode)
         _validate_xattr_summary(self.xattr_count, self.xattr_bytes)
         if self.member_count != 1 or self.total_bytes != self.size:
-            raise ToolchainSupportLockError(
-                "toolchain support manifest summary is noncanonical"
-            )
+            raise ToolchainSupportLockError("toolchain support manifest summary is noncanonical")
         if not hmac.compare_digest(self.merkle_sha256, _file_merkle(self)):
-            raise ToolchainSupportLockError(
-                "toolchain support manifest Merkle receipt is stale"
-            )
+            raise ToolchainSupportLockError("toolchain support manifest Merkle receipt is stale")
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete path-free file receipt."""
@@ -570,9 +554,7 @@ class _ToolchainSupportTreeEntry:
             _validate_size(self.size, maximum=MAX_TOOLCHAIN_SUPPORT_FILE_BYTES)
             _require_sha256(self.raw_sha256, "support tree file raw SHA-256")
             if self.link_target is not None:
-                raise ToolchainSupportLockError(
-                    "toolchain support regular file has a link target"
-                )
+                raise ToolchainSupportLockError("toolchain support regular file has a link target")
             return
         if self.kind == "symlink":
             if (
@@ -581,17 +563,13 @@ class _ToolchainSupportTreeEntry:
                 or self.size != len(self.link_target.encode("utf-8"))
                 or not 0 < self.size <= MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
             ):
-                raise ToolchainSupportLockError(
-                    "toolchain support symlink receipt is noncanonical"
-                )
+                raise ToolchainSupportLockError("toolchain support symlink receipt is noncanonical")
             _require_sha256(self.raw_sha256, "support symlink raw SHA-256")
             if not hmac.compare_digest(
                 self.raw_sha256,
                 hashlib.sha256(self.link_target.encode("utf-8")).hexdigest(),
             ):
-                raise ToolchainSupportLockError(
-                    "toolchain support symlink raw receipt is stale"
-                )
+                raise ToolchainSupportLockError("toolchain support symlink raw receipt is stale")
             _validate_link_target(self.link_target)
             return
         raise ToolchainSupportLockError("toolchain support tree member kind is invalid")
@@ -645,21 +623,16 @@ class ToolchainSupportSymlinkDispositionReceipt:
             "deny-isolated-site-packages",
             "normalize-in-root-alias",
         }:
-            raise ToolchainSupportLockError(
-                "toolchain support symlink disposition is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support symlink disposition is invalid")
         if (
             type(self.raw_link_target) is not str
             or not self.raw_link_target
-            or len(self.raw_link_target.encode("utf-8"))
-            > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
+            or len(self.raw_link_target.encode("utf-8")) > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
             or "\\" in self.raw_link_target
             or "\0" in self.raw_link_target
-            or self.raw_link_target
-            != unicodedata.normalize("NFC", self.raw_link_target)
+            or self.raw_link_target != unicodedata.normalize("NFC", self.raw_link_target)
             or any(
-                ord(character) < 32 or ord(character) == 127
-                for character in self.raw_link_target
+                ord(character) < 32 or ord(character) == 127 for character in self.raw_link_target
             )
         ):
             raise ToolchainSupportLockError(
@@ -768,9 +741,7 @@ class ToolchainSupportSymlinkDispositionReceipt:
             "external_manifest_role": self.external_manifest_role,
             "external_manifest_merkle_sha256": self.external_manifest_merkle_sha256,
             "external_support_root_role": self.external_support_root_role,
-            "external_support_root_merkle_sha256": (
-                self.external_support_root_merkle_sha256
-            ),
+            "external_support_root_merkle_sha256": (self.external_support_root_merkle_sha256),
             "resolved_relative_path": self.resolved_relative_path,
             "resolved_path_sha256": self.resolved_path_sha256,
             "mode": self.mode,
@@ -802,9 +773,7 @@ class ToolchainSupportHardlinkDispositionReceipt:
 
     def __post_init__(self) -> None:
         if self.disposition != "bind-xcode-resource-hardlink-topology":
-            raise ToolchainSupportLockError(
-                "toolchain support hardlink disposition is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support hardlink disposition is invalid")
         _require_sha256(
             self.resource_root_locator_path_sha256,
             "support hardlink resource-root locator SHA-256",
@@ -827,7 +796,8 @@ class ToolchainSupportHardlinkDispositionReceipt:
             or self.support_member_count < self.group_count
             or type(self.alias_count) is not int
             or isinstance(self.alias_count, bool)
-            or not self.support_member_count <= self.alias_count
+            or not self.support_member_count
+            <= self.alias_count
             <= self.group_count * _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP
         ):
             raise ToolchainSupportLockError(
@@ -857,14 +827,10 @@ class ToolchainSupportHardlinkDispositionReceipt:
         """Return the path-opaque root-scoped topology receipt."""
         return {
             "disposition": self.disposition,
-            "resource_root_locator_path_sha256": (
-                self.resource_root_locator_path_sha256
-            ),
+            "resource_root_locator_path_sha256": (self.resource_root_locator_path_sha256),
             "version_manifest_role": self.version_manifest_role,
             "version_manifest_raw_sha256": self.version_manifest_raw_sha256,
-            "version_manifest_merkle_sha256": (
-                self.version_manifest_merkle_sha256
-            ),
+            "version_manifest_merkle_sha256": (self.version_manifest_merkle_sha256),
             "group_count": self.group_count,
             "support_member_count": self.support_member_count,
             "alias_count": self.alias_count,
@@ -891,9 +857,7 @@ class ToolchainSupportModeDispositionReceipt:
 
     def __post_init__(self) -> None:
         if self.disposition != "bind-linux-runtime-regular-mode":
-            raise ToolchainSupportLockError(
-                "toolchain support mode disposition is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support mode disposition is invalid")
         _require_sha256(
             self.support_root_locator_path_sha256,
             "support mode disposition root locator SHA-256",
@@ -903,9 +867,7 @@ class ToolchainSupportModeDispositionReceipt:
             "support mode disposition relative-path SHA-256",
         )
         if self.kind != "regular" or self.mode != _LINUX_MODE_DISPOSITION_MODE:
-            raise ToolchainSupportLockError(
-                "toolchain support mode disposition shape is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support mode disposition shape is invalid")
         _require_sha256(
             self.full_stamp_sha256,
             "support mode disposition full-stamp SHA-256",
@@ -930,17 +892,13 @@ class ToolchainSupportModeDispositionReceipt:
             self.merkle_sha256,
             _mode_disposition_merkle(self),
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support mode disposition receipt is stale"
-            )
+            raise ToolchainSupportLockError("toolchain support mode disposition receipt is stale")
 
     def to_dict(self) -> dict[str, object]:
         """Return the closed path-opaque mode disposition."""
         return {
             "disposition": self.disposition,
-            "support_root_locator_path_sha256": (
-                self.support_root_locator_path_sha256
-            ),
+            "support_root_locator_path_sha256": (self.support_root_locator_path_sha256),
             "relative_path_sha256": self.relative_path_sha256,
             "kind": self.kind,
             "mode": self.mode,
@@ -964,9 +922,7 @@ class ToolchainSupportCasefoldDispositionReceipt:
 
     def __post_init__(self) -> None:
         if self.disposition != "bind-linux-runtime-casefold-topology":
-            raise ToolchainSupportLockError(
-                "toolchain support casefold disposition is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support casefold disposition is invalid")
         if (
             type(self.group_count) is not int
             or isinstance(self.group_count, bool)
@@ -1050,9 +1006,7 @@ class ToolchainSupportTreeReceipt:
                     key=lambda item: (_alias(item.relative_path), item.relative_path),
                 )
             )
-            or len(
-                {_alias(item.relative_path) for item in self.symlink_dispositions}
-            )
+            or len({_alias(item.relative_path) for item in self.symlink_dispositions})
             != len(self.symlink_dispositions)
             or type(self.symlink_disposition_count) is not int
             or isinstance(self.symlink_disposition_count, bool)
@@ -1086,9 +1040,7 @@ class ToolchainSupportTreeReceipt:
             or isinstance(self.mode_disposition_count, bool)
             or self.mode_disposition_count != len(self.mode_dispositions)
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support mode dispositions are noncanonical"
-            )
+            raise ToolchainSupportLockError("toolchain support mode dispositions are noncanonical")
         if (
             type(self.casefold_dispositions) is not tuple
             or any(
@@ -1121,18 +1073,13 @@ class ToolchainSupportTreeReceipt:
             or type(self.symlink_count) is not int
             or isinstance(self.symlink_count, bool)
             or self.symlink_count < 0
-            or self.file_count + self.directory_count + self.symlink_count
-            != self.member_count
+            or self.file_count + self.directory_count + self.symlink_count != self.member_count
             or self.symlink_count < self.symlink_disposition_count
             or any(
-                item.support_member_count > self.file_count
-                for item in self.hardlink_dispositions
+                item.support_member_count > self.file_count for item in self.hardlink_dispositions
             )
             or self.file_count < self.mode_disposition_count
-            or any(
-                item.member_count > self.member_count
-                for item in self.casefold_dispositions
-            )
+            or any(item.member_count > self.member_count for item in self.casefold_dispositions)
             or type(self.total_bytes) is not int
             or isinstance(self.total_bytes, bool)
             or self.total_bytes < 0
@@ -1144,9 +1091,7 @@ class ToolchainSupportTreeReceipt:
             or isinstance(self.xattr_bytes, bool)
             or not 0 <= self.xattr_bytes <= MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support tree summary is noncanonical"
-            )
+            raise ToolchainSupportLockError("toolchain support tree summary is noncanonical")
         _require_sha256(self.merkle_sha256, "support tree Merkle SHA-256")
 
     def to_dict(self) -> dict[str, object]:
@@ -1164,21 +1109,13 @@ class ToolchainSupportTreeReceipt:
             "xattr_count": self.xattr_count,
             "xattr_bytes": self.xattr_bytes,
             "symlink_disposition_count": self.symlink_disposition_count,
-            "symlink_dispositions": [
-                item.to_dict() for item in self.symlink_dispositions
-            ],
+            "symlink_dispositions": [item.to_dict() for item in self.symlink_dispositions],
             "hardlink_disposition_count": self.hardlink_disposition_count,
-            "hardlink_dispositions": [
-                item.to_dict() for item in self.hardlink_dispositions
-            ],
+            "hardlink_dispositions": [item.to_dict() for item in self.hardlink_dispositions],
             "mode_disposition_count": self.mode_disposition_count,
-            "mode_dispositions": [
-                item.to_dict() for item in self.mode_dispositions
-            ],
+            "mode_dispositions": [item.to_dict() for item in self.mode_dispositions],
             "casefold_disposition_count": self.casefold_disposition_count,
-            "casefold_dispositions": [
-                item.to_dict() for item in self.casefold_dispositions
-            ],
+            "casefold_dispositions": [item.to_dict() for item in self.casefold_dispositions],
             "merkle_sha256": self.merkle_sha256,
         }
 
@@ -1270,12 +1207,9 @@ class ToolchainSupportLock:
             or self.xattr_bytes != expected_xattr_bytes
             or expected_xattr_count > MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS
             or expected_xattr_bytes > MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES
-            or self.total_bytes
-            > MAX_TOOLCHAIN_SUPPORT_TREE_BYTES * MAX_TOOLCHAIN_SUPPORT_LOCATORS
+            or self.total_bytes > MAX_TOOLCHAIN_SUPPORT_TREE_BYTES * MAX_TOOLCHAIN_SUPPORT_LOCATORS
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support lock summary is noncanonical"
-            )
+            raise ToolchainSupportLockError("toolchain support lock summary is noncanonical")
         _require_sha256(self.merkle_sha256, "toolchain support lock Merkle SHA-256")
         if not hmac.compare_digest(self.merkle_sha256, _lock_merkle(self)):
             raise ToolchainSupportLockError("toolchain support lock Merkle receipt is stale")
@@ -1360,13 +1294,9 @@ class _XcodeHardlinkPolicy:
             or self.alias_count < self.support_member_count
         ):
             raise ToolchainSupportLockError(
-                "toolchain support Xcode hardlink topology policy counts are "
-                "noncanonical"
+                "toolchain support Xcode hardlink topology policy counts are noncanonical"
             )
-        if (
-            self.alias_count
-            > self.group_count * _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP
-        ):
+        if self.alias_count > self.group_count * _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP:
             raise ToolchainSupportLockError(
                 "toolchain support Xcode hardlink alias bound is noncanonical"
             )
@@ -1382,9 +1312,7 @@ def _fixed_xcode_hardlink_policies() -> tuple[_XcodeHardlinkPolicy, ...]:
         _XcodeHardlinkPolicy(
             logical_role=_XCODE_HARDLINK_ROLE,
             support_root=_XCODE_RESOURCE_ROOT,
-            support_root_locator_path_sha256=(
-                _XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256
-            ),
+            support_root_locator_path_sha256=(_XCODE_RESOURCE_ROOT_LOCATOR_PATH_SHA256),
             group_count=_XCODE_HARDLINK_GROUP_COUNT,
             support_member_count=_XCODE_HARDLINK_SUPPORT_MEMBER_COUNT,
             alias_count=_XCODE_HARDLINK_ALIAS_COUNT,
@@ -1393,9 +1321,7 @@ def _fixed_xcode_hardlink_policies() -> tuple[_XcodeHardlinkPolicy, ...]:
         _XcodeHardlinkPolicy(
             logical_role=_XCODE_SDK_HARDLINK_ROLE,
             support_root=_XCODE_SDK_ROOT,
-            support_root_locator_path_sha256=(
-                _XCODE_SDK_ROOT_LOCATOR_PATH_SHA256
-            ),
+            support_root_locator_path_sha256=(_XCODE_SDK_ROOT_LOCATOR_PATH_SHA256),
             group_count=_XCODE_SDK_HARDLINK_GROUP_COUNT,
             support_member_count=_XCODE_SDK_HARDLINK_SUPPORT_MEMBER_COUNT,
             alias_count=_XCODE_SDK_HARDLINK_ALIAS_COUNT,
@@ -1421,9 +1347,7 @@ def _select_xcode_hardlink_policy(
         and policy.support_root_locator_path_sha256 == locator_path_sha256
     )
     if len(matches) > 1:
-        raise ToolchainSupportLockError(
-            "toolchain support Xcode hardlink policy is ambiguous"
-        )
+        raise ToolchainSupportLockError("toolchain support Xcode hardlink policy is ambiguous")
     return matches[0] if matches else None
 
 
@@ -1442,9 +1366,7 @@ def _select_xcode_hardlink_policy_receipt(
         and policy.support_root_locator_path_sha256 == locator_path_sha256
     )
     if len(matches) > 1:
-        raise ToolchainSupportLockError(
-            "toolchain support Xcode hardlink policy is ambiguous"
-        )
+        raise ToolchainSupportLockError("toolchain support Xcode hardlink policy is ambiguous")
     return matches[0] if matches else None
 
 
@@ -1485,9 +1407,7 @@ class _AllowedHardlinkPlan:
             for relative_path in group.support_relative_paths
         }
         if len(entries) != topology.support_member_count:
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode hardlink plan is ambiguous"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode hardlink plan is ambiguous")
         return cls(entries=entries)
 
     def consume(self, *, relative_path: str, observed: _FilesystemStamp) -> bool:
@@ -1495,9 +1415,7 @@ class _AllowedHardlinkPlan:
         if expected is None:
             return False
         if expected != observed:
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode hardlink plan stamp differs"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode hardlink plan stamp differs")
         return True
 
 
@@ -1590,13 +1508,9 @@ _FIXED_SYMLINK_DISPOSITION_VARIANT = "fixed"
 _MACOS_XCODE_SDK_DISPOSITIONS = (
     _FixedSymlinkDisposition(
         relative_path="System/Library/Frameworks/vecLib.framework",
-        raw_link_target=(
-            "Accelerate.framework//Versions/A/Frameworks/vecLib.framework"
-        ),
+        raw_link_target=("Accelerate.framework//Versions/A/Frameworks/vecLib.framework"),
         disposition="normalize-in-root-alias",
-        canonical_link_target=(
-            "Accelerate.framework/Versions/A/Frameworks/vecLib.framework"
-        ),
+        canonical_link_target=("Accelerate.framework/Versions/A/Frameworks/vecLib.framework"),
     ),
     _FixedSymlinkDisposition(
         relative_path="usr/lib/swift/libswiftSoundAnalysis.tbd",
@@ -1630,9 +1544,7 @@ _MACOS_XCODE_SDK_MODERN_DISPOSITION_PATHS = frozenset(
         "usr/lib/swift/libswiftSoundAnalysis_Private.tbd",
     }
 )
-_MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS = frozenset(
-    {"System/Library/Frameworks/vecLib.framework"}
-)
+_MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS = frozenset({"System/Library/Frameworks/vecLib.framework"})
 _MACOS_XCODE_SDK_16_4_REGULAR_FILES = frozenset(
     {
         "usr/lib/swift/libswiftSoundAnalysis.tbd",
@@ -1646,59 +1558,43 @@ _LINUX_UNMAPPED_SYMLINK_DISPOSITIONS = (
         relative_path="libLLVM-18.so",
         raw_link_target="libLLVM.so.18.1",
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "438f53d5024cec3f9b5be422a4dfc6e24c9c080cdcad0375d2c518c2f239b266"
-        ),
+        resolved_path_sha256=("f61fb9d45edab8cbf64021c2d3e4486561c3386ae900eefaf0e2dd654d03404e"),
     ),
     _FixedSymlinkDisposition(
         relative_path="libLLVM.so.18.1",
         raw_link_target="../llvm-18/lib/libLLVM.so.1",
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "438f53d5024cec3f9b5be422a4dfc6e24c9c080cdcad0375d2c518c2f239b266"
-        ),
+        resolved_path_sha256=("f61fb9d45edab8cbf64021c2d3e4486561c3386ae900eefaf0e2dd654d03404e"),
     ),
     _FixedSymlinkDisposition(
         relative_path="libclang-cpp.so.16",
         raw_link_target="../llvm-16/lib/libclang-cpp.so.16",
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "72e94f1b5b94780e49cd2c3379ddaba4472cb78febb35ee72e5a62aeb8bd4160"
-        ),
+        resolved_path_sha256=("ffa096d7b599c137cbdb51fdb89eadac93b6b19aa33af97dd3783f218f3426f7"),
     ),
     _FixedSymlinkDisposition(
         relative_path="libclang-cpp.so.17",
         raw_link_target="../llvm-17/lib/libclang-cpp.so.17",
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "15e5024198ecf325a8ab1f75411f16953c196961afec6f2e1977593a5420d161"
-        ),
+        resolved_path_sha256=("0e33c914de9d872bd027d760983fed9cda01bc90057d7d0f9c4045970f45fd1c"),
     ),
     _FixedSymlinkDisposition(
         relative_path="libclang-cpp.so.18",
         raw_link_target="../llvm-18/lib/libclang-cpp.so.18.1",
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "84f655ae7665283dae00379724674759314189a8391bade80d0d90abaeb1175f"
-        ),
+        resolved_path_sha256=("d5ce7d59909270f058c4a8c167d47789e897c338db44b30d2fd60cdef6ccb7b2"),
     ),
     _FixedSymlinkDisposition(
         relative_path="libclang-cpp.so.18.1",
         raw_link_target="../llvm-18/lib/libclang-cpp.so.18.1",
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "84f655ae7665283dae00379724674759314189a8391bade80d0d90abaeb1175f"
-        ),
+        resolved_path_sha256=("d5ce7d59909270f058c4a8c167d47789e897c338db44b30d2fd60cdef6ccb7b2"),
     ),
     _FixedSymlinkDisposition(
         relative_path="libpython3.12.a",
-        raw_link_target=(
-            "../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"
-        ),
+        raw_link_target=("../python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.a"),
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "9757c5cb339432c22968634e3166747d7e8ce4a6e8351e89ccf3b648c7d1b7f0"
-        ),
+        resolved_path_sha256=("fe12b654a8cb4c50f4274d9811f67df50b5d9283d1b163293a4f7408c2308b24"),
     ),
 )
 _LINUX_UNMAPPED_SYMLINK_DISPOSITION_PATHS = frozenset(
@@ -1709,13 +1605,9 @@ _LINUX_UNMAPPED_SYMLINK_GITHUB_RUNNER_VARIANT = "github-runner"
 _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITIONS = (
     _FixedSymlinkDisposition(
         relative_path="liblto_plugin.so",
-        raw_link_target=(
-            "../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"
-        ),
+        raw_link_target=("../../../../libexec/gcc/x86_64-linux-gnu/13/liblto_plugin.so"),
         disposition="deny-unmapped-virtual-target",
-        resolved_path_sha256=(
-            "b0d3612fd801488c96c48b9ee4320633da71497f0b7507d849754b017c9ebd00"
-        ),
+        resolved_path_sha256=("256789b9965444d5b61c6b1e2ab18e94258b0be5f88b0dfb827c788d936db542"),
     ),
 )
 _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITION_PATHS = frozenset(
@@ -1767,9 +1659,7 @@ class _XattrBudget:
             or isinstance(self.remaining_bytes, bool)
             or self.remaining_bytes < 0
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support xattr remaining budget is invalid"
-            )
+            raise ToolchainSupportLockError("toolchain support xattr remaining budget is invalid")
 
     def clone(self) -> _XattrBudget:
         return _XattrBudget(
@@ -1831,9 +1721,7 @@ def _capture_stable_file(
     first = _capture_file_once(locator, xattr_budget=capture_budget)
     second = _capture_file_once(locator, xattr_budget=replay_budget)
     if first != second or capture_budget != replay_budget:
-        raise ToolchainSupportLockError(
-            "toolchain support manifest changed across stable capture"
-        )
+        raise ToolchainSupportLockError("toolchain support manifest changed across stable capture")
     consumed_count = starting_count - capture_budget.remaining_count
     consumed_bytes = starting_bytes - capture_budget.remaining_bytes
     if first.xattr_count != consumed_count or first.xattr_bytes != consumed_bytes:
@@ -1877,14 +1765,11 @@ def _capture_file_once(
         )
         opened = _stamp(os.fstat(file_fd))
         if opened != expected:
-            raise ToolchainSupportLockError(
-                "toolchain support manifest changed before capture"
-            )
+            raise ToolchainSupportLockError("toolchain support manifest changed before capture")
         xattrs = _capture_fd_xattrs(file_fd, budget=xattr_budget)
         if (
             xattrs.count != starting_xattr_count - xattr_budget.remaining_count
-            or xattrs.total_bytes
-            != starting_xattr_bytes - xattr_budget.remaining_bytes
+            or xattrs.total_bytes != starting_xattr_bytes - xattr_budget.remaining_bytes
         ):
             raise ToolchainSupportLockError(
                 "toolchain support manifest xattr accounting is inconsistent"
@@ -2000,9 +1885,9 @@ def _capture_stable_tree(
     replay_budget = capture_budget.clone()
     topology: _XcodeHardlinkTopologyObservation | None = None
     hardlink_receipt: ToolchainSupportHardlinkDispositionReceipt | None = None
-    xcode_manifest_binding: tuple[
-        ToolchainSupportLocator, ToolchainSupportFileReceipt
-    ] | None = None
+    xcode_manifest_binding: tuple[ToolchainSupportLocator, ToolchainSupportFileReceipt] | None = (
+        None
+    )
     xcode_policy = (
         None
         if target_triple is None
@@ -2024,10 +1909,8 @@ def _capture_stable_tree(
             manifest_locator._absolute_path != _XCODE_VERSION_MANIFEST
             or _locator_path_digest(manifest_locator._absolute_path)
             != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
-            or manifest_receipt.locator_path_sha256
-            != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
-            or manifest_receipt.raw_sha256
-            != _XCODE_VERSION_MANIFEST_RAW_SHA256
+            or manifest_receipt.locator_path_sha256 != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
+            or manifest_receipt.raw_sha256 != _XCODE_VERSION_MANIFEST_RAW_SHA256
         ):
             raise ToolchainSupportLockError(
                 "toolchain support Xcode topology version manifest differs"
@@ -2064,9 +1947,7 @@ def _capture_stable_tree(
         xattr_budget=replay_budget,
     )
     if first != second or capture_budget != replay_budget:
-        raise ToolchainSupportLockError(
-            "toolchain support tree changed across stable capture"
-        )
+        raise ToolchainSupportLockError("toolchain support tree changed across stable capture")
     if topology is not None:
         replayed_topology = _scan_xcode_hardlink_topology(
             support_root=locator._absolute_path,
@@ -2097,9 +1978,7 @@ def _capture_stable_tree(
     consumed_count = starting_count - capture_budget.remaining_count
     consumed_bytes = starting_bytes - capture_budget.remaining_bytes
     if first.xattr_count != consumed_count or first.xattr_bytes != consumed_bytes:
-        raise ToolchainSupportLockError(
-            "toolchain support tree xattr accounting is inconsistent"
-        )
+        raise ToolchainSupportLockError("toolchain support tree xattr accounting is inconsistent")
     budget.consume(count=consumed_count, total_bytes=consumed_bytes)
     return first
 
@@ -2195,9 +2074,7 @@ def _capture_lock_receipts(
             external_support_root_binding=None,
             budget=budget,
         )
-    root_receipts = tuple(
-        captured_roots[item.logical_role] for item in ordered_roots
-    )
+    root_receipts = tuple(captured_roots[item.logical_role] for item in ordered_roots)
     captured_count = sum(item.xattr_count for item in manifest_receipts) + sum(
         item.xattr_count for item in root_receipts
     )
@@ -2205,14 +2082,10 @@ def _capture_lock_receipts(
         item.xattr_bytes for item in root_receipts
     )
     if (
-        captured_count
-        != MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS - budget.remaining_count
-        or captured_bytes
-        != MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES - budget.remaining_bytes
+        captured_count != MAX_TOOLCHAIN_SUPPORT_LOCK_XATTRS - budget.remaining_count
+        or captured_bytes != MAX_TOOLCHAIN_SUPPORT_LOCK_XATTR_BYTES - budget.remaining_bytes
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support lock xattr accounting is inconsistent"
-        )
+        raise ToolchainSupportLockError("toolchain support lock xattr accounting is inconsistent")
     return manifest_receipts, root_receipts
 
 
@@ -2271,14 +2144,10 @@ def parse_toolchain_support_lock(
     expected = _require_sha256(expected_raw_sha256, "expected lock raw SHA-256")
     observed = hashlib.sha256(value).hexdigest()
     if not hmac.compare_digest(observed, expected):
-        raise ToolchainSupportLockError(
-            "toolchain support lock raw SHA-256 does not match the pin"
-        )
+        raise ToolchainSupportLockError("toolchain support lock raw SHA-256 does not match the pin")
     document = _parse_json(value)
     if not hmac.compare_digest(value, _canonical_json(document)):
-        raise ToolchainSupportLockError(
-            "toolchain support lock is not canonical JSON"
-        )
+        raise ToolchainSupportLockError("toolchain support lock is not canonical JSON")
     root = _exact_dict(document, _LOCK_FIELDS, "lock")
     if (
         root["kind"] != TOOLCHAIN_SUPPORT_LOCK_KIND
@@ -2312,9 +2181,7 @@ def parse_toolchain_support_lock(
         merkle_sha256=_string(root["merkle_sha256"], "lock Merkle SHA-256"),
     )
     if lock.to_dict() != root or not hmac.compare_digest(lock.raw_sha256, observed):
-        raise ToolchainSupportLockError(
-            "toolchain support lock content is stale or noncanonical"
-        )
+        raise ToolchainSupportLockError("toolchain support lock content is stale or noncanonical")
     return lock
 
 
@@ -2380,10 +2247,7 @@ def verify_toolchain_support_lock(
             key=lambda item: (_alias(item.logical_role), item.logical_role),
         )
     )
-    if (
-        actual_manifest_roles != expected_manifest_roles
-        or actual_root_roles != expected_root_roles
-    ):
+    if actual_manifest_roles != expected_manifest_roles or actual_root_roles != expected_root_roles:
         raise ToolchainSupportLockError(
             "toolchain support locator roles or kinds differ from the lock"
         )
@@ -2458,12 +2322,8 @@ def _tree_verification_changed_fields(
         ("merkle", before.merkle_sha256, after.merkle_sha256),
     )
     changed = tuple(name for name, left, right in comparisons if left != right)
-    if (
-        not changed
-        or changed
-        != tuple(
-            field for field in _TREE_VERIFICATION_CHANGED_FIELDS if field in changed
-        )
+    if not changed or changed != tuple(
+        field for field in _TREE_VERIFICATION_CHANGED_FIELDS if field in changed
     ):
         raise ToolchainSupportLockError(
             "toolchain support verification changed-field accounting is inconsistent"
@@ -2554,12 +2414,10 @@ def _fixed_symlink_disposition_map(
         if (
             row.relative_path in result
             or not row.raw_link_target
-            or row.raw_link_target
-            != unicodedata.normalize("NFC", row.raw_link_target)
+            or row.raw_link_target != unicodedata.normalize("NFC", row.raw_link_target)
             or "\\" in row.raw_link_target
             or "\0" in row.raw_link_target
-            or len(row.raw_link_target.encode("utf-8"))
-            > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
+            or len(row.raw_link_target.encode("utf-8")) > MAX_TOOLCHAIN_SUPPORT_SYMLINK_BYTES
         ):
             raise ToolchainSupportLockError(
                 "toolchain support fixed symlink disposition is invalid"
@@ -2663,10 +2521,8 @@ def _validate_lock_symlink_dispositions(
             if (
                 receipt.disposition != policy.disposition
                 or receipt.raw_link_target != policy.raw_link_target
-                or receipt.canonical_link_target
-                != policy.canonical_link_target
-                or receipt.external_manifest_role
-                != policy.external_manifest_role
+                or receipt.canonical_link_target != policy.canonical_link_target
+                or receipt.external_manifest_role != policy.external_manifest_role
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support lock symlink disposition policy changed"
@@ -2676,8 +2532,7 @@ def _validate_lock_symlink_dispositions(
                 manifest = manifests_by_role.get(policy.external_manifest_role)
                 if (
                     manifest is None
-                    or receipt.external_manifest_merkle_sha256
-                    != manifest.merkle_sha256
+                    or receipt.external_manifest_merkle_sha256 != manifest.merkle_sha256
                     or receipt.resolved_relative_path is not None
                 ):
                     raise ToolchainSupportLockError(
@@ -2692,21 +2547,17 @@ def _validate_lock_symlink_dispositions(
                         "toolchain support denied site-packages disposition is stale"
                     )
             elif policy.disposition == "deny-unmapped-virtual-target":
-                _profile_root, profile_locator_path_sha256 = (
-                    _deny_unmapped_symlink_profile(
-                        target_triple=scope.target_triple,
-                        logical_role=root.logical_role,
-                    )
+                _profile_root, profile_locator_path_sha256 = _deny_unmapped_symlink_profile(
+                    target_triple=scope.target_triple,
+                    logical_role=root.logical_role,
                 )
                 if (
-                    root.locator_path_sha256
-                    != profile_locator_path_sha256
+                    root.locator_path_sha256 != profile_locator_path_sha256
                     or receipt.external_manifest_merkle_sha256 is not None
                     or receipt.external_support_root_role is not None
                     or receipt.external_support_root_merkle_sha256 is not None
                     or receipt.resolved_relative_path is not None
-                    or receipt.resolved_path_sha256
-                    != policy.resolved_path_sha256
+                    or receipt.resolved_path_sha256 != policy.resolved_path_sha256
                 ):
                     raise ToolchainSupportLockError(
                         "toolchain support unmapped virtual target disposition is stale"
@@ -2739,10 +2590,8 @@ def _validate_lock_symlink_dispositions(
                 receipt.canonical_link_target is not None
                 or receipt.external_manifest_role is not None
                 or receipt.external_manifest_merkle_sha256 is not None
-                or receipt.external_support_root_role
-                != "linux-runtime-support"
-                or receipt.external_support_root_merkle_sha256
-                != runtime.merkle_sha256
+                or receipt.external_support_root_role != "linux-runtime-support"
+                or receipt.external_support_root_merkle_sha256 != runtime.merkle_sha256
                 or receipt.resolved_relative_path is None
             ):
                 raise ToolchainSupportLockError(
@@ -2769,39 +2618,28 @@ def _validate_lock_topology_dispositions(
                 "toolchain support Xcode hardlink topology disposition is missing"
             )
         if root.hardlink_dispositions:
-            if (
-                xcode_policy is None
-                or len(root.hardlink_dispositions) != 1
-            ):
+            if xcode_policy is None or len(root.hardlink_dispositions) != 1:
                 raise ToolchainSupportLockError(
                     "toolchain support hardlink disposition is outside policy"
                 )
             hardlink_receipt = root.hardlink_dispositions[0]
-            version_manifest = manifests_by_role.get(
-                _XCODE_VERSION_MANIFEST_ROLE
-            )
+            version_manifest = manifests_by_role.get(_XCODE_VERSION_MANIFEST_ROLE)
             if (
-                hardlink_receipt.resource_root_locator_path_sha256
-                != root.locator_path_sha256
+                hardlink_receipt.resource_root_locator_path_sha256 != root.locator_path_sha256
                 or hardlink_receipt.resource_root_locator_path_sha256
                 != xcode_policy.support_root_locator_path_sha256
-                or hardlink_receipt.version_manifest_role
-                != _XCODE_VERSION_MANIFEST_ROLE
+                or hardlink_receipt.version_manifest_role != _XCODE_VERSION_MANIFEST_ROLE
                 or hardlink_receipt.version_manifest_raw_sha256
                 != _XCODE_VERSION_MANIFEST_RAW_SHA256
                 or version_manifest is None
                 or version_manifest.locator_path_sha256
                 != _XCODE_VERSION_MANIFEST_LOCATOR_PATH_SHA256
-                or version_manifest.raw_sha256
-                != _XCODE_VERSION_MANIFEST_RAW_SHA256
-                or hardlink_receipt.version_manifest_merkle_sha256
-                != version_manifest.merkle_sha256
+                or version_manifest.raw_sha256 != _XCODE_VERSION_MANIFEST_RAW_SHA256
+                or hardlink_receipt.version_manifest_merkle_sha256 != version_manifest.merkle_sha256
                 or hardlink_receipt.group_count != xcode_policy.group_count
-                or hardlink_receipt.support_member_count
-                != xcode_policy.support_member_count
+                or hardlink_receipt.support_member_count != xcode_policy.support_member_count
                 or hardlink_receipt.alias_count != xcode_policy.alias_count
-                or hardlink_receipt.policy_merkle_sha256
-                != xcode_policy.policy_merkle_sha256
+                or hardlink_receipt.policy_merkle_sha256 != xcode_policy.policy_merkle_sha256
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support Xcode hardlink topology policy changed"
@@ -2817,12 +2655,9 @@ def _validate_lock_topology_dispositions(
                 )
             mode_receipt = root.mode_dispositions[0]
             if (
-                root.locator_path_sha256
-                != _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
-                or mode_receipt.support_root_locator_path_sha256
-                != root.locator_path_sha256
-                or mode_receipt.relative_path_sha256
-                != _LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256
+                root.locator_path_sha256 != _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
+                or mode_receipt.support_root_locator_path_sha256 != root.locator_path_sha256
+                or mode_receipt.relative_path_sha256 != _LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256
                 or mode_receipt.kind != "regular"
                 or mode_receipt.mode != _LINUX_MODE_DISPOSITION_MODE
             ):
@@ -2832,8 +2667,7 @@ def _validate_lock_topology_dispositions(
         exact_linux_mode_root = (
             scope.target_triple == "x86_64-unknown-linux-gnu"
             and root.logical_role == _LINUX_CASEFOLD_ROLE
-            and root.locator_path_sha256
-            == _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
+            and root.locator_path_sha256 == _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
         )
         if exact_linux_mode_root != (len(root.mode_dispositions) == 1):
             raise ToolchainSupportLockError(
@@ -2852,8 +2686,7 @@ def _validate_lock_topology_dispositions(
             if (
                 casefold_receipt.group_count != _LINUX_CASEFOLD_GROUP_COUNT
                 or casefold_receipt.member_count != _LINUX_CASEFOLD_MEMBER_COUNT
-                or casefold_receipt.topology_sha256
-                != _LINUX_CASEFOLD_TOPOLOGY_SHA256
+                or casefold_receipt.topology_sha256 != _LINUX_CASEFOLD_TOPOLOGY_SHA256
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support Linux casefold topology differs from policy"
@@ -2868,10 +2701,7 @@ def _select_fixed_symlink_disposition_variant(
     observed_paths: frozenset[str],
 ) -> str:
     expected_paths = frozenset(expected)
-    if (
-        target_triple == "aarch64-apple-darwin"
-        and logical_role == "python-runtime"
-    ):
+    if target_triple == "aarch64-apple-darwin" and logical_role == "python-runtime":
         if expected_paths != _MACOS_PYTHON_RUNTIME_HOMEBREW_DISPOSITION_PATHS:
             raise ToolchainSupportLockError(
                 "toolchain support macOS Python disposition policy is incomplete"
@@ -2880,10 +2710,7 @@ def _select_fixed_symlink_disposition_variant(
             return _MACOS_PYTHON_RUNTIME_HOMEBREW_VARIANT
         if observed_paths == _MACOS_PYTHON_RUNTIME_ACTIONS_DISPOSITION_PATHS:
             return _MACOS_PYTHON_RUNTIME_ACTIONS_VARIANT
-    elif (
-        target_triple == "aarch64-apple-darwin"
-        and logical_role == "xcode-sdk"
-    ):
+    elif target_triple == "aarch64-apple-darwin" and logical_role == "xcode-sdk":
         if expected_paths != _MACOS_XCODE_SDK_MODERN_DISPOSITION_PATHS:
             raise ToolchainSupportLockError(
                 "toolchain support macOS Xcode SDK disposition policy is incomplete"
@@ -2892,10 +2719,7 @@ def _select_fixed_symlink_disposition_variant(
             return _MACOS_XCODE_SDK_MODERN_VARIANT
         if observed_paths == _MACOS_XCODE_SDK_16_4_DISPOSITION_PATHS:
             return _MACOS_XCODE_SDK_16_4_VARIANT
-    elif (
-        target_triple == "x86_64-unknown-linux-gnu"
-        and logical_role == "linux-runtime-support"
-    ):
+    elif target_triple == "x86_64-unknown-linux-gnu" and logical_role == "linux-runtime-support":
         if expected_paths != _LINUX_UNMAPPED_SYMLINK_DISPOSITION_PATHS:
             raise ToolchainSupportLockError(
                 "toolchain support Linux unmapped symlink policy is incomplete"
@@ -2904,10 +2728,7 @@ def _select_fixed_symlink_disposition_variant(
             return _LINUX_UNMAPPED_SYMLINK_GITHUB_RUNNER_VARIANT
         if not observed_paths:
             return _LINUX_UNMAPPED_SYMLINK_MINIMAL_VARIANT
-    elif (
-        target_triple == "x86_64-unknown-linux-gnu"
-        and logical_role == "linux-gcc-support"
-    ):
+    elif target_triple == "x86_64-unknown-linux-gnu" and logical_role == "linux-gcc-support":
         if expected_paths != _LINUX_GCC_UNMAPPED_SYMLINK_DISPOSITION_PATHS:
             raise ToolchainSupportLockError(
                 "toolchain support Linux GCC unmapped symlink policy is incomplete"
@@ -2936,9 +2757,7 @@ def _finalize_symlink_dispositions(
     ],
 ) -> tuple[ToolchainSupportSymlinkDispositionReceipt, ...]:
     expected = _fixed_symlink_disposition_map(target_triple, logical_role)
-    observed = {
-        item.policy.relative_path: item for item in raw_dispositions
-    }
+    observed = {item.policy.relative_path: item for item in raw_dispositions}
     if len(observed) != len(raw_dispositions):
         raise ToolchainSupportLockError(
             "toolchain support fixed symlink dispositions are missing or extra"
@@ -2969,23 +2788,18 @@ def _finalize_symlink_dispositions(
         raw = observed[relative_path]
         policy = expected[relative_path]
         if raw.policy != policy:
-            raise ToolchainSupportLockError(
-                "toolchain support fixed symlink disposition changed"
-            )
+            raise ToolchainSupportLockError("toolchain support fixed symlink disposition changed")
         external_role: str | None = None
         external_merkle: str | None = None
         resolved_relative: str | None = None
         if policy.disposition == "deny-unmapped-virtual-target":
-            profile_root, profile_locator_path_sha256 = (
-                _deny_unmapped_symlink_profile(
-                    target_triple=target_triple,
-                    logical_role=logical_role,
-                )
+            profile_root, profile_locator_path_sha256 = _deny_unmapped_symlink_profile(
+                target_triple=target_triple,
+                logical_role=logical_role,
             )
             if (
                 root_path != profile_root
-                or _locator_path_digest(root_path)
-                != profile_locator_path_sha256
+                or _locator_path_digest(root_path) != profile_locator_path_sha256
             ):
                 raise ToolchainSupportLockError(
                     "toolchain support unmapped virtual target is outside the exact Linux profile"
@@ -3096,9 +2910,7 @@ def _unmapped_virtual_target_digest(
             candidate_relative = candidate.relative_to(root_path).as_posix()
         except ValueError:
             digest = _locator_path_digest(candidate)
-            if any(
-                policy.resolved_path_sha256 != digest for policy in traversed
-            ):
+            if any(policy.resolved_path_sha256 != digest for policy in traversed):
                 raise ToolchainSupportLockError(
                     "toolchain support unmapped virtual target resolution differs from policy"
                 )
@@ -3146,9 +2958,7 @@ def _new_symlink_disposition_receipt(
         "external_manifest_role": external_manifest_role,
         "external_manifest_merkle_sha256": external_manifest_merkle_sha256,
         "external_support_root_role": external_support_root_role,
-        "external_support_root_merkle_sha256": (
-            external_support_root_merkle_sha256
-        ),
+        "external_support_root_merkle_sha256": (external_support_root_merkle_sha256),
         "resolved_relative_path": resolved_relative_path,
         "resolved_path_sha256": resolved_path_sha256,
         "mode": receipt_mode,
@@ -3170,9 +2980,7 @@ def _new_symlink_disposition_receipt(
         external_manifest_role=external_manifest_role,
         external_manifest_merkle_sha256=external_manifest_merkle_sha256,
         external_support_root_role=external_support_root_role,
-        external_support_root_merkle_sha256=(
-            external_support_root_merkle_sha256
-        ),
+        external_support_root_merkle_sha256=(external_support_root_merkle_sha256),
         resolved_relative_path=resolved_relative_path,
         resolved_path_sha256=resolved_path_sha256,
         mode=receipt_mode,
@@ -3191,7 +2999,7 @@ def _linux_casefold_topology_sha256(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-linux-folded-name-topology.v1",
+            "domain": "rextio.artifact-linux-folded-name-topology.v1",
             "groups": [
                 {
                     "group_sha256": item.group_sha256,
@@ -3211,13 +3019,8 @@ def _finalize_casefold_dispositions(
 ) -> tuple[ToolchainSupportCasefoldDispositionReceipt, ...]:
     if not groups:
         return ()
-    if (
-        target_triple != "x86_64-unknown-linux-gnu"
-        or logical_role != _LINUX_CASEFOLD_ROLE
-    ):
-        raise ToolchainSupportLockError(
-            "toolchain support casefold collision is outside policy"
-        )
+    if target_triple != "x86_64-unknown-linux-gnu" or logical_role != _LINUX_CASEFOLD_ROLE:
+        raise ToolchainSupportLockError("toolchain support casefold collision is outside policy")
     ordered = tuple(sorted(groups, key=lambda item: item.group_sha256))
     if len({item.group_sha256 for item in ordered}) != len(ordered):
         raise ToolchainSupportLockError(
@@ -3317,9 +3120,7 @@ def _extract_external_support_root_dispositions(
             size=entry.size,
             raw_sha256=cast(str, entry.raw_sha256),
         )
-        resolved_path = binding.locator._absolute_path / PurePosixPath(
-            resolved_relative
-        )
+        resolved_path = binding.locator._absolute_path / PurePosixPath(resolved_relative)
         dispositions.append(
             _new_symlink_disposition_receipt(
                 raw=raw,
@@ -3384,9 +3185,7 @@ def _resolve_external_support_member(
         try:
             observed = os.lstat(path)
         except OSError as exc:
-            raise ToolchainSupportLockError(
-                "toolchain support external symlink is broken"
-            ) from exc
+            raise ToolchainSupportLockError("toolchain support external symlink is broken") from exc
         if stat.S_ISLNK(observed.st_mode):
             if relative in visited:
                 raise ToolchainSupportLockError(
@@ -3405,11 +3204,7 @@ def _resolve_external_support_member(
                     "toolchain support external symlink could not be read"
                 ) from exc
             _validate_link_target(target)
-            pending = (
-                list(PurePosixPath(relative).parent.parts)
-                + target.split("/")
-                + pending
-            )
+            pending = list(PurePosixPath(relative).parent.parts) + target.split("/") + pending
             resolved = []
             continue
         if pending and not stat.S_ISDIR(observed.st_mode):
@@ -3447,9 +3242,7 @@ def _capture_tree_once(
         root_fd = chain[-1][0]
         opened_root = _stamp(os.fstat(root_fd))
         if not stat.S_ISDIR(opened_root.mode):
-            raise ToolchainSupportLockError(
-                "toolchain support root is not a directory"
-            )
+            raise ToolchainSupportLockError("toolchain support root is not a directory")
         _validate_tree_root_mode(
             target_triple=target_triple,
             logical_role=locator.logical_role,
@@ -3458,9 +3251,7 @@ def _capture_tree_once(
         )
         raw_entries: list[_RawTreeEntry] = []
         raw_dispositions: list[_RawSymlinkDisposition] = []
-        hardlink_dispositions = (
-            [] if hardlink_receipt is None else [hardlink_receipt]
-        )
+        hardlink_dispositions = [] if hardlink_receipt is None else [hardlink_receipt]
         hardlink_plan = (
             None
             if hardlink_topology is None
@@ -3498,9 +3289,7 @@ def _capture_tree_once(
                 "toolchain support Xcode hardlink plan was not fully consumed"
             )
         if not _same_stable_stamp(opened_root, root_stamp):
-            raise ToolchainSupportLockError(
-                "toolchain support root changed during capture"
-            )
+            raise ToolchainSupportLockError("toolchain support root changed during capture")
         _verify_directory_chain(chain)
     except ToolchainSupportLockError:
         raise
@@ -3531,16 +3320,16 @@ def _capture_tree_once(
             link_target=item.link_target,
             merkle_sha256="0" * 64,
         )
-        for item in sorted(raw_entries, key=lambda item: (_alias(item.relative_path), item.relative_path))
-    )
-    entries_without_merkle, external_dispositions = (
-        _extract_external_support_root_dispositions(
-            target_triple=target_triple,
-            logical_role=locator.logical_role,
-            root_path=locator._absolute_path,
-            entries=entries_without_merkle,
-            binding=external_support_root_binding,
+        for item in sorted(
+            raw_entries, key=lambda item: (_alias(item.relative_path), item.relative_path)
         )
+    )
+    entries_without_merkle, external_dispositions = _extract_external_support_root_dispositions(
+        target_triple=target_triple,
+        logical_role=locator.logical_role,
+        root_path=locator._absolute_path,
+        entries=entries_without_merkle,
+        binding=external_support_root_binding,
     )
     _validate_tree_namespace(entries_without_merkle, validate_merkle=False)
     fixed_dispositions = _finalize_symlink_dispositions(
@@ -3557,9 +3346,7 @@ def _capture_tree_once(
             key=lambda item: (_alias(item.relative_path), item.relative_path),
         )
     )
-    hardlink_receipts = tuple(
-        hardlink_dispositions
-    )
+    hardlink_receipts = tuple(hardlink_dispositions)
     mode_receipts = tuple(mode_dispositions)
     casefold_receipts = _finalize_casefold_dispositions(
         target_triple=target_triple,
@@ -3592,16 +3379,12 @@ def _capture_tree_once(
         xattr_count > MAX_TOOLCHAIN_SUPPORT_TREE_XATTRS
         or xattr_bytes > MAX_TOOLCHAIN_SUPPORT_TREE_XATTR_BYTES
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support tree xattr aggregate exceeds the bound"
-        )
+        raise ToolchainSupportLockError("toolchain support tree xattr aggregate exceeds the bound")
     if (
         xattr_count != starting_xattr_count - xattr_budget.remaining_count
         or xattr_bytes != starting_xattr_bytes - xattr_budget.remaining_bytes
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support tree xattr accounting is inconsistent"
-        )
+        raise ToolchainSupportLockError("toolchain support tree xattr accounting is inconsistent")
     receipt_root_mode = _validate_generated_mode(
         stat.S_IMODE(root_stamp.mode),
         origin="tree-root-receipt",
@@ -3619,8 +3402,7 @@ def _capture_tree_once(
         member_count=len(entries) + len(dispositions),
         file_count=sum(item.kind == "file" for item in entries),
         directory_count=sum(item.kind == "directory" for item in entries),
-        symlink_count=sum(item.kind == "symlink" for item in entries)
-        + len(dispositions),
+        symlink_count=sum(item.kind == "symlink" for item in entries) + len(dispositions),
         total_bytes=sum(item.size for item in entries if item.kind == "file"),
         xattr_count=xattr_count,
         xattr_bytes=xattr_bytes,
@@ -3664,13 +3446,10 @@ def _walk_tree(
         _validate_segment(name)
         local_groups.setdefault(_alias(name), []).append(name)
     collisions = {
-        alias: tuple(sorted(members))
-        for alias, members in local_groups.items()
-        if len(members) > 1
+        alias: tuple(sorted(members)) for alias, members in local_groups.items() if len(members) > 1
     }
     if collisions and not (
-        target_triple == "x86_64-unknown-linux-gnu"
-        and logical_role == _LINUX_CASEFOLD_ROLE
+        target_triple == "x86_64-unknown-linux-gnu" and logical_role == _LINUX_CASEFOLD_ROLE
     ):
         raise ToolchainSupportLockError(
             "toolchain support directory contains an NFC/casefold alias"
@@ -3688,7 +3467,7 @@ def _walk_tree(
             _RawCasefoldGroup(
                 group_sha256=_sha256(
                     {
-                        "domain": "rextio.full-c6-linux-folded-name-group.v1",
+                        "domain": "rextio.artifact-linux-folded-name-group.v1",
                         "directory_relative_path": directory_relative,
                         "folded_key": folded_key,
                         "member_names": list(members),
@@ -3703,22 +3482,15 @@ def _walk_tree(
         logical = child_relative.as_posix()
         _validate_relative_path(logical)
         if len(child_relative.parts) > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH:
-            raise ToolchainSupportLockError(
-                "toolchain support tree exceeds the depth bound"
-            )
+            raise ToolchainSupportLockError("toolchain support tree exceeds the depth bound")
         logical_alias = _alias(logical)
         if logical_alias in aliases and _alias(name) not in collisions:
             raise ToolchainSupportLockError(
                 "toolchain support tree contains an NFC/casefold path alias"
             )
         aliases.add(logical_alias)
-        if (
-            len(entries) + len(dispositions)
-            >= MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS
-        ):
-            raise ToolchainSupportLockError(
-                "toolchain support tree member count exceeds the bound"
-            )
+        if len(entries) + len(dispositions) >= MAX_TOOLCHAIN_SUPPORT_TREE_MEMBERS:
+            raise ToolchainSupportLockError("toolchain support tree member count exceeds the bound")
         observed = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
         _validate_tree_member_mode(
             target_triple=target_triple,
@@ -3752,13 +3524,8 @@ def _walk_tree(
                     total_bytes=total_bytes,
                     xattr_budget=xattr_budget,
                 )
-                linked = _stamp(
-                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                )
-                if (
-                    not _same_stable_stamp(opened, child_final)
-                    or linked != child_final
-                ):
+                linked = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+                if not _same_stable_stamp(opened, child_final) or linked != child_final:
                     raise ToolchainSupportLockError(
                         "toolchain support directory changed during capture"
                     )
@@ -3767,9 +3534,7 @@ def _walk_tree(
                         relative_path=logical,
                         kind="directory",
                         mode=stat.S_IMODE(child_final.mode),
-                        metadata_sha256=_metadata_digest(
-                            child_final, kind="directory"
-                        ),
+                        metadata_sha256=_metadata_digest(child_final, kind="directory"),
                         xattr_count=child_xattrs.count,
                         xattr_bytes=child_xattrs.total_bytes,
                         xattrs_sha256=child_xattrs.merkle_sha256,
@@ -3790,9 +3555,7 @@ def _walk_tree(
                 hardlink_plan=hardlink_plan,
             )
             if observed.size > MAX_TOOLCHAIN_SUPPORT_FILE_BYTES:
-                raise ToolchainSupportLockError(
-                    "toolchain support file exceeds the byte bound"
-                )
+                raise ToolchainSupportLockError("toolchain support file exceeds the byte bound")
             if total_bytes[0] + observed.size > MAX_TOOLCHAIN_SUPPORT_TREE_BYTES:
                 raise ToolchainSupportLockError(
                     "toolchain support tree byte count exceeds the bound"
@@ -3808,17 +3571,14 @@ def _walk_tree(
                 mode_path_sha256=_relative_mode_path_digest(logical),
                 allowed_special_mode=(
                     _LINUX_MODE_DISPOSITION_MODE
-                    if stat.S_IMODE(observed.mode)
-                    == _LINUX_MODE_DISPOSITION_MODE
+                    if stat.S_IMODE(observed.mode) == _LINUX_MODE_DISPOSITION_MODE
                     else None
                 ),
             )
             try:
                 opened = _stamp(os.fstat(file_fd))
                 if opened != observed:
-                    raise ToolchainSupportLockError(
-                        "toolchain support file changed before capture"
-                    )
+                    raise ToolchainSupportLockError("toolchain support file changed before capture")
                 xattrs = _capture_fd_xattrs(file_fd, budget=xattr_budget)
                 digest, size, final_stamp = _stream_file_digest(
                     file_fd,
@@ -3826,9 +3586,7 @@ def _walk_tree(
                     maximum=MAX_TOOLCHAIN_SUPPORT_FILE_BYTES,
                     expected_links=observed.links,
                 )
-                linked = _stamp(
-                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                )
+                linked = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
                 if linked != final_stamp:
                     raise ToolchainSupportLockError(
                         "toolchain support file link changed during capture"
@@ -3883,13 +3641,9 @@ def _walk_tree(
                 root_path / child_relative,
                 budget=xattr_budget,
             )
-            final_stamp = _stamp(
-                os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            )
+            final_stamp = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
             if not _same_stable_stamp(observed, final_stamp):
-                raise ToolchainSupportLockError(
-                    "toolchain support symlink changed during capture"
-                )
+                raise ToolchainSupportLockError("toolchain support symlink changed during capture")
             policy = disposition_policies.get(logical)
             if policy is not None:
                 if target != policy.raw_link_target:
@@ -3928,9 +3682,7 @@ def _walk_tree(
                 )
             )
             continue
-        raise ToolchainSupportLockError(
-            "toolchain support tree contains a special file"
-        )
+        raise ToolchainSupportLockError("toolchain support tree contains a special file")
     after_names = _bounded_directory_names(directory_fd)
     if sorted(after_names, key=lambda item: (_alias(item), item)) != ordered:
         raise ToolchainSupportLockError(
@@ -3938,9 +3690,7 @@ def _walk_tree(
         )
     directory_after = _stamp(os.fstat(directory_fd))
     if not _same_stable_stamp(directory_after, directory_before):
-        raise ToolchainSupportLockError(
-            "toolchain support directory changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support directory changed during capture")
     return directory_after, directory_xattrs
 
 
@@ -4069,15 +3819,13 @@ def _capture_xattrs(
             }
         )
     if tuple(sorted(list_names())) != names:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr name set changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support xattr name set changed during capture")
     return _XattrReceipt(
         count=len(items),
         total_bytes=total_bytes,
         merkle_sha256=_sha256(
             {
-                "domain": "rextio.full-c6-toolchain-support-xattrs.v1",
+                "domain": "rextio.artifact-toolchain-support-xattrs.v1",
                 "items": items,
             }
         ),
@@ -4092,9 +3840,7 @@ def _libc_xattr_function(name: str) -> Any:
     try:
         function = getattr(ctypes.CDLL(None, use_errno=True), name)
     except (AttributeError, OSError) as exc:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr capture is unavailable"
-        ) from exc
+        raise ToolchainSupportLockError("toolchain support xattr capture is unavailable") from exc
     function.restype = ctypes.c_ssize_t
     return function
 
@@ -4110,9 +3856,7 @@ def _xattr_result(result: int, *, label: str, allow_unsupported: bool) -> int:
     }
     if allow_unsupported and error in unsupported:
         return 0
-    raise ToolchainSupportLockError(
-        f"toolchain support {label} failed with errno {error}"
-    )
+    raise ToolchainSupportLockError(f"toolchain support {label} failed with errno {error}")
 
 
 def _split_xattr_names(value: bytes) -> tuple[bytes, ...]:
@@ -4130,9 +3874,7 @@ def _split_xattr_names(value: bytes) -> tuple[bytes, ...]:
 
 def _validate_xattr_read_budget(value: int) -> int:
     if type(value) is not int or isinstance(value, bool) or value < 0:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr read budget is invalid"
-        )
+        raise ToolchainSupportLockError("toolchain support xattr read budget is invalid")
     return value
 
 
@@ -4154,9 +3896,7 @@ def _list_fd_xattr_names(descriptor: int) -> tuple[bytes, ...]:
     if size == 0:
         return ()
     if size > MAX_TOOLCHAIN_SUPPORT_XATTR_LIST_BYTES:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr name list exceeds the bound"
-        )
+        raise ToolchainSupportLockError("toolchain support xattr name list exceeds the bound")
     buffer = ctypes.create_string_buffer(size)
     ctypes.set_errno(0)
     if sys.platform == "darwin":
@@ -4172,9 +3912,7 @@ def _list_fd_xattr_names(descriptor: int) -> tuple[bytes, ...]:
             allow_unsupported=False,
         )
     if observed != size:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr name list changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support xattr name list changed during capture")
     return _split_xattr_names(buffer.raw[:observed])
 
 
@@ -4200,10 +3938,7 @@ def _read_fd_xattr(
             label="fd xattr read",
             allow_unsupported=False,
         )
-    if (
-        size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES
-        or size > maximum_value_bytes
-    ):
+    if size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES or size > maximum_value_bytes:
         raise ToolchainSupportLockError(
             "toolchain support xattr value exceeds the bound or remaining budget"
         )
@@ -4224,9 +3959,7 @@ def _read_fd_xattr(
             allow_unsupported=False,
         )
     if observed != size:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr value changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support xattr value changed during capture")
     return buffer.raw[:observed]
 
 
@@ -4241,6 +3974,7 @@ def _list_symlink_xattr_names(path: bytes) -> tuple[bytes, ...]:
 
         def query(buffer: object, size: int) -> int:
             return function(path, buffer, size)
+
     ctypes.set_errno(0)
     size = _xattr_result(
         query(None, 0),
@@ -4250,9 +3984,7 @@ def _list_symlink_xattr_names(path: bytes) -> tuple[bytes, ...]:
     if size == 0:
         return ()
     if size > MAX_TOOLCHAIN_SUPPORT_XATTR_LIST_BYTES:
-        raise ToolchainSupportLockError(
-            "toolchain support xattr name list exceeds the bound"
-        )
+        raise ToolchainSupportLockError("toolchain support xattr name list exceeds the bound")
     buffer = ctypes.create_string_buffer(size)
     ctypes.set_errno(0)
     observed = _xattr_result(
@@ -4261,9 +3993,7 @@ def _list_symlink_xattr_names(path: bytes) -> tuple[bytes, ...]:
         allow_unsupported=False,
     )
     if observed != size:
-        raise ToolchainSupportLockError(
-            "toolchain support symlink xattrs changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support symlink xattrs changed during capture")
     return _split_xattr_names(buffer.raw[:observed])
 
 
@@ -4285,16 +4015,14 @@ def _read_symlink_xattr(
 
         def query(buffer: object, size: int) -> int:
             return function(path, name_pointer, buffer, size)
+
     ctypes.set_errno(0)
     size = _xattr_result(
         query(None, 0),
         label="symlink xattr read",
         allow_unsupported=False,
     )
-    if (
-        size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES
-        or size > maximum_value_bytes
-    ):
+    if size > MAX_TOOLCHAIN_SUPPORT_XATTR_VALUE_BYTES or size > maximum_value_bytes:
         raise ToolchainSupportLockError(
             "toolchain support xattr value exceeds the bound or remaining budget"
         )
@@ -4308,9 +4036,7 @@ def _read_symlink_xattr(
         allow_unsupported=False,
     )
     if observed != size:
-        raise ToolchainSupportLockError(
-            "toolchain support symlink xattr changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support symlink xattr changed during capture")
     return buffer.raw[:observed]
 
 
@@ -4322,16 +4048,10 @@ def _build_tree_merkle(
     root_metadata_sha256: str,
     root_xattrs: _XattrReceipt,
     entries: tuple[_ToolchainSupportTreeEntry, ...],
-    symlink_dispositions: tuple[
-        ToolchainSupportSymlinkDispositionReceipt, ...
-    ] = (),
-    hardlink_dispositions: tuple[
-        ToolchainSupportHardlinkDispositionReceipt, ...
-    ] = (),
+    symlink_dispositions: tuple[ToolchainSupportSymlinkDispositionReceipt, ...] = (),
+    hardlink_dispositions: tuple[ToolchainSupportHardlinkDispositionReceipt, ...] = (),
     mode_dispositions: tuple[ToolchainSupportModeDispositionReceipt, ...] = (),
-    casefold_dispositions: tuple[
-        ToolchainSupportCasefoldDispositionReceipt, ...
-    ] = (),
+    casefold_dispositions: tuple[ToolchainSupportCasefoldDispositionReceipt, ...] = (),
 ) -> tuple[tuple[_ToolchainSupportTreeEntry, ...], str]:
     by_path = {item.relative_path: item for item in entries}
     children_by_parent: dict[str, list[str]] = {}
@@ -4350,7 +4070,7 @@ def _build_tree_merkle(
     for path in paths:
         item = by_path[path]
         payload: dict[str, object] = {
-            "domain": "rextio.full-c6-toolchain-support-node.v1",
+            "domain": "rextio.artifact-toolchain-support-node.v1",
             "relative_path": path,
             "kind": item.kind,
             "mode": item.mode,
@@ -4391,7 +4111,7 @@ def _build_tree_merkle(
         )
     root_merkle = _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-tree.v4",
+            "domain": "rextio.artifact-toolchain-support-tree.v4",
             "logical_role": logical_role,
             "locator_path_sha256": locator_path_sha256,
             "root_mode": root_mode,
@@ -4408,9 +4128,7 @@ def _build_tree_merkle(
             "hardlink_disposition_count": len(hardlink_dispositions),
             "mode_disposition_count": len(mode_dispositions),
             "casefold_disposition_count": len(casefold_dispositions),
-            "total_bytes": sum(
-                item.size for item in entries if item.kind == "file"
-            ),
+            "total_bytes": sum(item.size for item in entries if item.kind == "file"),
             "xattr_count": root_xattrs.count
             + sum(item.xattr_count for item in entries)
             + sum(item.xattr_count for item in symlink_dispositions),
@@ -4425,16 +4143,13 @@ def _build_tree_merkle(
                 for item in symlink_dispositions
             ],
             "hardlink_dispositions": [
-                {"merkle_sha256": item.merkle_sha256}
-                for item in hardlink_dispositions
+                {"merkle_sha256": item.merkle_sha256} for item in hardlink_dispositions
             ],
             "mode_dispositions": [
-                {"merkle_sha256": item.merkle_sha256}
-                for item in mode_dispositions
+                {"merkle_sha256": item.merkle_sha256} for item in mode_dispositions
             ],
             "casefold_dispositions": [
-                {"merkle_sha256": item.merkle_sha256}
-                for item in casefold_dispositions
+                {"merkle_sha256": item.merkle_sha256} for item in casefold_dispositions
             ],
             "children": [
                 {
@@ -4459,9 +4174,7 @@ def _validate_tree_namespace(
     for item in entries:
         parts = PurePosixPath(item.relative_path).parts
         if len(parts) > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH:
-            raise ToolchainSupportLockError(
-                "toolchain support tree exceeds the depth bound"
-            )
+            raise ToolchainSupportLockError("toolchain support tree exceeds the depth bound")
         for depth in range(1, len(parts)):
             parent = PurePosixPath(*parts[:depth]).as_posix()
             parent_entry = by_path.get(parent)
@@ -4501,9 +4214,7 @@ def _resolve_captured_link(
         node = entries.get(candidate)
         if node is not None and node.kind == "symlink":
             if candidate in visited:
-                raise ToolchainSupportLockError(
-                    "toolchain support symlink graph contains a cycle"
-                )
+                raise ToolchainSupportLockError("toolchain support symlink graph contains a cycle")
             visited.add(candidate)
             hops += 1
             if hops > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH:
@@ -4539,8 +4250,7 @@ def _new_lock(
     object.__setattr__(
         provisional,
         "member_count",
-        sum(item.member_count for item in manifests)
-        + sum(item.member_count for item in roots),
+        sum(item.member_count for item in manifests) + sum(item.member_count for item in roots),
     )
     object.__setattr__(
         provisional,
@@ -4585,7 +4295,7 @@ def _new_lock(
 def _file_merkle(receipt: ToolchainSupportFileReceipt) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-file.v1",
+            "domain": "rextio.artifact-toolchain-support-file.v1",
             "logical_role": receipt.logical_role,
             "locator_path_sha256": receipt.locator_path_sha256,
             "metadata_sha256": receipt.metadata_sha256,
@@ -4604,19 +4314,15 @@ def _symlink_disposition_merkle(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-symlink-disposition.v2",
+            "domain": "rextio.artifact-toolchain-support-symlink-disposition.v2",
             "relative_path": receipt.relative_path,
             "disposition": receipt.disposition,
             "raw_link_target": receipt.raw_link_target,
             "canonical_link_target": receipt.canonical_link_target,
             "external_manifest_role": receipt.external_manifest_role,
-            "external_manifest_merkle_sha256": (
-                receipt.external_manifest_merkle_sha256
-            ),
+            "external_manifest_merkle_sha256": (receipt.external_manifest_merkle_sha256),
             "external_support_root_role": receipt.external_support_root_role,
-            "external_support_root_merkle_sha256": (
-                receipt.external_support_root_merkle_sha256
-            ),
+            "external_support_root_merkle_sha256": (receipt.external_support_root_merkle_sha256),
             "resolved_relative_path": receipt.resolved_relative_path,
             "resolved_path_sha256": receipt.resolved_path_sha256,
             "mode": receipt.mode,
@@ -4635,16 +4341,12 @@ def _hardlink_disposition_merkle(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-hardlink-disposition.v2",
+            "domain": "rextio.artifact-toolchain-support-hardlink-disposition.v2",
             "disposition": receipt.disposition,
-            "resource_root_locator_path_sha256": (
-                receipt.resource_root_locator_path_sha256
-            ),
+            "resource_root_locator_path_sha256": (receipt.resource_root_locator_path_sha256),
             "version_manifest_role": receipt.version_manifest_role,
             "version_manifest_raw_sha256": receipt.version_manifest_raw_sha256,
-            "version_manifest_merkle_sha256": (
-                receipt.version_manifest_merkle_sha256
-            ),
+            "version_manifest_merkle_sha256": (receipt.version_manifest_merkle_sha256),
             "group_count": receipt.group_count,
             "support_member_count": receipt.support_member_count,
             "alias_count": receipt.alias_count,
@@ -4659,11 +4361,9 @@ def _mode_disposition_merkle(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-mode-disposition.v1",
+            "domain": "rextio.artifact-toolchain-support-mode-disposition.v1",
             "disposition": receipt.disposition,
-            "support_root_locator_path_sha256": (
-                receipt.support_root_locator_path_sha256
-            ),
+            "support_root_locator_path_sha256": (receipt.support_root_locator_path_sha256),
             "relative_path_sha256": receipt.relative_path_sha256,
             "kind": receipt.kind,
             "mode": receipt.mode,
@@ -4680,7 +4380,7 @@ def _casefold_disposition_merkle(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-casefold-disposition.v1",
+            "domain": "rextio.artifact-toolchain-support-casefold-disposition.v1",
             "disposition": receipt.disposition,
             "group_count": receipt.group_count,
             "member_count": receipt.member_count,
@@ -4692,7 +4392,7 @@ def _casefold_disposition_merkle(
 def _lock_merkle(lock: ToolchainSupportLock) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-aggregate.v2",
+            "domain": "rextio.artifact-toolchain-support-aggregate.v2",
             "scope": lock.scope.to_dict(),
             "manifest_count": lock.manifest_count,
             "root_count": lock.root_count,
@@ -4723,9 +4423,7 @@ def _parse_scope(value: object) -> ToolchainSupportScope:
     return ToolchainSupportScope(
         target_triple=_string(document["target_triple"], "target triple"),
         profile=_string(document["profile"], "profile"),
-        python_implementation=_string(
-            document["python_implementation"], "Python implementation"
-        ),
+        python_implementation=_string(document["python_implementation"], "Python implementation"),
         python_version=_string(document["python_version"], "Python version"),
         rust_binding=_string(document["rust_binding"], "Rust binding"),
         artifact_kind=_string(document["artifact_kind"], "artifact kind"),
@@ -4739,9 +4437,7 @@ def _parse_file(value: object) -> ToolchainSupportFileReceipt:
         locator_path_sha256=_string(
             document["locator_path_sha256"], "manifest locator path SHA-256"
         ),
-        metadata_sha256=_string(
-            document["metadata_sha256"], "manifest metadata SHA-256"
-        ),
+        metadata_sha256=_string(document["metadata_sha256"], "manifest metadata SHA-256"),
         raw_sha256=_string(document["raw_sha256"], "manifest raw SHA-256"),
         size=_integer(document["size"], "manifest size"),
         mode=_integer(document["mode"], "manifest mode"),
@@ -4749,9 +4445,7 @@ def _parse_file(value: object) -> ToolchainSupportFileReceipt:
         total_bytes=_integer(document["total_bytes"], "manifest total bytes"),
         xattr_count=_integer(document["xattr_count"], "manifest xattr count"),
         xattr_bytes=_integer(document["xattr_bytes"], "manifest xattr bytes"),
-        xattrs_sha256=_string(
-            document["xattrs_sha256"], "manifest xattr SHA-256"
-        ),
+        xattrs_sha256=_string(document["xattrs_sha256"], "manifest xattr SHA-256"),
         merkle_sha256=_string(document["merkle_sha256"], "manifest Merkle SHA-256"),
     )
 
@@ -4780,14 +4474,10 @@ def _parse_tree(value: object) -> ToolchainSupportTreeReceipt:
         or len(mode_documents) > 1
         or len(casefold_documents) > 1
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support disposition count exceeds the bound"
-        )
+        raise ToolchainSupportLockError("toolchain support disposition count exceeds the bound")
     return ToolchainSupportTreeReceipt(
         logical_role=_string(document["logical_role"], "tree role"),
-        locator_path_sha256=_string(
-            document["locator_path_sha256"], "tree locator path SHA-256"
-        ),
+        locator_path_sha256=_string(document["locator_path_sha256"], "tree locator path SHA-256"),
         root_metadata_sha256=_string(
             document["root_metadata_sha256"], "tree root metadata SHA-256"
         ),
@@ -4803,32 +4493,25 @@ def _parse_tree(value: object) -> ToolchainSupportTreeReceipt:
             document["symlink_disposition_count"],
             "tree symlink disposition count",
         ),
-        symlink_dispositions=tuple(
-            _parse_symlink_disposition(item)
-            for item in symlink_documents
-        ),
+        symlink_dispositions=tuple(_parse_symlink_disposition(item) for item in symlink_documents),
         hardlink_disposition_count=_integer(
             document["hardlink_disposition_count"],
             "tree hardlink disposition count",
         ),
         hardlink_dispositions=tuple(
-            _parse_hardlink_disposition(item)
-            for item in hardlink_documents
+            _parse_hardlink_disposition(item) for item in hardlink_documents
         ),
         mode_disposition_count=_integer(
             document["mode_disposition_count"],
             "tree mode disposition count",
         ),
-        mode_dispositions=tuple(
-            _parse_mode_disposition(item) for item in mode_documents
-        ),
+        mode_dispositions=tuple(_parse_mode_disposition(item) for item in mode_documents),
         casefold_disposition_count=_integer(
             document["casefold_disposition_count"],
             "tree casefold disposition count",
         ),
         casefold_dispositions=tuple(
-            _parse_casefold_disposition(item)
-            for item in casefold_documents
+            _parse_casefold_disposition(item) for item in casefold_documents
         ),
         merkle_sha256=_string(document["merkle_sha256"], "tree Merkle SHA-256"),
     )
@@ -4969,15 +4652,9 @@ def _parse_symlink_disposition(
         ),
         canonical_link_target=optional_string("canonical_link_target"),
         external_manifest_role=optional_string("external_manifest_role"),
-        external_manifest_merkle_sha256=optional_string(
-            "external_manifest_merkle_sha256"
-        ),
-        external_support_root_role=optional_string(
-            "external_support_root_role"
-        ),
-        external_support_root_merkle_sha256=optional_string(
-            "external_support_root_merkle_sha256"
-        ),
+        external_manifest_merkle_sha256=optional_string("external_manifest_merkle_sha256"),
+        external_support_root_role=optional_string("external_support_root_role"),
+        external_support_root_merkle_sha256=optional_string("external_support_root_merkle_sha256"),
         resolved_relative_path=optional_string("resolved_relative_path"),
         resolved_path_sha256=_string(
             document["resolved_path_sha256"],
@@ -5022,29 +4699,22 @@ def _read_locator_bytes(locator: ToolchainSupportLocator, *, maximum: int) -> by
         file_fd = _open_regular_file(parent_fd, name)
         opened = _stamp(os.fstat(file_fd))
         if opened != expected or opened.size <= 0 or opened.size > maximum:
-            raise ToolchainSupportLockError(
-                "toolchain support lock file identity is unsafe"
-            )
+            raise ToolchainSupportLockError("toolchain support lock file identity is unsafe")
         chunks: list[bytes] = []
         remaining = opened.size
         while remaining:
             chunk = os.read(file_fd, min(1024 * 1024, remaining))
             if not chunk:
-                raise ToolchainSupportLockError(
-                    "toolchain support lock file was truncated"
-                )
+                raise ToolchainSupportLockError("toolchain support lock file was truncated")
             chunks.append(chunk)
             remaining -= len(chunk)
         if os.read(file_fd, 1):
             raise ToolchainSupportLockError("toolchain support lock file grew")
         if (
             _stamp(os.fstat(file_fd)) != opened
-            or _stamp(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-            != opened
+            or _stamp(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != opened
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support lock file changed during capture"
-            )
+            raise ToolchainSupportLockError("toolchain support lock file changed during capture")
         _verify_directory_chain(chain)
         return b"".join(chunks)
     except ToolchainSupportLockError:
@@ -5071,23 +4741,16 @@ def _open_directory_chain(
         current_fd = os.open(absolute.anchor, flags)
         anchor = _stamp(os.fstat(current_fd))
         if not stat.S_ISDIR(anchor.mode):
-            raise ToolchainSupportLockError(
-                "toolchain support locator anchor is not a directory"
-            )
+            raise ToolchainSupportLockError("toolchain support locator anchor is not a directory")
         handles.append((current_fd, None, None, anchor))
         for part in absolute.parts[1:]:
             _validate_segment(part)
             child_fd = os.open(part, flags, dir_fd=current_fd)
             child = _stamp(os.fstat(child_fd))
             linked = _stamp(os.stat(part, dir_fd=current_fd, follow_symlinks=False))
-            if (
-                not _same_directory_chain_identity(child, linked)
-                or not stat.S_ISDIR(child.mode)
-            ):
+            if not _same_directory_chain_identity(child, linked) or not stat.S_ISDIR(child.mode):
                 os.close(child_fd)
-                raise ToolchainSupportLockError(
-                    "toolchain support locator directory changed"
-                )
+                raise ToolchainSupportLockError("toolchain support locator directory changed")
             handles.append((child_fd, current_fd, part, child))
             current_fd = child_fd
         return handles
@@ -5106,10 +4769,7 @@ def _verify_directory_chain(
 ) -> None:
     for descriptor, parent_fd, name, expected in chain:
         actual = _stamp(os.fstat(descriptor))
-        if (
-            not _same_directory_chain_identity(actual, expected)
-            or not stat.S_ISDIR(actual.mode)
-        ):
+        if not _same_directory_chain_identity(actual, expected) or not stat.S_ISDIR(actual.mode):
             raise ToolchainSupportLockError(
                 "toolchain support locator directory changed during capture"
             )
@@ -5170,9 +4830,7 @@ def _open_regular_file(
         or opened.links != expected_links
     ):
         os.close(descriptor)
-        raise ToolchainSupportLockError(
-            "toolchain support file must be a single-link regular file"
-        )
+        raise ToolchainSupportLockError("toolchain support file must be a single-link regular file")
     mode = stat.S_IMODE(opened.mode)
     try:
         if allowed_special_mode is not None and mode == allowed_special_mode:
@@ -5222,9 +4880,7 @@ def _stream_file_digest(
         or expected.size < 0
         or expected.size > maximum
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support file identity is outside the bound"
-        )
+        raise ToolchainSupportLockError("toolchain support file identity is outside the bound")
     digest = hashlib.sha256()
     remaining = expected.size
     total = 0
@@ -5232,25 +4888,17 @@ def _stream_file_digest(
         try:
             chunk = os.read(descriptor, min(1024 * 1024, remaining))
         except OSError as exc:
-            raise ToolchainSupportLockError(
-                "toolchain support file streaming read failed"
-            ) from exc
+            raise ToolchainSupportLockError("toolchain support file streaming read failed") from exc
         if not chunk:
-            raise ToolchainSupportLockError(
-                "toolchain support file was truncated during capture"
-            )
+            raise ToolchainSupportLockError("toolchain support file was truncated during capture")
         digest.update(chunk)
         total += len(chunk)
         remaining -= len(chunk)
     if os.read(descriptor, 1):
-        raise ToolchainSupportLockError(
-            "toolchain support file grew during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support file grew during capture")
     final_stamp = _stamp(os.fstat(descriptor))
     if not _same_stable_stamp(final_stamp, expected) or total != expected.size:
-        raise ToolchainSupportLockError(
-            "toolchain support file changed during capture"
-        )
+        raise ToolchainSupportLockError("toolchain support file changed during capture")
     return digest.hexdigest(), total, final_stamp
 
 
@@ -5266,9 +4914,7 @@ def _parse_json(value: bytes) -> dict[str, object]:
         return result
 
     def reject_constant(_value: str) -> object:
-        raise ToolchainSupportLockError(
-            "toolchain support lock contains non-finite JSON"
-        )
+        raise ToolchainSupportLockError("toolchain support lock contains non-finite JSON")
 
     try:
         parsed = json.loads(
@@ -5279,22 +4925,16 @@ def _parse_json(value: bytes) -> dict[str, object]:
     except ToolchainSupportLockError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise ToolchainSupportLockError(
-            "toolchain support lock is not valid JSON"
-        ) from exc
+        raise ToolchainSupportLockError("toolchain support lock is not valid JSON") from exc
     if type(parsed) is not dict:
-        raise ToolchainSupportLockError(
-            "toolchain support lock root must be an object"
-        )
+        raise ToolchainSupportLockError("toolchain support lock root must be an object")
     _assert_json_depth(parsed, depth=0)
     return cast(dict[str, object], parsed)
 
 
 def _assert_json_depth(value: object, *, depth: int) -> None:
     if depth > MAX_TOOLCHAIN_SUPPORT_JSON_DEPTH:
-        raise ToolchainSupportLockError(
-            "toolchain support lock JSON nesting exceeds the bound"
-        )
+        raise ToolchainSupportLockError("toolchain support lock JSON nesting exceeds the bound")
     if type(value) is dict:
         for child in cast(dict[str, object], value).values():
             _assert_json_depth(child, depth=depth + 1)
@@ -5329,9 +4969,7 @@ def _validate_absolute_locator(value: Path | str) -> Path:
             "toolchain support locator path must name an item below the root"
         )
     if path.as_posix() != text or any(part in {"", ".", ".."} for part in path.parts[1:]):
-        raise ToolchainSupportLockError(
-            "toolchain support locator path is lexically noncanonical"
-        )
+        raise ToolchainSupportLockError("toolchain support locator path is lexically noncanonical")
     for part in path.parts[1:]:
         _validate_segment(part)
     return path
@@ -5368,9 +5006,7 @@ def _validate_relative_path(value: object) -> str:
         or "\\" in value
         or any(part in {"", ".", ".."} for part in posix.parts)
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support relative path is noncanonical"
-        )
+        raise ToolchainSupportLockError("toolchain support relative path is noncanonical")
     for part in posix.parts:
         _validate_segment(part)
     return value
@@ -5389,9 +5025,7 @@ def _validate_segment(value: object) -> str:
         or value != unicodedata.normalize("NFC", value)
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support path segment is unsafe or noncanonical"
-        )
+        raise ToolchainSupportLockError("toolchain support path segment is unsafe or noncanonical")
     return value
 
 
@@ -5414,9 +5048,7 @@ def _validate_link_target(value: object) -> str:
         )
     windows = PureWindowsPath(value)
     if windows.is_absolute() or bool(windows.drive):
-        raise ToolchainSupportLockError(
-            "toolchain support symlink target must be relative"
-        )
+        raise ToolchainSupportLockError("toolchain support symlink target must be relative")
     for part in value.split("/"):
         if part not in {".", ".."}:
             _validate_segment(part)
@@ -5444,12 +5076,7 @@ def _validate_xattr_summary(count: object, total_bytes: object) -> None:
 
 
 def _validate_mode(value: object) -> int:
-    if (
-        type(value) is not int
-        or isinstance(value, bool)
-        or value < 0
-        or value > 0o777
-    ):
+    if type(value) is not int or isinstance(value, bool) or value < 0 or value > 0o777:
         raise ToolchainSupportLockError("toolchain support permission mode is invalid")
     return value
 
@@ -5502,9 +5129,7 @@ def _validate_generated_mode(
         _require_sha256(path_sha256, "support mode diagnostic path SHA-256")
         mode_text = (
             f"{value:04o}"
-            if type(value) is int
-            and not isinstance(value, bool)
-            and 0 <= value <= 0o7777
+            if type(value) is int and not isinstance(value, bool) and 0 <= value <= 0o7777
             else "non-posix"
         )
         raise ToolchainSupportLockError(
@@ -5518,7 +5143,7 @@ def _validate_generated_mode(
 def _relative_mode_path_digest(relative_path: str) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-mode-diagnostic-path.v1",
+            "domain": "rextio.artifact-toolchain-support-mode-diagnostic-path.v1",
             "relative_path": _validate_relative_path(relative_path),
         }
     )
@@ -5541,12 +5166,10 @@ def _validate_tree_member_mode(
             target_triple == "x86_64-unknown-linux-gnu"
             and logical_role == _LINUX_CASEFOLD_ROLE
             and root_path == _LINUX_MODE_DISPOSITION_ROOT
-            and _locator_path_digest(root_path)
-            == _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
+            and _locator_path_digest(root_path) == _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
             and relative_path == _LINUX_MODE_DISPOSITION_RELATIVE_PATH
             and stat.S_ISREG(full_mode)
-            and relative_path_sha256
-            == _LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256
+            and relative_path_sha256 == _LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256
             and mode == _LINUX_MODE_DISPOSITION_MODE
         ):
             return mode
@@ -5577,7 +5200,7 @@ def _validate_tree_member_mode(
 def _linux_mode_full_stamp_sha256(value: _FilesystemStamp) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-linux-mode-full-stamp.v1",
+            "domain": "rextio.artifact-linux-mode-full-stamp.v1",
             "device": value.device,
             "inode": value.inode,
             "mode": value.mode,
@@ -5606,7 +5229,7 @@ def _linux_mode_member_receipt_sha256(
 ) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-linux-mode-member-receipt.v1",
+            "domain": "rextio.artifact-linux-mode-member-receipt.v1",
             "relative_path_sha256": relative_path_sha256,
             "mode": stat.S_IMODE(stamp.mode),
             "full_stamp_sha256": _linux_mode_full_stamp_sha256(stamp),
@@ -5641,9 +5264,7 @@ def _new_mode_disposition_receipt(
     )
     values: dict[str, object] = {
         "disposition": "bind-linux-runtime-regular-mode",
-        "support_root_locator_path_sha256": (
-            _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
-        ),
+        "support_root_locator_path_sha256": (_LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256),
         "relative_path_sha256": _LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256,
         "kind": "regular",
         "mode": _LINUX_MODE_DISPOSITION_MODE,
@@ -5657,9 +5278,7 @@ def _new_mode_disposition_receipt(
     object.__setattr__(provisional, "merkle_sha256", "")
     return ToolchainSupportModeDispositionReceipt(
         disposition="bind-linux-runtime-regular-mode",
-        support_root_locator_path_sha256=(
-            _LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256
-        ),
+        support_root_locator_path_sha256=(_LINUX_MODE_DISPOSITION_ROOT_LOCATOR_PATH_SHA256),
         relative_path_sha256=_LINUX_MODE_DISPOSITION_RELATIVE_PATH_SHA256,
         kind="regular",
         mode=_LINUX_MODE_DISPOSITION_MODE,
@@ -5736,25 +5355,19 @@ def _require_unaliased_inode(
     label: str,
 ) -> None:
     if value.links != 1:
-        raise ToolchainSupportLockError(
-            f"toolchain support {label} is a shared hardlink"
-        )
+        raise ToolchainSupportLockError(f"toolchain support {label} is a shared hardlink")
     key = value.device, value.inode
     if key in inode_keys:
-        raise ToolchainSupportLockError(
-            f"toolchain support {label} reuses an inode"
-        )
+        raise ToolchainSupportLockError(f"toolchain support {label} reuses an inode")
     inode_keys.add(key)
 
 
 def _xcode_hardlink_full_stamp_sha256(value: _FilesystemStamp) -> str:
     if type(value) is not _FilesystemStamp:
-        raise ToolchainSupportLockError(
-            "toolchain support xcode hardlink stamp is invalid"
-        )
+        raise ToolchainSupportLockError("toolchain support xcode hardlink stamp is invalid")
     return _sha256(
         {
-            "domain": "rextio.full-c6-xcode-hardlink-full-stamp.v1",
+            "domain": "rextio.artifact-xcode-hardlink-full-stamp.v1",
             "device": value.device,
             "inode": value.inode,
             "mode": value.mode,
@@ -5789,9 +5402,7 @@ def _open_xcode_topology_regular(
         or len(relative.parts) > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH
         or len(relative_path.encode("utf-8")) > MAX_TOOLCHAIN_SUPPORT_PATH_BYTES
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support Xcode topology final path is invalid"
-        )
+        raise ToolchainSupportLockError("toolchain support Xcode topology final path is invalid")
     chain = _open_directory_chain(boundary.joinpath(*relative.parts).parent)
     descriptor = -1
     try:
@@ -5805,13 +5416,9 @@ def _open_xcode_topology_regular(
             dir_fd=parent_fd,
         )
         opened = _stamp(os.fstat(descriptor))
-        linked = _stamp(
-            os.stat(relative.name, dir_fd=parent_fd, follow_symlinks=False)
-        )
+        linked = _stamp(os.stat(relative.name, dir_fd=parent_fd, follow_symlinks=False))
         if opened != expected or linked != opened or not stat.S_ISREG(opened.mode):
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode topology final stamp changed"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode topology final stamp changed")
         _verify_directory_chain(chain)
     except ToolchainSupportLockError:
         raise
@@ -5838,15 +5445,12 @@ def _scan_xcode_hardlink_topology(
             "toolchain support Xcode topology scope is invalid"
         ) from None
     if not support_root.is_absolute() or not app_boundary.is_absolute():
-        raise ToolchainSupportLockError(
-            "toolchain support Xcode topology scope is invalid"
-        )
+        raise ToolchainSupportLockError("toolchain support Xcode topology scope is invalid")
     matching_policies = tuple(
         policy
         for policy in _fixed_xcode_hardlink_policies()
         if policy.support_root == support_root
-        and policy.support_root_locator_path_sha256
-        == _locator_path_digest(support_root)
+        and policy.support_root_locator_path_sha256 == _locator_path_digest(support_root)
     )
     if app_boundary != _XCODE_APP_BOUNDARY or len(matching_policies) != 1:
         raise ToolchainSupportLockError(
@@ -5883,12 +5487,10 @@ def _scan_xcode_hardlink_topology(
                 *parent_chain,
                 {
                     "relative_path_sha256": _xcode_topology_sha256(
-                        "rextio.full-c6-xcode-hardlink-topology-parent-path.v1",
+                        "rextio.artifact-xcode-hardlink-topology-parent-path.v1",
                         {"relative_path": current_relative},
                     ),
-                    "full_stamp_sha256": _xcode_hardlink_full_stamp_sha256(
-                        directory_before
-                    ),
+                    "full_stamp_sha256": _xcode_hardlink_full_stamp_sha256(directory_before),
                 },
             )
             names = _bounded_directory_names(directory_fd)
@@ -5903,15 +5505,12 @@ def _scan_xcode_hardlink_topology(
                 logical = child_relative.as_posix()
                 if (
                     len(child_relative.parts) > MAX_TOOLCHAIN_SUPPORT_TREE_DEPTH
-                    or len(logical.encode("utf-8"))
-                    > MAX_TOOLCHAIN_SUPPORT_PATH_BYTES
+                    or len(logical.encode("utf-8")) > MAX_TOOLCHAIN_SUPPORT_PATH_BYTES
                 ):
                     raise ToolchainSupportLockError(
                         "toolchain support Xcode topology path bound exceeded"
                     )
-                observed = _stamp(
-                    os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                )
+                observed = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
                 if stat.S_ISDIR(observed.mode):
                     child_fd = _open_child_directory(directory_fd, name)
                     try:
@@ -5985,9 +5584,7 @@ def _scan_xcode_hardlink_topology(
                 dir_fd=directory_fd,
             )
             opened = _stamp(os.fstat(descriptor))
-            linked = _stamp(
-                os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            )
+            linked = _stamp(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
             if opened != observed or linked != opened:
                 raise ToolchainSupportLockError(
                     "toolchain support Xcode topology regular entry changed"
@@ -6026,9 +5623,7 @@ def _scan_xcode_hardlink_topology(
             group = {"stamp": opened, "paths": []}
             support_groups[key] = group
         elif group["stamp"] != opened:
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode topology inode stamp changed"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode topology inode stamp changed")
         paths = cast(list[str], group["paths"])
         if len(paths) >= _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP:
             raise ToolchainSupportLockError(
@@ -6042,12 +5637,8 @@ def _scan_xcode_hardlink_topology(
         visit=visit_support,
     )
     if not support_groups:
-        raise ToolchainSupportLockError(
-            "toolchain support Xcode topology contains no shared files"
-        )
-    aliases: dict[tuple[int, int], list[tuple[str, str, str]]] = {
-        key: [] for key in support_groups
-    }
+        raise ToolchainSupportLockError("toolchain support Xcode topology contains no shared files")
+    aliases: dict[tuple[int, int], list[tuple[str, str, str]]] = {key: [] for key in support_groups}
 
     def visit_app(
         directory_fd: int,
@@ -6062,24 +5653,20 @@ def _scan_xcode_hardlink_topology(
             return
         opened = open_observed_regular(directory_fd, name, observed)
         if group["stamp"] != opened:
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode topology alias stamp differs"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode topology alias stamp differs")
         members = aliases[key]
         if len(members) >= _XCODE_HARDLINK_MAX_MEMBERS_PER_GROUP:
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode topology alias bound exceeded"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode topology alias bound exceeded")
         logical = relative_path.as_posix()
         members.append(
             (
                 logical,
                 _xcode_topology_sha256(
-                    "rextio.full-c6-xcode-hardlink-topology-alias-path.v1",
+                    "rextio.artifact-xcode-hardlink-topology-alias-path.v1",
                     {"app_relative_path": logical},
                 ),
                 _xcode_topology_sha256(
-                    "rextio.full-c6-xcode-hardlink-topology-parent-chain.v1",
+                    "rextio.artifact-xcode-hardlink-topology-parent-chain.v1",
                     {"directories": list(parent_chain)},
                 ),
             )
@@ -6099,20 +5686,15 @@ def _scan_xcode_hardlink_topology(
             raise ToolchainSupportLockError(
                 "toolchain support Xcode topology support-member count differs"
             )
-        ordered_aliases = tuple(
-            sorted(aliases[key], key=lambda item: (item[1], item[0]))
-        )
-        if (
-            len(ordered_aliases) != stamp.links
-            or len({item[1] for item in ordered_aliases}) != len(ordered_aliases)
+        ordered_aliases = tuple(sorted(aliases[key], key=lambda item: (item[1], item[0])))
+        if len(ordered_aliases) != stamp.links or len({item[1] for item in ordered_aliases}) != len(
+            ordered_aliases
         ):
-            raise ToolchainSupportLockError(
-                "toolchain support Xcode topology alias count differs"
-            )
+            raise ToolchainSupportLockError("toolchain support Xcode topology alias count differs")
         support_path_sha256s = tuple(
             sorted(
                 _xcode_topology_sha256(
-                    "rextio.full-c6-xcode-hardlink-topology-support-path.v1",
+                    "rextio.artifact-xcode-hardlink-topology-support-path.v1",
                     {"support_relative_path": relative_path},
                 )
                 for relative_path in support_paths
@@ -6123,7 +5705,7 @@ def _scan_xcode_hardlink_topology(
                 "toolchain support Xcode topology support paths are ambiguous"
             )
         alias_parent_chain_merkle = _xcode_topology_sha256(
-            "rextio.full-c6-xcode-hardlink-topology-alias-parents.v1",
+            "rextio.artifact-xcode-hardlink-topology-alias-parents.v1",
             {
                 "aliases": [
                     {
@@ -6135,7 +5717,7 @@ def _scan_xcode_hardlink_topology(
             },
         )
         policy_group_sha256 = _xcode_topology_sha256(
-            "rextio.full-c6-xcode-hardlink-topology-policy-group.v1",
+            "rextio.artifact-xcode-hardlink-topology-policy-group.v1",
             {
                 "support_relative_path_sha256s": list(support_path_sha256s),
                 "link_count": stamp.links,
@@ -6144,7 +5726,7 @@ def _scan_xcode_hardlink_topology(
             },
         )
         observation_group_sha256 = _xcode_topology_sha256(
-            "rextio.full-c6-xcode-hardlink-topology-observation-group.v1",
+            "rextio.artifact-xcode-hardlink-topology-observation-group.v1",
             {
                 "policy_group_sha256": policy_group_sha256,
                 "full_stamp_sha256": _xcode_hardlink_full_stamp_sha256(stamp),
@@ -6162,18 +5744,14 @@ def _scan_xcode_hardlink_topology(
         )
         alias_count += len(ordered_aliases)
     ordered_records = tuple(sorted(records, key=lambda item: item.policy_group_sha256))
-    if len({item.policy_group_sha256 for item in ordered_records}) != len(
-        ordered_records
-    ):
-        raise ToolchainSupportLockError(
-            "toolchain support Xcode topology groups are ambiguous"
-        )
+    if len({item.policy_group_sha256 for item in ordered_records}) != len(ordered_records):
+        raise ToolchainSupportLockError("toolchain support Xcode topology groups are ambiguous")
     policy_merkle = _xcode_topology_sha256(
-        "rextio.full-c6-xcode-hardlink-topology-policy.v1",
+        "rextio.artifact-xcode-hardlink-topology-policy.v1",
         {"policy_group_sha256s": [item.policy_group_sha256 for item in ordered_records]},
     )
     observation_merkle = _xcode_topology_sha256(
-        "rextio.full-c6-xcode-hardlink-topology-observation.v1",
+        "rextio.artifact-xcode-hardlink-topology-observation.v1",
         {
             "groups": [
                 {
@@ -6188,9 +5766,7 @@ def _scan_xcode_hardlink_topology(
         policy=policy,
         groups=ordered_records,
         group_count=len(ordered_records),
-        support_member_count=sum(
-            len(item.support_relative_paths) for item in ordered_records
-        ),
+        support_member_count=sum(len(item.support_relative_paths) for item in ordered_records),
         alias_count=alias_count,
         policy_merkle_sha256=policy_merkle,
         observation_merkle_sha256=observation_merkle,
@@ -6227,10 +5803,7 @@ def _reopen_xcode_hardlink_topology(
     app_boundary: Path,
 ) -> None:
     """Final-reopen every support and app alias after the bracketed scans."""
-    if (
-        support_root != topology.policy.support_root
-        or app_boundary != _XCODE_APP_BOUNDARY
-    ):
+    if support_root != topology.policy.support_root or app_boundary != _XCODE_APP_BOUNDARY:
         raise ToolchainSupportLockError(
             "toolchain support Xcode topology final reopen is outside the exact profile"
         )
@@ -6256,9 +5829,7 @@ def _new_xcode_hardlink_topology_receipt(
 ) -> ToolchainSupportHardlinkDispositionReceipt:
     values: dict[str, object] = {
         "disposition": "bind-xcode-resource-hardlink-topology",
-        "resource_root_locator_path_sha256": (
-            topology.policy.support_root_locator_path_sha256
-        ),
+        "resource_root_locator_path_sha256": (topology.policy.support_root_locator_path_sha256),
         "version_manifest_role": _XCODE_VERSION_MANIFEST_ROLE,
         "version_manifest_raw_sha256": _XCODE_VERSION_MANIFEST_RAW_SHA256,
         "version_manifest_merkle_sha256": manifest.merkle_sha256,
@@ -6276,9 +5847,7 @@ def _new_xcode_hardlink_topology_receipt(
     object.__setattr__(provisional, "merkle_sha256", "")
     return ToolchainSupportHardlinkDispositionReceipt(
         disposition="bind-xcode-resource-hardlink-topology",
-        resource_root_locator_path_sha256=(
-            topology.policy.support_root_locator_path_sha256
-        ),
+        resource_root_locator_path_sha256=(topology.policy.support_root_locator_path_sha256),
         version_manifest_role=_XCODE_VERSION_MANIFEST_ROLE,
         version_manifest_raw_sha256=_XCODE_VERSION_MANIFEST_RAW_SHA256,
         version_manifest_merkle_sha256=manifest.merkle_sha256,
@@ -6304,19 +5873,13 @@ def _require_unaliased_regular_tree_inode(
         observation_count = 1 + int(key in inode_keys)
         path_sha256 = _sha256(
             {
-                "domain": (
-                    "rextio.full-c6-toolchain-support-"
-                    "hardlink-diagnostic-path.v1"
-                ),
+                "domain": ("rextio.artifact-toolchain-support-hardlink-diagnostic-path.v1"),
                 "relative_path": _validate_relative_path(relative_path),
             }
         )
-        if (
-            hardlink_plan is not None
-            and hardlink_plan.consume(
-                relative_path=relative_path,
-                observed=value,
-            )
+        if hardlink_plan is not None and hardlink_plan.consume(
+            relative_path=relative_path,
+            observed=value,
         ):
             inode_keys.add(key)
             return
@@ -6341,9 +5904,7 @@ def _require_locator(locator: object, *, kind: str) -> ToolchainSupportLocator:
         )
     _validate_role(locator.logical_role)
     if _validate_absolute_locator(locator._absolute_path) != locator._absolute_path:
-        raise ToolchainSupportLockError(
-            "toolchain support locator path is stale"
-        )
+        raise ToolchainSupportLockError("toolchain support locator path is stale")
     return locator
 
 
@@ -6391,9 +5952,7 @@ def _validate_external_support_root_isolation(
         or source_path in target_path.parents
         or target_path in source_path.parents
     ):
-        raise ToolchainSupportLockError(
-            "toolchain support external root locators overlap or alias"
-        )
+        raise ToolchainSupportLockError("toolchain support external root locators overlap or alias")
     inode_keys: set[tuple[int, int]] = set()
     for locator in (source, target):
         chain = _open_directory_chain(locator._absolute_path)
@@ -6490,7 +6049,7 @@ def _metadata_digest(value: _FilesystemStamp, *, kind: str) -> str:
         raise ToolchainSupportLockError("toolchain support metadata kind is invalid")
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-stat.v1",
+            "domain": "rextio.artifact-toolchain-support-stat.v1",
             "kind": kind,
             "device": value.device,
             "inode": value.inode,
@@ -6512,7 +6071,7 @@ def _metadata_digest(value: _FilesystemStamp, *, kind: str) -> str:
 def _locator_path_digest(path: Path) -> str:
     return _sha256(
         {
-            "domain": "rextio.full-c6-toolchain-support-locator-path.v1",
+            "domain": "rextio.artifact-toolchain-support-locator-path.v1",
             "absolute_path": str(_validate_absolute_locator(path)),
         }
     )
@@ -6521,9 +6080,7 @@ def _locator_path_digest(path: Path) -> str:
 def _canonical_entries(
     entries: tuple[_ToolchainSupportTreeEntry, ...],
 ) -> tuple[_ToolchainSupportTreeEntry, ...]:
-    return tuple(
-        sorted(entries, key=lambda item: (_alias(item.relative_path), item.relative_path))
-    )
+    return tuple(sorted(entries, key=lambda item: (_alias(item.relative_path), item.relative_path)))
 
 
 def _canonical_receipts(
@@ -6543,9 +6100,7 @@ def _alias(value: str) -> str:
 
 def _exact_dict(value: object, fields: set[str], label: str) -> dict[str, object]:
     if type(value) is not dict or set(value) != fields:
-        raise ToolchainSupportLockError(
-            f"toolchain support {label} schema is invalid"
-        )
+        raise ToolchainSupportLockError(f"toolchain support {label} schema is invalid")
     return cast(dict[str, object], value)
 
 
@@ -6558,9 +6113,7 @@ def _list(value: object, label: str) -> list[object]:
 def _bounded_list(value: object, label: str, *, maximum: int) -> list[object]:
     result = _list(value, label)
     if not 1 <= len(result) <= maximum:
-        raise ToolchainSupportLockError(
-            f"toolchain support {label} count is outside the bound"
-        )
+        raise ToolchainSupportLockError(f"toolchain support {label} count is outside the bound")
     return result
 
 
@@ -6592,9 +6145,7 @@ def _canonical_json(value: object) -> bytes:
             allow_nan=False,
         ).encode("utf-8")
     except (TypeError, ValueError, OverflowError, RecursionError) as exc:
-        raise ToolchainSupportLockError(
-            "toolchain support value cannot be canonicalized"
-        ) from exc
+        raise ToolchainSupportLockError("toolchain support value cannot be canonicalized") from exc
 
 
 def _sha256(value: object) -> str:

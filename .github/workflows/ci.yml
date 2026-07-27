@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, 0.1.7]
+    branches: [main]
   pull_request:
-    branches: [main, 0.1.7]
+    branches: [main]
     # `labeled` lets the experimental Nuitka job opt in on a PR via the
     # `test-nuitka` label (see the `nuitka-e2e` job's `if:`).
     types: [opened, synchronize, reopened, labeled]

@@ -1,4 +1,4 @@
-"""Offline commands for the strict Full C6 owner-policy handoff."""
+"""Offline commands for the strict artifact owner-policy handoff."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def run_finalize(args: Namespace) -> int:
             output_path=output,
         )
     except FullC6PolicyCompletionError as exc:
-        reporter.error("RXT060 Full C6 owner-policy finalization failed.")
+        reporter.error("RXT060 Artifact owner-policy finalization failed.")
         reporter.error(f"Cause: {exc}")
         reporter.error(
             "Suggestion: use the exact canonical bootstrap and completion files, "
@@ -81,7 +81,7 @@ def run_bootstrap_support_lock(args: Namespace) -> int:
         output = args.output
         if type(output) is not str:
             raise FullC6ToolchainSupportError(
-                "Full C6 support-lock output path is invalid"
+                "Artifact support-lock output path is invalid"
             )
         result = bootstrap_full_c6_toolchain_support_lock(
             project_root=project_root,
@@ -89,7 +89,7 @@ def run_bootstrap_support_lock(args: Namespace) -> int:
             inherited_environment=dict(os.environ),
         )
     except (FullC6PolicyCompletionError, FullC6ToolchainSupportError) as exc:
-        reporter.error("RXT060 Full C6 support-lock bootstrap failed.")
+        reporter.error("RXT060 Artifact support-lock bootstrap failed.")
         reporter.error(f"Cause: {exc}")
         diagnostic = _support_lock_verification_diagnostic(exc)
         if diagnostic is not None:
@@ -186,7 +186,7 @@ def _support_lock_verification_diagnostic(error: BaseException) -> str | None:
 
 def _absolute_path(value: object) -> Path:
     if type(value) is not str or not value or "\0" in value:
-        raise FullC6PolicyCompletionError("Full C6 policy CLI path is invalid")
+        raise FullC6PolicyCompletionError("Artifact policy CLI path is invalid")
     candidate = Path(value)
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate

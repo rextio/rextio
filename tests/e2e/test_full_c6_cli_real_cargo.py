@@ -29,7 +29,7 @@ from rextio.build.toolchain_support_lock import ToolchainSupportLockError
 
 
 full_c6_e2e_only = pytest.mark.skipif(
-    os.environ.get("REXTIO_FULL_C6_E2E") != "1",
+    os.environ.get("REXTIO_ARTIFACT_CONTRACT_E2E") != "1",
     reason="manual installed-wheel Full C6 host validation only",
 )
 
@@ -166,7 +166,7 @@ def test_installed_wheel_full_c6_cli_publishes_importable_native_wheel(
         for key, value in os.environ.items()
         if key not in {"PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"}
     }
-    environment["REXTIO_FULL_C6_E2E_CHILD"] = "1"
+    environment["REXTIO_ARTIFACT_CONTRACT_E2E_CHILD"] = "1"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     # Inherit the harness streams so flushed stage heartbeats remain visible.
     # A separate POSIX session still lets timeout/error handling contain every

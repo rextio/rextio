@@ -1,13 +1,20 @@
-"""Focused tests for the canonical Full C6 owner policy manifest boundary."""
+"""Focused tests for the canonical artifact-policy owner manifest boundary."""
 
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
+import runpy
 
 import pytest
 
+from rextio.artifacts.contract_dialects import (
+    CURRENT,
+    LEGACY_0_1_7,
+    POLICY_MANIFEST,
+    ArtifactContractDialect,
+)
 from rextio.artifacts.evidence import (
     ANALYSIS_INPUT_VERIFICATION_KIND,
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
@@ -51,6 +58,9 @@ from rextio.build.full_c6_policy_manifest import (
     parse_full_c6_policy_manifest,
 )
 import rextio.build.owner_policy_lock as owner_policy_lock
+
+
+_POLICY = runpy.run_path(str(Path(__file__).with_name("test_full_c6_policy.py")))
 
 
 _COVERAGE_SEMANTICS = (
@@ -97,7 +107,7 @@ _OUTPUT_CLASS = "file-input:generated-rust-lib"
 
 
 def _artifact_identity(class_id: str, digest: str) -> str:
-    return f"urn:rextio:artifact-component:{class_id}:{digest}"
+    return f"urn:rextio:artifact-evidence:component:{class_id}:{digest}"
 
 
 def _coverage(identities: dict[str, tuple[str, ...]]) -> ArtifactPolicyCoverageInventory:
@@ -210,9 +220,7 @@ def _receipt() -> FullC6PolicyReceipt:
             license_evidence=_license(output_authority, authority_partition),
         ),
     )
-    source_set = full_c6_transformation_source_set_digest(
-        (source_authority,), (source_digest,)
-    )
+    source_set = full_c6_transformation_source_set_digest((source_authority,), (source_digest,))
     analysis_digest = "3" * 64
     analysis_receipt = full_c6_analysis_receipt_digest(
         authority_partition_sha256=authority_partition,
@@ -325,7 +333,7 @@ def test_manifest_identity_and_exact_complete_partitions_are_serialized() -> Non
         (FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION, "rextio.full-c6-owner-policy-manifest.v1"),
     ],
 )
-def test_legacy_or_mixed_manifest_wire_identity_is_rejected(
+def test_mixed_manifest_wire_identity_is_rejected(
     schema_version: int,
     domain: str,
 ) -> None:
@@ -334,6 +342,50 @@ def test_legacy_or_mixed_manifest_wire_identity_is_rejected(
     document["domain"] = domain
 
     with pytest.raises(FullC6PolicyManifestError, match="identity is invalid"):
+        _parse_document(document)
+
+
+def test_exact_legacy_manifest_round_trip_preserves_bytes_and_digests() -> None:
+    legacy = _POLICY["_receipt"](dialect=LEGACY_0_1_7)
+    raw = full_c6_policy_manifest_bytes(legacy)
+
+    rebuilt = parse_full_c6_policy_manifest(
+        raw,
+        expected_sha256=sha256_hex(raw),
+    )
+
+    assert rebuilt._artifact_contract_dialect == LEGACY_0_1_7.name
+    assert full_c6_policy_manifest_bytes(rebuilt) == raw
+    assert rebuilt.policy_sha256 == legacy.policy_sha256
+    assert rebuilt.digest == legacy.digest
+
+
+@pytest.mark.parametrize(
+    ("root_dialect", "nested_dialect"),
+    [
+        (CURRENT, LEGACY_0_1_7),
+        (LEGACY_0_1_7, CURRENT),
+    ],
+)
+def test_manifest_rejects_root_and_nested_dialect_hybrids(
+    root_dialect: ArtifactContractDialect,
+    nested_dialect: ArtifactContractDialect,
+) -> None:
+    nested = _POLICY["_receipt"](dialect=nested_dialect)
+    document = full_c6_policy_manifest_document(nested)
+    identity = root_dialect.identity(POLICY_MANIFEST)
+    document.update(
+        {
+            "kind": identity.kind,
+            "schema_version": identity.schema_version,
+            "domain": identity.domain,
+        }
+    )
+
+    with pytest.raises(
+        FullC6PolicyManifestError,
+        match="mixed nested dialect|values are invalid",
+    ):
         _parse_document(document)
 
 
@@ -360,9 +412,7 @@ def test_manifest_requires_exact_bootstrap_lineage() -> None:
     [
         lambda value: value.update({"unexpected": False}),
         lambda value: value["owner_declaration"].update({"private_key": "secret"}),
-        lambda value: value["artifact_coverage"]["classes"][0].update(
-            {"unexpected": False}
-        ),
+        lambda value: value["artifact_coverage"]["classes"][0].update({"unexpected": False}),
         lambda value: value["rows"][0]["license_evidence"]["license_files"][0].update(
             {"unexpected": False}
         ),
@@ -424,7 +474,9 @@ def test_secure_loader_accepts_regular_file_and_rejects_links(tmp_path: Path) ->
     manifest = tmp_path / "policy.json"
     manifest.write_bytes(raw)
 
-    assert load_full_c6_policy_manifest(manifest, expected_sha256=digest).digest == _receipt().digest
+    assert (
+        load_full_c6_policy_manifest(manifest, expected_sha256=digest).digest == _receipt().digest
+    )
 
     symlink = tmp_path / "symlink.json"
     symlink.symlink_to(manifest)

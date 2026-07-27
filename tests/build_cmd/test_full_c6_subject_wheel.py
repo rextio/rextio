@@ -74,8 +74,7 @@ def _payloads(native: bytes = b"native-extension") -> dict[str, bytes]:
             b"Requires-Dist: demo-pkg==1.0.0\n"
         ),
         f"{DIST_INFO}/WHEEL": (
-            b"Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: false\n"
-            b"Tag: cp311-cp311-test\n"
+            b"Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: false\nTag: cp311-cp311-test\n"
         ),
     }
 
@@ -127,9 +126,10 @@ def _write_wheel(
 
 def _record_bytes(entries: list[tuple[str, bytes]]) -> bytes:
     record_name = f"{DIST_INFO}/RECORD"
-    return b"\n".join(
-        f"{name},{_record_hash(data)},{len(data)}".encode() for name, data in entries
-    ) + f"\n{record_name},,\n".encode()
+    return (
+        b"\n".join(f"{name},{_record_hash(data)},{len(data)}".encode() for name, data in entries)
+        + f"\n{record_name},,\n".encode()
+    )
 
 
 def _subject(path: Path) -> EvidenceFileRef:
@@ -337,9 +337,7 @@ def test_capture_rejects_native_member_tamper(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("alias_kind", ("duplicate", "case", "nfc"))
 @pytest.mark.filterwarnings("ignore:Duplicate name.*:UserWarning")
-def test_capture_rejects_duplicate_case_and_nfc_aliases(
-    tmp_path: Path, alias_kind: str
-) -> None:
+def test_capture_rejects_duplicate_case_and_nfc_aliases(tmp_path: Path, alias_kind: str) -> None:
     path = tmp_path / "subject-0.1.0-cp311-cp311-test.whl"
     extras: tuple[tuple[str, bytes, int], ...]
     if alias_kind == "duplicate":
@@ -366,9 +364,7 @@ def test_capture_rejects_duplicate_case_and_nfc_aliases(
 
 
 @pytest.mark.parametrize("special_mode", (stat.S_IFLNK | 0o777, stat.S_IFIFO | 0o644))
-def test_capture_rejects_symlink_and_special_zip_entries(
-    tmp_path: Path, special_mode: int
-) -> None:
+def test_capture_rejects_symlink_and_special_zip_entries(tmp_path: Path, special_mode: int) -> None:
     path = tmp_path / "subject-0.1.0-cp311-cp311-test.whl"
     _write_wheel(
         path,
@@ -389,9 +385,7 @@ def test_capture_rejects_symlink_and_special_zip_entries(
 
 
 @pytest.mark.parametrize("failure", ("hash", "size", "coverage"))
-def test_capture_rejects_record_hash_size_and_coverage_errors(
-    tmp_path: Path, failure: str
-) -> None:
+def test_capture_rejects_record_hash_size_and_coverage_errors(tmp_path: Path, failure: str) -> None:
     path = tmp_path / "subject-0.1.0-cp311-cp311-test.whl"
     payloads = _payloads()
     record = _record_bytes(list(payloads.items()))
@@ -400,7 +394,9 @@ def test_capture_rejects_record_hash_size_and_coverage_errors(
         f"{len(payloads['app/__init__.py'])}\n"
     ).encode()
     if failure == "hash":
-        replacement = app_row.replace(_record_hash(payloads["app/__init__.py"]).encode(), b"sha256=bad")
+        replacement = app_row.replace(
+            _record_hash(payloads["app/__init__.py"]).encode(), b"sha256=bad"
+        )
     elif failure == "size":
         replacement = app_row.rsplit(b",", 1)[0] + b",999\n"
     else:

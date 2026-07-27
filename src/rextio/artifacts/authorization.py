@@ -1,17 +1,17 @@
-"""C6.5-C6.15 distribution-authorization readiness assessment.
+"""artifact-evidence distribution-authorization readiness assessment.
 
-This module deliberately sits between the C6.2-C6.15 preview evidence record
+This module deliberately sits between the artifact-evidence preview evidence record
 and any future distribution authorization.  It converts only a validated
 ``ArtifactEvidence`` instance into a deterministic, closed-vocabulary report.
 The report is readiness information, never an authorization decision: every
 instance is blocked, incomplete, unsigned, and non-authorizing.
 
-C6.8 observes one-hop static packaged path candidates. C6.9 observes a bounded
+artifact-evidence observes one-hop static packaged path candidates. artifact-evidence observes a bounded
 static graph across recursively inspected packaged members. It does not
 implement actual loader selection, complete transitive dependency closure, runtime ``dlopen``
 observation, Windows PE inspection, runtime-bearing
 plugins, executables, Rust crates, Nuitka/WASM evidence, signatures, or final
-distribution authorization. C6.10-C6.15 add narrowly scoped source-replay,
+distribution authorization. artifact-evidence add narrowly scoped source-replay,
 Cargo license-policy, project-source license-policy, analysis-input,
 policy-coverage, and artifact-class policy observations without satisfying
 their corresponding global readiness checks.
@@ -190,7 +190,7 @@ class ArtifactAuthorizationCheck:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactDistributionAuthorizationAssessment:
-    """Immutable, fail-closed C6.5-C6.15 distribution-readiness report.
+    """Immutable, fail-closed artifact-evidence distribution-readiness report.
 
     Callers should use :meth:`from_evidence`.  The public fields remain
     validate-on-construction so malformed, reordered, duplicated, or
@@ -345,7 +345,7 @@ class ArtifactDistributionAuthorizationAssessment:
         cls,
         evidence: ArtifactEvidence,
     ) -> ArtifactDistributionAuthorizationAssessment:
-        """Return the total, no-throw C6.5-C6.15 evaluation for ``evidence``."""
+        """Return the total, no-throw artifact-evidence evaluation for ``evidence``."""
         return evaluate_artifact_distribution_authorization(evidence)
 
     def to_dict(self) -> dict[str, object]:
@@ -370,7 +370,7 @@ class ArtifactDistributionAuthorizationAssessment:
 def evaluate_artifact_distribution_authorization(
     evidence: ArtifactEvidence,
 ) -> ArtifactDistributionAuthorizationAssessment:
-    """Evaluate C6.5-C6.15 without changing the surrounding build outcome.
+    """Evaluate artifact-evidence without changing the surrounding build outcome.
 
     A structurally invalid preview remains reported as preview evidence, but
     no readiness check is claimed: the closed fallback shape contains only
@@ -872,7 +872,7 @@ def _copy_transformation_verification(
 def _copy_analysis_input_verification(
     value: AnalysisInputVerification | None,
 ) -> AnalysisInputVerification | None:
-    """Deep-copy and revalidate the complete C6.13 receipt before evaluation."""
+    """Deep-copy and revalidate the complete artifact-evidence receipt before evaluation."""
     if value is None:
         return None
     if type(value) is not AnalysisInputVerification:
@@ -940,7 +940,7 @@ def _reject_path_aliases(paths: tuple[str, ...], label: str) -> None:
 def _copy_artifact_policy_coverage_inventory(
     value: ArtifactPolicyCoverageInventory | None,
 ) -> ArtifactPolicyCoverageInventory | None:
-    """Deeply rebuild every compact C6.14 row before readiness evaluation."""
+    """Deeply rebuild every compact artifact-evidence row before readiness evaluation."""
     if value is None:
         return None
     if type(value) is not ArtifactPolicyCoverageInventory:
@@ -992,7 +992,7 @@ def _copy_artifact_policy_coverage_inventory(
 def _copy_artifact_class_policy_verification(
     value: ArtifactClassPolicyVerification | None,
 ) -> ArtifactClassPolicyVerification | None:
-    """Deeply rebuild the complete bounded C6.15 owner-policy receipt."""
+    """Deeply rebuild the complete bounded artifact-evidence owner-policy receipt."""
     if value is None:
         return None
     if type(value) is not ArtifactClassPolicyVerification:
@@ -1213,9 +1213,9 @@ def _validate_preview_observations(
 ) -> tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]:
     """Require structural/model bindings before marking observations satisfied.
 
-    This intentionally does not reopen or re-inspect output bytes. C6.2-C6.4
-    own those observations; C6.5-C6.15 validates closed model invariants and
-    exact evidence-reference bindings only. The C6.10-C6.15 collectors
+    This intentionally does not reopen or re-inspect output bytes. artifact-evidence
+    own those observations; artifact-evidence validates closed model invariants and
+    exact evidence-reference bindings only. The artifact-evidence collectors
     performed source replay and owner-lock verification before evidence
     construction; this later readiness pass validates only the immutable
     scoped receipt bindings.
@@ -1307,7 +1307,7 @@ def _validate_preview_observations(
         raise ValueError("preview authorization target/runtime binding is invalid")
     if runtime.architecture != _target_architecture(evidence.target_triple):
         raise ValueError("preview authorization target architecture is invalid")
-    # C6.6-C6.15 are intentionally independent of C6.3 evidence satisfaction.
+    # artifact-evidence are intentionally independent of artifact-evidence evidence satisfaction.
     # Absence is a fixed per-observation unavailable result, while present
     # models have been reconstructed and cross-bound to their exact underlying
     # evidence. Neither is complete provenance/license-policy verification.
@@ -1339,8 +1339,8 @@ def _validate_preview_observations(
     project_source_license_policy_verification_bound = (
         evidence.project_source_license_policy_verification is not None
     )
-    # C6.13 is meaningful only when both prerequisite C6.6 inventory and
-    # C6.10 scoped replay are present. ArtifactEvidence reconstruction above
+    # artifact-evidence is meaningful only when both prerequisite artifact-evidence inventory and
+    # artifact-evidence scoped replay are present. ArtifactEvidence reconstruction above
     # has already re-run the exact cross-binding invariants.
     analysis_inputs_bound = (
         transformation_bound
@@ -1364,7 +1364,7 @@ def _validate_preview_observations(
 
 
 def _target_architecture(target_triple: str) -> str:
-    """Map the closed C6.4 host-triple architecture vocabulary."""
+    """Map the closed artifact-evidence host-triple architecture vocabulary."""
     token = target_triple.strip().lower().split("-", 1)[0]
     if token in {"aarch64", "arm64"}:
         return "aarch64"

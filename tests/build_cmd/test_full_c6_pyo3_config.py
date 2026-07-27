@@ -154,6 +154,4 @@ def test_bind_requires_absolute_verified_config(tmp_path: Path) -> None:
             {}, config_path=Path(FULL_C6_PYO3_CONFIG_NAME), identity=identity
         )
     with pytest.raises(FullC6Pyo3ConfigError, match="verified"):
-        bind_full_c6_pyo3_environment(
-            {}, config_path=tmp_path / "missing", identity=identity
-        )
+        bind_full_c6_pyo3_environment({}, config_path=tmp_path / "missing", identity=identity)

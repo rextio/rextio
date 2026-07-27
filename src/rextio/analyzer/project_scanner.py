@@ -81,7 +81,7 @@ def scan_python_files(
 
         if type(full_c6_config) is not RextioConfig:
             raise FullC6HostInputsError(
-                "Full C6 analysis scope lacks its exact typed config"
+                "artifact analysis scope lacks its exact typed config"
             )
         observation = begin_full_c6_analysis_namespace(
             full_c6_analysis_scope,
@@ -102,7 +102,7 @@ def scan_python_files(
             full_c6_analysis_scope, project_root=root, config=full_c6_config
         )
         if tuple(result) != final_files:
-            raise FullC6HostInputsError("Full C6 analysis namespace changed")
+            raise FullC6HostInputsError("artifact analysis namespace changed")
         finish_full_c6_analysis_namespace(
             full_c6_analysis_scope,
             observation,
@@ -185,7 +185,7 @@ def analyze_project(
 
         if type(plugin_config) is not RextioConfig:
             raise FullC6HostInputsError(
-                "Full C6 analysis scope lacks its exact typed config"
+                "artifact analysis scope lacks its exact typed config"
             )
         full_c6_observation = begin_full_c6_analysis_namespace(
             full_c6_analysis_scope,
@@ -289,7 +289,7 @@ def analyze_project(
             config=plugin_config,
         )
         if tuple(files) != final_files:
-            raise FullC6HostInputsError("Full C6 analysis namespace changed")
+            raise FullC6HostInputsError("artifact analysis namespace changed")
         assert full_c6_observation is not None
         finish_full_c6_analysis_namespace(
             full_c6_analysis_scope,

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.8 — 2026-07-27
+
+**Published release.** Package version `0.1.8` is tagged and published to PyPI
+with plugin API **1.7** and tooling contract **3.0.0**, superseding 0.1.7.
+
+### Semantic artifact-contract terminology
+
+- Advance the machine-readable tooling contract to **3.0.0**. Diagnostic
+  positions and ordinary route/native-status/promotion fields retain their
+  2.x semantics, but consumers must explicitly accept major 3 before reading
+  the renamed artifact lifecycle. Release rextio-lsp 0.1.4 before core 0.1.8.
+- Replace the internal development labels previously exposed by the strict
+  artifact workflow with purpose-based names. New reports use
+  `artifact_contract`; lifecycle statuses are
+  `artifact-policy-bootstrap-required`, `artifact-signing-required`, and
+  `artifact-published`. External-source build blocks now report
+  `external-source-authorization-blocked` or
+  `external-source-native-linkage-not-implemented`, and external-source plans
+  expose `source_authorization_gate`.
+- Emit the current artifact-policy, authorization-request, detached-signature,
+  and SourceLock JSON dialects under purpose-based identities; artifact
+  lifecycle roots use the semantic `artifact-*` namespace. Exact 0.1.7 root
+  triples and signing domains remain strict read/verification inputs only:
+  Rextio never emits, finalizes, authorizes, or publishes a legacy dialect, and
+  mixed current/legacy roots fail closed.
+- Rename the repository-only host validation entry point to
+  `python scripts/validate-artifact-contract-host.py`. Its opt-in environment
+  variables are `REXTIO_ARTIFACT_CONTRACT_E2E`,
+  `REXTIO_ARTIFACT_CONTRACT_WHEEL`, and
+  `REXTIO_ARTIFACT_CONTRACT_E2E_CHILD`.
+- Stage the private strict-build wheel below
+  `.rextio/build/artifact-candidate`; this remains build input rather than a
+  distributable artifact.
+- Regenerate toolchain support locks with Core 0.1.8. Their structural schema
+  remains version 5, but new locks and the isolated Linux launcher use semantic
+  `artifact-*` root, hash-domain, stderr, and PyO3 bindings. A 0.1.7 support
+  lock is a non-authorizing host observation, so no legacy parser is added.
+
 ## 0.1.7 — 2026-07-27
 
 **Published release.** Package version `0.1.7` is tagged and published to PyPI

@@ -1,4 +1,4 @@
-"""Adversarial tests for complete Full C6 SBOM and provenance evidence."""
+"""Adversarial tests for complete artifact-build SBOM and provenance evidence."""
 
 from __future__ import annotations
 
@@ -65,13 +65,10 @@ from rextio.source.wheel_authority import (
     SourceWheelEntryIdentity,
 )
 from rextio.config.schema import RextioConfig
+
 TARGET = "x86_64-unknown-linux-gnu"
-_POLICY_FIXTURES = runpy.run_path(
-    str(Path(__file__).with_name("test_full_c6_policy.py"))
-)
-_INPUT_FIXTURES = runpy.run_path(
-    str(Path(__file__).with_name("test_build_input_closure.py"))
-)
+_POLICY_FIXTURES = runpy.run_path(str(Path(__file__).with_name("test_full_c6_policy.py")))
+_INPUT_FIXTURES = runpy.run_path(str(Path(__file__).with_name("test_build_input_closure.py")))
 
 
 def _policy_receipt() -> FullC6PolicyReceipt:
@@ -444,9 +441,7 @@ def _aggregate_arguments(
     workspace = _sealed_cargo_workspace(tmp_path)
     config_bound = bind_build_input_aggregate(
         build_inputs,
-        capture_effective_full_c6_config_identity(
-            RextioConfig()
-        ).to_build_input_aggregate(),
+        capture_effective_full_c6_config_identity(RextioConfig()).to_build_input_aggregate(),
     )
     bound = bind_full_c6_cargo_workspace_aggregates(config_bound, workspace)
     authority_aggregate = arguments["authority_aggregate"]
@@ -487,13 +482,9 @@ def test_authority_aggregate_binding_is_closed_ordered_and_non_authorizing() -> 
     )
     bindings = public["bindings"]
     assert isinstance(bindings, dict)
-    assert tuple(bindings) == (
-        supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS
-    )
+    assert tuple(bindings) == (supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_BINDING_FIELDS)
     assert all(
-        isinstance(value, str)
-        and len(value) == 64
-        and value == value.lower()
+        isinstance(value, str) and len(value) == 64 and value == value.lower()
         for value in bindings.values()
     )
     assert public["complete_for_scope"] is True
@@ -531,9 +522,7 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     assert sbom["specVersion"] == "1.6"
     reproducibility = arguments["reproducibility"]
     assert isinstance(reproducibility, ReproducibilityReceipt)
-    assert first.reproducible_sbom_input_sha256 == (
-        reproducibility.sbom_canonical_sha256
-    )
+    assert first.reproducible_sbom_input_sha256 == (reproducibility.sbom_canonical_sha256)
     assert first.reproducible_provenance_input_sha256 == (
         reproducibility.provenance_input_canonical_sha256
     )
@@ -542,17 +531,11 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     support_materials = {
         "builder-toolchain-support-plan": toolchain.support_plan_sha256,
         "builder-toolchain-support-lock-raw": toolchain.support_lock_raw_sha256,
-        "builder-toolchain-support-lock-merkle": (
-            toolchain.support_lock_merkle_sha256
-        ),
+        "builder-toolchain-support-lock-merkle": (toolchain.support_lock_merkle_sha256),
     }
     assert first.toolchain_support_plan_sha256 == toolchain.support_plan_sha256
-    assert first.toolchain_support_lock_raw_sha256 == (
-        toolchain.support_lock_raw_sha256
-    )
-    assert first.toolchain_support_lock_merkle_sha256 == (
-        toolchain.support_lock_merkle_sha256
-    )
+    assert first.toolchain_support_lock_raw_sha256 == (toolchain.support_lock_raw_sha256)
+    assert first.toolchain_support_lock_merkle_sha256 == (toolchain.support_lock_merkle_sha256)
     component_hashes = {
         component["name"]: component["hashes"][0]["content"]
         for component in sbom["components"]  # type: ignore[index]
@@ -562,19 +545,12 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     receipt_bindings = provenance["predicate"]["buildDefinition"][  # type: ignore[index]
         "internalParameters"
     ]["receipt_bindings"]
-    assert {
-        name: receipt_bindings[name]
-        for name in support_materials
-    } == support_materials
+    assert {name: receipt_bindings[name] for name in support_materials} == support_materials
     provenance_toolchain = provenance["predicate"]["runDetails"][  # type: ignore[index]
         "metadata"
     ]["rextio:toolchain"]
-    assert provenance_toolchain["support_plan_sha256"] == (
-        toolchain.support_plan_sha256
-    )
-    assert provenance_toolchain["support_lock_raw_sha256"] == (
-        toolchain.support_lock_raw_sha256
-    )
+    assert provenance_toolchain["support_plan_sha256"] == (toolchain.support_plan_sha256)
+    assert provenance_toolchain["support_lock_raw_sha256"] == (toolchain.support_lock_raw_sha256)
     assert provenance_toolchain["support_lock_merkle_sha256"] == (
         toolchain.support_lock_merkle_sha256
     )
@@ -595,12 +571,10 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
     assert sbom["compositions"] == [
         {
             "aggregate": "complete",
-            "assemblies": [f"urn:rextio:full-c6-wheel:{first.subject.sha256}"],
+            "assemblies": [(f"urn:rextio:artifact-evidence:wheel:{first.subject.sha256}")],
         }
     ]
-    assert [item.class_id for item in first.partition] == list(
-        FULL_C6_POLICY_CLASS_IDS
-    )
+    assert [item.class_id for item in first.partition] == list(FULL_C6_POLICY_CLASS_IDS)
     assert all(item.identities for item in first.partition)
     assert provenance["_type"] == "https://in-toto.io/Statement/v1"
     assert provenance["predicateType"] == "https://slsa.dev/provenance/v1"
@@ -609,14 +583,15 @@ def test_complete_documents_are_canonical_deterministic_and_non_authorizing() ->
         "reproducibility_input_projection"
     ] == {
         "sbom_canonical_sha256": reproducibility.sbom_canonical_sha256,
-        "provenance_input_canonical_sha256": (
-            reproducibility.provenance_input_canonical_sha256
-        ),
+        "provenance_input_canonical_sha256": (reproducibility.provenance_input_canonical_sha256),
     }
     receipt_bindings = provenance["predicate"]["buildDefinition"][  # type: ignore[index]
         "internalParameters"
     ]["receipt_bindings"]
-    assert receipt_bindings["full-c6-authority-aggregate"] == authority.digest
+    assert (
+        receipt_bindings[supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAME]
+        == authority.digest
+    )
     assert {
         name: receipt_bindings[name]
         for name in supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES
@@ -684,24 +659,20 @@ def test_authority_aggregate_is_mandatory_and_workspace_runtime_drift_fails_clos
         )
 
 
-def test_authority_aggregate_document_omission_duplicate_drift_and_json_tamper_fail_closed() -> None:
+def test_authority_aggregate_document_omission_duplicate_drift_and_json_tamper_fail_closed() -> (
+    None
+):
     receipt = build_full_c6_supply_chain_receipt(  # type: ignore[arg-type]
         **_arguments()
     )
-    binding_names = set(
-        supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES
-    )
+    binding_names = set(supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES)
 
     sbom = json.loads(receipt.sbom_json)
     components = sbom["components"]
-    authority_component = next(
-        item for item in components if item["name"] in binding_names
-    )
+    authority_component = next(item for item in components if item["name"] in binding_names)
 
     omitted = dict(sbom)
-    omitted["components"] = [
-        item for item in components if item is not authority_component
-    ]
+    omitted["components"] = [item for item in components if item is not authority_component]
     with pytest.raises(FullC6SupplyChainError, match="authority aggregate"):
         replace(receipt, sbom_json=canonical_json_bytes(omitted))
 
@@ -714,9 +685,7 @@ def test_authority_aggregate_document_omission_duplicate_drift_and_json_tamper_f
     parameters = drifted["predicate"]["buildDefinition"]["internalParameters"]
     parameters["receipt_bindings"][
         supply_chain_module.FULL_C6_AUTHORITY_AGGREGATE_MATERIAL_NAMES[0]
-    ] = (
-        "f" * 64
-    )
+    ] = "f" * 64
     with pytest.raises(FullC6SupplyChainError, match="provenance"):
         replace(receipt, provenance_json=canonical_json_bytes(drifted))
 
@@ -758,19 +727,20 @@ def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
     )
     with pytest.raises(FullC6SupplyChainError, match="process-sealed Cargo workspace"):
         verify_full_c6_supply_chain_receipt(receipt)
-    assert verify_full_c6_supply_chain_receipt(
-        receipt,
-        cargo_dependency_workspace=workspace,
-    ) == receipt
+    assert (
+        verify_full_c6_supply_chain_receipt(
+            receipt,
+            cargo_dependency_workspace=workspace,
+        )
+        == receipt
+    )
 
-    binding_prefix = "full-c6-cargo-input-aggregate:"
+    binding_prefix = "artifact-evidence-cargo-input-aggregate:"
     public = receipt.to_dict()
     bindings = public["bindings"]
     assert isinstance(bindings, dict)
     aggregate_bindings = {
-        name: digest
-        for name, digest in bindings.items()
-        if name.startswith(binding_prefix)
+        name: digest for name, digest in bindings.items() if name.startswith(binding_prefix)
     }
     assert len(aggregate_bindings) == 7
     assert all(len(digest) == 64 for digest in aggregate_bindings.values())
@@ -781,19 +751,11 @@ def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
     )
 
     sbom = json.loads(receipt.sbom_json)
-    components = [
-        item
-        for item in sbom["components"]
-        if item["name"].startswith(binding_prefix)
-    ]
+    components = [item for item in sbom["components"] if item["name"].startswith(binding_prefix)]
     assert len(components) == 7
     for component in components:
-        properties = {
-            item["name"]: item["value"] for item in component["properties"]
-        }
-        assert properties["rextio:role"] == (
-            "process-sealed-cargo-input-aggregate"
-        )
+        properties = {item["name"]: item["value"] for item in component["properties"]}
+        assert properties["rextio:role"] == ("process-sealed-cargo-input-aggregate")
         assert properties["rextio:aggregate_digest"]
         assert properties["rextio:member_count"]
 
@@ -803,14 +765,12 @@ def test_cargo_aggregate_receipt_round_trip_binds_safe_document_materials(
         item
         for item in definition["resolvedDependencies"]
         if item["uri"].startswith(
-            "urn:rextio:full-c6-evidence:full-c6-cargo-input-aggregate:"
+            "urn:rextio:artifact-evidence:evidence:artifact-evidence-cargo-input-aggregate:"
         )
     ]
     assert len(dependencies) == 7
     assert {
-        item["uri"].removeprefix("urn:rextio:full-c6-evidence:"): item[
-            "digest"
-        ]["sha256"]
+        item["uri"].removeprefix("urn:rextio:artifact-evidence:evidence:"): item["digest"]["sha256"]
         for item in dependencies
     } == aggregate_bindings
 
@@ -827,7 +787,7 @@ def test_cargo_aggregate_missing_extra_alias_and_reorder_fail_closed(
         aggregates=bound.aggregates[:-1],
     )
     extra_row = BuildInputAggregateIdentity(
-        aggregate_id="full-c6-cargo-z-extra",
+        aggregate_id="artifact-evidence-cargo-z-extra",
         kind="cargo-z-extra",
         digest="e" * 64,
         member_count=1,
@@ -846,7 +806,7 @@ def test_cargo_aggregate_missing_extra_alias_and_reorder_fail_closed(
             item,
             aggregate_id=item.aggregate_id.upper(),
         )
-        if item.aggregate_id == "full-c6-cargo-workspace"
+        if item.aggregate_id == "artifact-evidence-cargo-workspace"
         else item
         for item in bound.aggregates
     )
@@ -893,7 +853,7 @@ def test_effective_config_aggregate_missing_extra_and_alias_fail_closed(
                 (
                     *bound.aggregates,
                     BuildInputAggregateIdentity(
-                        aggregate_id="full-c6-effective-config-extra",
+                        aggregate_id="artifact-evidence-effective-config-extra",
                         kind="effective-config-extra",
                         digest="d" * 64,
                         member_count=1,
@@ -913,10 +873,10 @@ def test_effective_config_aggregate_missing_extra_and_alias_fail_closed(
 @pytest.mark.parametrize(
     ("aggregate_id", "changes"),
     (
-        ("full-c6-cargo-sources", {"digest": "f" * 64}),
-        ("full-c6-cargo-vendor-tree", {"member_count": 999}),
+        ("artifact-evidence-cargo-sources", {"digest": "f" * 64}),
+        ("artifact-evidence-cargo-vendor-tree", {"member_count": 999}),
         (
-            "full-c6-cargo-package-receipts",
+            "artifact-evidence-cargo-package-receipts",
             {"metadata_digest": "f" * 64},
         ),
     ),
@@ -1002,9 +962,7 @@ def test_partition_projection_sorts_multiple_members_by_canonical_identity() -> 
         type("PolicyRows", (), {"rows": (wheel, metadata)})()
     )
     bucket = next(
-        item
-        for item in projected
-        if item.class_id == "external-source:distribution-metadata"
+        item for item in projected if item.class_id == "external-source:distribution-metadata"
     )
 
     assert tuple(item.canonical_identity for item in bucket.identities) == (
@@ -1132,9 +1090,7 @@ def test_darwin_shared_cache_leaf_uses_bound_platform_identity() -> None:
     system = next(
         component
         for component in sbom["components"]
-        if {item["name"]: item["value"] for item in component["properties"]}.get(
-            "rextio:class_id"
-        )
+        if {item["name"]: item["value"] for item in component["properties"]}.get("rextio:class_id")
         == "native-runtime:logical-system-leaf"
     )
     properties = {item["name"]: item["value"] for item in system["properties"]}

@@ -263,7 +263,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.7 で実装済みの native ターゲットは Rust だけです。
+0.1.8 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -317,6 +317,9 @@ API 1 の選択・preflight・ビルド接続、静的 device-domain lowering �
 認証を主張しません。
 Core **0.1.7** は plugin API **1.7**、tooling contract **2.28.0** として
 2026-07-27 に公開され、任意の plugin function-scope RAII ガードを追加します。
+Core **0.1.8** は plugin API **1.7**、tooling contract **3.0.0** として
+2026-07-27 に公開され、public artifact lifecycle identity を semantic
+`artifact-*` 名に変更しました。
 一般的な依存 lowering はバンドルされません。`try-native` は明示的な計画
 ポリシーで、安全な direct lowering がなければやはり
 fallback します。
@@ -401,7 +404,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.7 は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.8 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:

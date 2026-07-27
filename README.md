@@ -319,7 +319,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.7.
+Rust is the only implemented native target in 0.1.8.
 
 Device-provider selection is an advanced, experimental build integration. It
 loads only the explicitly named `rextio.device_providers` entry point and
@@ -332,7 +332,7 @@ binding digest. `rextio capabilities` reports a configured provider/capability
 identity without provider discovery, preflight, or option disclosure. See
 [Device Provider API 1](docs/specs/device-provider.md).
 
-Core 0.1.7 adds plugin API **1.7** / tooling contract **2.28.0** function-scope guards. Core 0.1.6 added plugin API **1.6** / tooling contract **2.27.0** static
+Core 0.1.8 publishes plugin API **1.7** / tooling contract **3.0.0** semantic artifact-contract identities. Core 0.1.7 added plugin API **1.7** / tooling contract **2.28.0** function-scope guards. Core 0.1.6 added plugin API **1.6** / tooling contract **2.27.0** static
 device-domain authorization. An accepted
 accelerator plugin type contributes structured artifact requirements, and its
 lowerer receives a minimal redacted authorization only after the explicitly
@@ -497,7 +497,11 @@ Core **0.1.6** was published on 2026-07-26 with plugin API **1.6**, tooling
 contract **2.27.0**, and Device Provider API **1**. Core **0.1.7** was
 published on 2026-07-27 with plugin API **1.7** and tooling contract
 **2.28.0** (function-scope RAII guards). It retains the same
-readiness policy and fail-closed Alpha boundaries.
+readiness policy and fail-closed Alpha boundaries. Core **0.1.8** was
+published on 2026-07-27 with plugin API **1.7** and tooling contract
+**3.0.0**, replacing public artifact lifecycle identities with semantic
+`artifact-*` names while retaining exact 0.1.7 dialects for legacy
+read/verification only.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
 
@@ -582,7 +586,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.7 supports a deliberately small subset. This is the code
+Rextio 0.1.8 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:

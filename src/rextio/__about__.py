@@ -5,4 +5,4 @@ by parsing this module's AST, so keeping it to a single literal assignment avoid
 importing the full package (and its runtime warnings) at build time.
 """
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"

@@ -1,4 +1,4 @@
-"""Production C5.2 external call-site to Full C6 native execution bridge.
+"""Production external-source authority external call-site to artifact build native execution bridge.
 
 The strict preflight already owns SourceLock verification, fresh analysis,
 private external IR, the runtime guard, and the output-wheel exclusion
@@ -21,6 +21,7 @@ import stat
 import tomllib
 import unicodedata
 
+from rextio.artifacts.contract_dialects import CURRENT, EXTERNAL_EXECUTION_DOMAIN
 from rextio.build import full_c6_executor as _executor
 from rextio.build import orchestrator as _orchestrator
 from rextio.build.full_c6_cargo_workspace import (
@@ -86,7 +87,7 @@ from rextio.plugins.loader import PluginError
 from rextio.targets.plan import TargetPlanError, create_target_plan
 
 
-FULL_C6_EXTERNAL_EXECUTION_DOMAIN = "rextio.full-c6-external-execution.v1"
+FULL_C6_EXTERNAL_EXECUTION_DOMAIN = CURRENT.string_value(EXTERNAL_EXECUTION_DOMAIN)
 _STRICT_CARGO_ARGV = (
     "cargo",
     "build",
@@ -378,7 +379,7 @@ def _require_external_toolchain_support(
             )
         ):
             raise FullC6ToolchainSupportError(
-                "Full C6 toolchain support authority differs from toolchain identity"
+                "artifact build toolchain support authority differs from toolchain identity"
             )
         return trusted
     except (

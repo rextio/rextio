@@ -55,7 +55,7 @@ def _collect_bounded_production_authority(
         tmp_path,
         monkeypatch,
         build_overrides={
-            "artifact_policy_manifest": "locks/rextio.full-c6-policy.json",
+            "artifact_policy_manifest": "locks/rextio.artifact-policy.json",
             "artifact_policy_manifest_sha256": (
                 policy.digest if pinned_policy else None
             ),
@@ -253,6 +253,56 @@ def test_production_collector_exposes_only_the_frozen_owner_api() -> None:
     assert "_validated_full_c6_production_material" not in production.__all__
 
 
+def test_exact_legacy_sourcelock_verifies_but_cannot_enter_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = importlib.import_module("rextio.build.full_c6_production")
+    inputs = _EXTERNAL["_inputs"](
+        tmp_path,
+        monkeypatch,
+        legacy_source_lock=True,
+    )
+    verification = inputs.preflight.context.source_verification
+    assert verification.admission.status == "admitted"
+    assert verification.context is not None
+
+    reached_execution = False
+
+    def forbidden_execution(*_args: object, **_kwargs: object) -> object:
+        nonlocal reached_execution
+        reached_execution = True
+        raise AssertionError("legacy SourceLock must fail before native execution")
+
+    monkeypatch.setattr(
+        production,
+        "execute_full_c6_external_build",
+        forbidden_execution,
+    )
+    state_directory = tmp_path / "legacy-production-state"
+    state_directory.mkdir(mode=0o700)
+    with pytest.raises(
+        production.FullC6ProductionError,
+        match="requires current SourceLock manifest and signature dialects",
+    ):
+        production.collect_full_c6_production_authority(
+            inputs.preflight,
+            project_root=inputs.preflight.analysis.project_root,
+            config=inputs.config,
+            toolchain=inputs.toolchain,
+            native_tools=inputs.native_tools,
+            cargo_workspace=inputs.cargo_workspace,
+            toolchain_support_plan=inputs.toolchain_support_plan,
+            toolchain_support_lock=inputs.toolchain_support_lock,
+            first_quarantine_root=inputs.roots[0],
+            second_quarantine_root=inputs.roots[1],
+            state_directory=state_directory,
+            base_environment=inputs.base_environment,
+            source_date_epoch=1,
+        )
+    assert reached_execution is False
+
+
 def test_prerequisites_require_the_exact_cargo_source_authority_object(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -263,7 +313,7 @@ def test_prerequisites_require_the_exact_cargo_source_authority_object(
         inputs.config,
         build=replace(
             inputs.config.build,
-            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+            artifact_policy_manifest="locks/rextio.artifact-policy.json",
         ),
     )
     cloned_sources = replace(inputs.toolchain.cargo_sources)
@@ -312,7 +362,7 @@ def test_production_forwards_exact_support_objects_to_external_execution(
         inputs.config,
         build=replace(
             inputs.config.build,
-            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+            artifact_policy_manifest="locks/rextio.artifact-policy.json",
         ),
     )
     observed = False
@@ -359,7 +409,7 @@ def test_production_source_date_epoch_matches_the_executor_bound(
         inputs.config,
         build=replace(
             inputs.config.build,
-            artifact_policy_manifest="locks/rextio.full-c6-policy.json",
+            artifact_policy_manifest="locks/rextio.artifact-policy.json",
         ),
     )
     arguments = {

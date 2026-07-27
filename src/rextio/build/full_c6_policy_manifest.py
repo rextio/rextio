@@ -1,4 +1,4 @@
-"""Canonical owner-authored input boundary for the final Full C6 policy.
+"""Canonical owner-authored input boundary for the final artifact policy.
 
 The policy model itself deliberately accepts only fully constructed typed
 objects.  This module adds the corresponding untrusted-file boundary: an owner
@@ -18,6 +18,16 @@ from pathlib import Path
 import re
 from typing import cast
 
+from rextio.artifacts.contract_dialects import (
+    ARTIFACT_CONTRACT_DIALECTS,
+    CURRENT,
+    EXTERNAL_AUTHORITY_IDENTITY_SCHEME,
+    EXTERNAL_AUTHORITY_PARTITION_DOMAIN,
+    POLICY_MANIFEST,
+    POLICY_MANIFEST_FILENAME,
+    ArtifactContractDialect,
+    resolve_artifact_contract_dialect,
+)
 from rextio.artifacts.evidence import (
     ARTIFACT_POLICY_COVERAGE_CLASS_IDS,
     ArtifactPolicyCoverageClass,
@@ -44,10 +54,11 @@ from rextio.build.full_c6_policy import (
 from rextio.build.owner_policy_lock import read_strict_owner_policy_lock
 
 
-FULL_C6_POLICY_MANIFEST_KIND = "full-c6-owner-policy-manifest"
-FULL_C6_POLICY_MANIFEST_DOMAIN = "rextio.full-c6-owner-policy-manifest.v2"
-FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION = 2
-FULL_C6_POLICY_MANIFEST_FILENAME = "rextio.full-c6-policy.json"
+_CURRENT_MANIFEST_IDENTITY = CURRENT.identity(POLICY_MANIFEST)
+FULL_C6_POLICY_MANIFEST_KIND = _CURRENT_MANIFEST_IDENTITY.kind
+FULL_C6_POLICY_MANIFEST_DOMAIN = _CURRENT_MANIFEST_IDENTITY.domain
+FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION = _CURRENT_MANIFEST_IDENTITY.schema_version
+FULL_C6_POLICY_MANIFEST_FILENAME = CURRENT.filename(POLICY_MANIFEST_FILENAME)
 
 # A valid policy receipt is already bounded to four MiB.  The manifest repeats
 # the small exact coverage partitions so they can be reconstructed rather than
@@ -168,7 +179,7 @@ _OWNER_FIELDS = {
 
 
 class FullC6PolicyManifestError(ValueError):
-    """The Full C6 owner policy manifest is unsafe or noncanonical."""
+    """The artifact policy owner manifest is unsafe or noncanonical."""
 
 
 def full_c6_policy_manifest_document(
@@ -178,12 +189,14 @@ def full_c6_policy_manifest_document(
     trusted = _reconstruct_receipt(receipt)
     if trusted.bootstrap_request_sha256 is None:
         raise FullC6PolicyManifestError(
-            "Full C6 policy manifest requires bootstrap request lineage"
+            "artifact policy manifest requires bootstrap request lineage"
         )
+    dialect = full_c6_policy_manifest_dialect(trusted)
+    identity = dialect.identity(POLICY_MANIFEST)
     return {
-        "kind": FULL_C6_POLICY_MANIFEST_KIND,
-        "schema_version": FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION,
-        "domain": FULL_C6_POLICY_MANIFEST_DOMAIN,
+        "kind": identity.kind,
+        "schema_version": identity.schema_version,
+        "domain": identity.domain,
         "artifact_coverage": trusted.artifact_coverage.to_dict(),
         "external_authority": trusted.external_authority.to_dict(),
         "rows": [item.to_dict() for item in trusted.rows],
@@ -202,9 +215,9 @@ def full_c6_policy_manifest_bytes(receipt: FullC6PolicyReceipt) -> bytes:
     except FullC6PolicyManifestError:
         raise
     except (TypeError, ValueError, RecursionError) as exc:
-        raise FullC6PolicyManifestError("Full C6 policy manifest cannot be serialized") from exc
+        raise FullC6PolicyManifestError("artifact policy manifest cannot be serialized") from exc
     if not value or len(value) > MAX_FULL_C6_POLICY_MANIFEST_BYTES:
-        raise FullC6PolicyManifestError("Full C6 policy manifest exceeds the byte bound")
+        raise FullC6PolicyManifestError("artifact policy manifest exceeds the byte bound")
     return value
 
 
@@ -218,52 +231,73 @@ def parse_full_c6_policy_manifest(
     expected_digest = _sha256(expected_sha256, "expected manifest SHA-256")
     observed_digest = sha256_hex(raw)
     if not hmac.compare_digest(observed_digest, expected_digest):
-        raise FullC6PolicyManifestError("Full C6 policy manifest SHA-256 does not match the pin")
+        raise FullC6PolicyManifestError("artifact policy manifest SHA-256 does not match the pin")
     document = _parse_json(raw)
     try:
         canonical = canonical_json_bytes(document)
     except (TypeError, ValueError, RecursionError) as exc:
-        raise FullC6PolicyManifestError("Full C6 policy manifest JSON is invalid") from exc
+        raise FullC6PolicyManifestError("artifact policy manifest JSON is invalid") from exc
     if not hmac.compare_digest(raw, canonical):
-        raise FullC6PolicyManifestError("Full C6 policy manifest is not canonical JSON")
+        raise FullC6PolicyManifestError("artifact policy manifest is not canonical JSON")
 
     root = _exact_dict(document, _TOP_LEVEL_FIELDS, "manifest")
-    if (
-        root["kind"] != FULL_C6_POLICY_MANIFEST_KIND
-        or _integer(root["schema_version"], "manifest schema version")
-        != FULL_C6_POLICY_MANIFEST_SCHEMA_VERSION
-        or root["domain"] != FULL_C6_POLICY_MANIFEST_DOMAIN
-    ):
-        raise FullC6PolicyManifestError("Full C6 policy manifest identity is invalid")
+    try:
+        dialect = resolve_artifact_contract_dialect(
+            POLICY_MANIFEST,
+            kind=root["kind"],
+            schema_version=_integer(root["schema_version"], "manifest schema version"),
+            domain=root["domain"],
+        )
+    except ValueError as exc:
+        raise FullC6PolicyManifestError("artifact policy manifest identity is invalid") from exc
     declared_policy_digest = _sha256(root["policy_sha256"], "policy SHA-256")
     declared_receipt_digest = _sha256(root["receipt_digest"], "receipt digest")
 
     try:
         receipt = FullC6PolicyReceipt(
-            rows=_rows(root["rows"]),
-            transformations=_transformations(root["transformations"]),
-            owner_declaration=_owner(root["owner_declaration"]),
+            rows=_rows(root["rows"], dialect=dialect),
+            transformations=_transformations(
+                root["transformations"],
+                dialect=dialect,
+            ),
+            owner_declaration=_owner(root["owner_declaration"], dialect=dialect),
             artifact_coverage=_artifact_coverage(root["artifact_coverage"]),
-            external_authority=_external_authority(root["external_authority"]),
+            external_authority=_external_authority(
+                root["external_authority"],
+                dialect=dialect,
+            ),
             bootstrap_request_sha256=_sha256(
                 root["bootstrap_request_sha256"],
                 "bootstrap request SHA-256",
             ),
+            _artifact_contract_dialect=dialect.name,
         )
     except FullC6PolicyManifestError:
         raise
     except (TypeError, ValueError) as exc:
-        raise FullC6PolicyManifestError("Full C6 policy manifest values are invalid") from exc
-
+        raise FullC6PolicyManifestError("artifact policy manifest values are invalid") from exc
     if not hmac.compare_digest(receipt.policy_sha256, declared_policy_digest):
-        raise FullC6PolicyManifestError("Full C6 policy manifest policy digest is stale")
+        raise FullC6PolicyManifestError("artifact policy manifest policy digest is stale")
     if not hmac.compare_digest(receipt.digest, declared_receipt_digest):
-        raise FullC6PolicyManifestError("Full C6 policy manifest receipt digest is stale")
+        raise FullC6PolicyManifestError("artifact policy manifest receipt digest is stale")
     if receipt.distribution_authorized:
-        raise FullC6PolicyManifestError("Full C6 policy manifest cannot authorize distribution")
+        raise FullC6PolicyManifestError("artifact policy manifest cannot authorize distribution")
     if full_c6_policy_manifest_document(receipt) != root:
-        raise FullC6PolicyManifestError("Full C6 policy manifest content is not canonical")
+        raise FullC6PolicyManifestError("artifact policy manifest content is not canonical")
     return receipt
+
+
+def full_c6_policy_manifest_dialect(
+    receipt: FullC6PolicyReceipt,
+) -> ArtifactContractDialect:
+    """Return the exact manifest dialect retained by a parsed receipt."""
+    if type(receipt) is not FullC6PolicyReceipt:
+        raise TypeError("artifact policy receipt has an invalid type")
+    try:
+        dialect = ARTIFACT_CONTRACT_DIALECTS[receipt._artifact_contract_dialect]
+    except KeyError as exc:
+        raise FullC6PolicyManifestError("artifact policy receipt dialect is invalid") from exc
+    return dialect
 
 
 def load_full_c6_policy_manifest(
@@ -278,7 +312,7 @@ def load_full_c6_policy_manifest(
     link and remain byte-identical for the duration of the read.
     """
     if not isinstance(path, Path):
-        raise TypeError("Full C6 policy manifest path must be a pathlib.Path")
+        raise TypeError("artifact policy manifest path must be a pathlib.Path")
     try:
         locked = read_strict_owner_policy_lock(
             project_root=path.parent,
@@ -286,13 +320,13 @@ def load_full_c6_policy_manifest(
             max_bytes=MAX_FULL_C6_POLICY_MANIFEST_BYTES,
         )
     except (OSError, TypeError, ValueError) as exc:
-        raise FullC6PolicyManifestError("Full C6 policy manifest file is unsafe") from exc
+        raise FullC6PolicyManifestError("artifact policy manifest file is unsafe") from exc
     return parse_full_c6_policy_manifest(locked.data, expected_sha256=expected_sha256)
 
 
 def _bounded_bytes(value: object) -> bytes:
     if type(value) is not bytes or not value or len(value) > MAX_FULL_C6_POLICY_MANIFEST_BYTES:
-        raise FullC6PolicyManifestError("Full C6 policy manifest exceeds the byte bound")
+        raise FullC6PolicyManifestError("artifact policy manifest exceeds the byte bound")
     return value
 
 
@@ -302,13 +336,13 @@ def _parse_json(value: bytes) -> dict[str, object]:
         for key, item in pairs:
             if key in result:
                 raise FullC6PolicyManifestError(
-                    "Full C6 policy manifest contains a duplicate object key"
+                    "artifact policy manifest contains a duplicate object key"
                 )
             result[key] = item
         return result
 
     def reject_constant(_value: str) -> object:
-        raise FullC6PolicyManifestError("Full C6 policy manifest contains non-finite JSON")
+        raise FullC6PolicyManifestError("artifact policy manifest contains non-finite JSON")
 
     try:
         parsed = json.loads(
@@ -319,16 +353,16 @@ def _parse_json(value: bytes) -> dict[str, object]:
     except FullC6PolicyManifestError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
-        raise FullC6PolicyManifestError("Full C6 policy manifest is not valid JSON") from exc
+        raise FullC6PolicyManifestError("artifact policy manifest is not valid JSON") from exc
     if type(parsed) is not dict:
-        raise FullC6PolicyManifestError("Full C6 policy manifest root must be an object")
+        raise FullC6PolicyManifestError("artifact policy manifest root must be an object")
     _assert_json_depth(parsed, depth=0)
     return cast(dict[str, object], parsed)
 
 
 def _assert_json_depth(value: object, *, depth: int) -> None:
     if depth > MAX_FULL_C6_POLICY_MANIFEST_JSON_DEPTH:
-        raise FullC6PolicyManifestError("Full C6 policy manifest nesting is too deep")
+        raise FullC6PolicyManifestError("artifact policy manifest nesting is too deep")
     if type(value) is dict:
         for child in cast(dict[str, object], value).values():
             _assert_json_depth(child, depth=depth + 1)
@@ -339,19 +373,19 @@ def _assert_json_depth(value: object, *, depth: int) -> None:
 
 def _exact_dict(value: object, fields: set[str], label: str) -> dict[str, object]:
     if type(value) is not dict or set(value) != fields:
-        raise FullC6PolicyManifestError(f"Full C6 policy {label} schema is invalid")
+        raise FullC6PolicyManifestError(f"artifact policy {label} schema is invalid")
     return cast(dict[str, object], value)
 
 
 def _exact_list(value: object, label: str) -> list[object]:
     if type(value) is not list:
-        raise FullC6PolicyManifestError(f"Full C6 policy {label} must be a JSON array")
+        raise FullC6PolicyManifestError(f"artifact policy {label} must be a JSON array")
     return cast(list[object], value)
 
 
 def _string(value: object, label: str) -> str:
     if type(value) is not str:
-        raise FullC6PolicyManifestError(f"Full C6 policy {label} must be a string")
+        raise FullC6PolicyManifestError(f"artifact policy {label} must be a string")
     return value
 
 
@@ -363,7 +397,7 @@ def _optional_string(value: object, label: str) -> str | None:
 
 def _integer(value: object, label: str) -> int:
     if type(value) is not int:
-        raise FullC6PolicyManifestError(f"Full C6 policy {label} must be an integer")
+        raise FullC6PolicyManifestError(f"artifact policy {label} must be an integer")
     return value
 
 
@@ -375,7 +409,7 @@ def _optional_integer(value: object, label: str) -> int | None:
 
 def _boolean(value: object, label: str) -> bool:
     if type(value) is not bool:
-        raise FullC6PolicyManifestError(f"Full C6 policy {label} must be a boolean")
+        raise FullC6PolicyManifestError(f"artifact policy {label} must be a boolean")
     return value
 
 
@@ -383,7 +417,7 @@ def _sha256(value: object, label: str) -> str:
     result = _string(value, label)
     if _SHA256.fullmatch(result) is None:
         raise FullC6PolicyManifestError(
-            f"Full C6 policy {label} must be a lowercase SHA-256 digest"
+            f"artifact policy {label} must be a lowercase SHA-256 digest"
         )
     return result
 
@@ -398,10 +432,10 @@ def _artifact_coverage(value: object) -> ArtifactPolicyCoverageInventory:
     data = _exact_dict(value, _ARTIFACT_COVERAGE_FIELDS, "artifact coverage")
     raw_classes = _exact_list(data["classes"], "artifact coverage classes")
     if len(raw_classes) != len(ARTIFACT_POLICY_COVERAGE_CLASS_IDS):
-        raise FullC6PolicyManifestError("Full C6 artifact coverage class count is invalid")
+        raise FullC6PolicyManifestError("artifact coverage class count is invalid")
     classes = tuple(_artifact_coverage_class(item) for item in raw_classes)
     if _integer(data["class_count"], "artifact coverage class count") != len(classes):
-        raise FullC6PolicyManifestError("Full C6 artifact coverage class count is stale")
+        raise FullC6PolicyManifestError("artifact coverage class count is stale")
     return ArtifactPolicyCoverageInventory(
         classes=classes,
         observed_component_count=_integer(
@@ -463,18 +497,26 @@ def _artifact_coverage_class(value: object) -> ArtifactPolicyCoverageClass:
     )
 
 
-def _external_authority(value: object) -> FullC6ExternalAuthorityPartition:
+def _external_authority(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6ExternalAuthorityPartition:
     data = _exact_dict(value, _EXTERNAL_AUTHORITY_FIELDS, "external authority")
     raw_classes = _exact_list(data["classes"], "external authority classes")
     if len(raw_classes) != len(FULL_C6_EXTERNAL_POLICY_CLASS_IDS):
-        raise FullC6PolicyManifestError("Full C6 external authority class count is invalid")
+        raise FullC6PolicyManifestError("external-source partition class count is invalid")
     classes = tuple(_external_authority_class(item) for item in raw_classes)
     if _integer(data["class_count"], "external authority class count") != len(classes):
-        raise FullC6PolicyManifestError("Full C6 external authority class count is stale")
+        raise FullC6PolicyManifestError("external-source partition class count is stale")
     # Domain and scheme are derived fields on the typed partition.  Parse them
     # now; the final exact document comparison rejects any alternate values.
-    _string(data["domain"], "external authority domain")
-    _string(data["identity_scheme"], "external authority identity scheme")
+    if _string(data["domain"], "external authority domain") != dialect.string_value(
+        EXTERNAL_AUTHORITY_PARTITION_DOMAIN
+    ) or _string(
+        data["identity_scheme"], "external authority identity scheme"
+    ) != dialect.string_value(EXTERNAL_AUTHORITY_IDENTITY_SCHEME):
+        raise FullC6PolicyManifestError("artifact policy manifest contains a mixed nested dialect")
     return FullC6ExternalAuthorityPartition(
         classes=classes,
         observed_component_count=_integer(
@@ -483,6 +525,7 @@ def _external_authority(value: object) -> FullC6ExternalAuthorityPartition:
         canonical_partition_sha256=_sha256(
             data["canonical_partition_sha256"], "external authority partition SHA-256"
         ),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -497,14 +540,22 @@ def _external_authority_class(value: object) -> FullC6ExternalAuthorityClass:
     )
 
 
-def _rows(value: object) -> tuple[FullC6PolicyInputRow, ...]:
+def _rows(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> tuple[FullC6PolicyInputRow, ...]:
     values = _exact_list(value, "rows")
     if len(values) > MAX_FULL_C6_POLICY_ROWS:
-        raise FullC6PolicyManifestError("Full C6 policy row count exceeds the bound")
-    return tuple(_row(item) for item in values)
+        raise FullC6PolicyManifestError("artifact policy row count exceeds the bound")
+    return tuple(_row(item, dialect=dialect) for item in values)
 
 
-def _row(value: object) -> FullC6PolicyInputRow:
+def _row(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6PolicyInputRow:
     data = _exact_dict(value, _ROW_FIELDS, "row")
     _sha256(data["canonical_identity_sha256"], "row canonical identity SHA-256")
     evidence_value = data["license_evidence"]
@@ -519,17 +570,24 @@ def _row(value: object) -> FullC6PolicyInputRow:
         transformation_disposition=_string(
             data["transformation_disposition"], "row transformation disposition"
         ),
-        license_evidence=(None if evidence_value is None else _license_evidence(evidence_value)),
+        license_evidence=(
+            None if evidence_value is None else _license_evidence(evidence_value, dialect=dialect)
+        ),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
-def _license_evidence(value: object) -> FullC6LicenseEvidence:
+def _license_evidence(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6LicenseEvidence:
     data = _exact_dict(value, _LICENSE_EVIDENCE_FIELDS, "license evidence")
     _sha256(data["detector_receipt_sha256"], "license detector receipt SHA-256")
     _sha256(data["license_file_identity_set_sha256"], "license file-set SHA-256")
     raw_files = _exact_list(data["license_files"], "license evidence files")
     if not raw_files or len(raw_files) > MAX_FULL_C6_LICENSE_FILES_PER_ROW:
-        raise FullC6PolicyManifestError("Full C6 policy license file count exceeds the bound")
+        raise FullC6PolicyManifestError("artifact policy license file count exceeds the bound")
     return FullC6LicenseEvidence(
         declared_spdx=_string(data["declared_spdx"], "declared SPDX"),
         detected_spdx=_string(data["detected_spdx"], "detected SPDX"),
@@ -553,6 +611,7 @@ def _license_evidence(value: object) -> FullC6LicenseEvidence:
         detector_receipt_kind=_string(
             data["detector_receipt_kind"], "license detector receipt kind"
         ),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -566,21 +625,30 @@ def _policy_file(value: object) -> FullC6PolicyFileIdentity:
     )
 
 
-def _transformations(value: object) -> tuple[FullC6TransformationRecord, ...]:
+def _transformations(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> tuple[FullC6TransformationRecord, ...]:
     values = _exact_list(value, "transformations")
     if len(values) > MAX_FULL_C6_POLICY_TRANSFORMATIONS:
-        raise FullC6PolicyManifestError("Full C6 policy transformation count exceeds the bound")
-    return tuple(_transformation(item) for item in values)
+        raise FullC6PolicyManifestError("artifact policy transformation count exceeds the bound")
+    return tuple(_transformation(item, dialect=dialect) for item in values)
 
 
-def _transformation(value: object) -> FullC6TransformationRecord:
+def _transformation(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6TransformationRecord:
     data = _exact_dict(value, _TRANSFORMATION_FIELDS, "transformation")
     raw_sources = _exact_list(data["sources"], "transformation sources")
     if not raw_sources or len(raw_sources) > MAX_FULL_C6_POLICY_SOURCES_PER_TRANSFORMATION:
-        raise FullC6PolicyManifestError("Full C6 transformation source count exceeds the bound")
+        raise FullC6PolicyManifestError(
+            "artifact policy transformation source count exceeds the bound"
+        )
     source_values = tuple(
-        _transformation_identity(item, label="transformation source")
-        for item in raw_sources
+        _transformation_identity(item, label="transformation source") for item in raw_sources
     )
     output_identity, output_sha256 = _transformation_identity(
         data["output"], label="transformation output"
@@ -603,9 +671,7 @@ def _transformation(value: object) -> FullC6TransformationRecord:
         analysis_receipt_sha256=_sha256(
             data["analysis_receipt_sha256"], "transformation analysis receipt SHA-256"
         ),
-        lowered_ir_sha256=_sha256(
-            data["lowered_ir_sha256"], "transformation lowered IR SHA-256"
-        ),
+        lowered_ir_sha256=_sha256(data["lowered_ir_sha256"], "transformation lowered IR SHA-256"),
         lowered_ir_receipt_sha256=_sha256(
             data["lowered_ir_receipt_sha256"], "transformation lowered IR receipt SHA-256"
         ),
@@ -615,6 +681,7 @@ def _transformation(value: object) -> FullC6TransformationRecord:
         lowered_ir_receipt_kind=_string(
             data["lowered_ir_receipt_kind"], "transformation lowered IR receipt kind"
         ),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
@@ -626,7 +693,11 @@ def _transformation_identity(value: object, *, label: str) -> tuple[str, str]:
     )
 
 
-def _owner(value: object) -> FullC6OwnerDeclaration:
+def _owner(
+    value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
+) -> FullC6OwnerDeclaration:
     data = _exact_dict(value, _OWNER_FIELDS, "owner declaration")
     return FullC6OwnerDeclaration(
         owner_identity=_string(data["owner_identity"], "owner identity"),
@@ -641,51 +712,60 @@ def _owner(value: object) -> FullC6OwnerDeclaration:
         ),
         acknowledgement=_string(data["acknowledgement"], "owner acknowledgement"),
         authentication=_string(data["authentication"], "owner authentication"),
+        _artifact_contract_dialect=dialect.name,
     )
 
 
 def parse_full_c6_artifact_coverage_document(
     value: object,
 ) -> ArtifactPolicyCoverageInventory:
-    """Parse one exact public C6.14 coverage document."""
+    """Parse one exact public artifact-evidence coverage document."""
     return _artifact_coverage(value)
 
 
 def parse_full_c6_external_authority_document(
     value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6ExternalAuthorityPartition:
-    """Parse one exact public C5.2 authority-partition document."""
-    return _external_authority(value)
+    """Parse one exact public external-source authority authority-partition document."""
+    return _external_authority(value, dialect=dialect)
 
 
 def parse_full_c6_transformation_document(
     value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6TransformationRecord:
     """Parse one exact public technical transformation record."""
-    return _transformation(value)
+    return _transformation(value, dialect=dialect)
 
 
 def parse_full_c6_owner_declaration_document(
     value: object,
+    *,
+    dialect: ArtifactContractDialect = CURRENT,
 ) -> FullC6OwnerDeclaration:
     """Parse one exact explicit owner declaration document."""
-    return _owner(value)
+    return _owner(value, dialect=dialect)
 
 
 def _reconstruct_receipt(receipt: FullC6PolicyReceipt) -> FullC6PolicyReceipt:
     if type(receipt) is not FullC6PolicyReceipt:
-        raise TypeError("Full C6 policy receipt has an invalid type")
+        raise TypeError("artifact policy receipt has an invalid type")
     try:
-        return FullC6PolicyReceipt(
+        rebuilt = FullC6PolicyReceipt(
             rows=tuple(receipt.rows),
             transformations=tuple(receipt.transformations),
             owner_declaration=receipt.owner_declaration,
             artifact_coverage=receipt.artifact_coverage,
             external_authority=receipt.external_authority,
             bootstrap_request_sha256=receipt.bootstrap_request_sha256,
+            _artifact_contract_dialect=receipt._artifact_contract_dialect,
         )
+        return rebuilt
     except (TypeError, ValueError) as exc:
-        raise FullC6PolicyManifestError("Full C6 policy receipt cannot be reconstructed") from exc
+        raise FullC6PolicyManifestError("artifact policy receipt cannot be reconstructed") from exc
 
 
 __all__ = [
@@ -696,6 +776,7 @@ __all__ = [
     "FullC6PolicyManifestError",
     "MAX_FULL_C6_POLICY_MANIFEST_BYTES",
     "full_c6_policy_manifest_bytes",
+    "full_c6_policy_manifest_dialect",
     "full_c6_policy_manifest_document",
     "load_full_c6_policy_manifest",
     "parse_full_c6_policy_manifest",

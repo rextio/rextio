@@ -23,7 +23,7 @@ artifact_evidence_policy = "required"
 artifact_distribution_policy = "strict-evidence"
 artifact_source_lock_manifest = "locks/source-lock.v2.json"
 artifact_source_lock_signature = "locks/source-lock.v2.sig.json"
-artifact_policy_manifest = "locks/rextio.full-c6-policy.json"
+artifact_policy_manifest = "locks/rextio.artifact-policy.json"
 artifact_policy_manifest_sha256 = "{_SHA_B}"
 artifact_cargo_vendor = "vendor/cargo"
 artifact_cargo_vendor_sha256 = "{_SHA_A}"
@@ -33,7 +33,7 @@ artifact_toolchain_support_lock = "locks/toolchain-support.json"
 artifact_toolchain_support_lock_sha256 = "{_SHA_A}"
 artifact_trusted_public_key = "keys/release.pub"
 artifact_trusted_public_key_sha256 = "{_SHA_A}"
-artifact_signing_request_output = "build/rextio.full-c6-final-authorization-request.json"
+artifact_signing_request_output = "build/rextio.artifact-authorization-request.json"
 artifact_repeat_builds = 2
 {build_extra}
 
@@ -148,7 +148,7 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     assert config.build.artifact_distribution_policy == "strict-evidence"
     assert config.build.artifact_source_lock_manifest == "locks/source-lock.v2.json"
     assert config.build.artifact_source_lock_signature == "locks/source-lock.v2.sig.json"
-    assert config.build.artifact_policy_manifest == "locks/rextio.full-c6-policy.json"
+    assert config.build.artifact_policy_manifest == "locks/rextio.artifact-policy.json"
     assert config.build.artifact_policy_manifest_sha256 == _SHA_B
     assert config.build.artifact_cargo_vendor == "vendor/cargo"
     assert config.build.artifact_cargo_vendor_sha256 == _SHA_A
@@ -164,7 +164,7 @@ def test_full_c6_distribution_config_accepts_exact_frozen_profile(tmp_path: Path
     assert config.build.artifact_final_signature is None
     assert (
         config.build.artifact_signing_request_output
-        == "build/rextio.full-c6-final-authorization-request.json"
+        == "build/rextio.artifact-authorization-request.json"
     )
     assert config.build.artifact_repeat_builds == 2
     assert package.source_archive == "vendor/demo_math-1.2.3-py3-none-any.whl"
@@ -183,7 +183,7 @@ def test_full_c6_distribution_config_accepts_policy_bootstrap_path_without_diges
     config = load_config(tmp_path)
 
     assert config.build.artifact_distribution_policy == "strict-evidence"
-    assert config.build.artifact_policy_manifest == "locks/rextio.full-c6-policy.json"
+    assert config.build.artifact_policy_manifest == "locks/rextio.artifact-policy.json"
     assert config.build.artifact_policy_manifest_sha256 is None
 
 
@@ -191,7 +191,7 @@ def test_full_c6_distribution_config_rejects_policy_digest_without_path(
     tmp_path: Path,
 ) -> None:
     configured = _full_c6_toml().replace(
-        'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"\n',
+        'artifact_policy_manifest = "locks/rextio.artifact-policy.json"\n',
         "",
     )
     (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
@@ -258,7 +258,7 @@ def test_full_c6_distribution_config_accepts_final_signature(tmp_path: Path) -> 
             "project-relative",
         ),
         (
-            'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"',
+            'artifact_policy_manifest = "locks/rextio.artifact-policy.json"',
             'artifact_policy_manifest = "../policy.json"',
             "project-relative",
         ),
@@ -314,7 +314,7 @@ def test_full_c6_distribution_config_accepts_final_signature(tmp_path: Path) -> 
         ),
         (
             "artifact_signing_request_output = "
-            '"build/rextio.full-c6-final-authorization-request.json"',
+            '"build/rextio.artifact-authorization-request.json"',
             'artifact_signing_request_output = "build/../request.json"',
             "project-relative",
         ),
@@ -345,7 +345,7 @@ def test_full_c6_signing_request_requires_canonical_json_basename(
     tmp_path: Path,
 ) -> None:
     configured = _full_c6_toml().replace(
-        "build/rextio.full-c6-final-authorization-request.json",
+        "build/rextio.artifact-authorization-request.json",
         "build/another-request.json",
     )
     (tmp_path / "rextio.toml").write_text(configured, encoding="utf-8")
@@ -440,7 +440,7 @@ def test_full_c6_path_fields_reject_non_string_values(
             "strict-evidence",
         ),
         (
-            'artifact_policy_manifest = "locks/rextio.full-c6-policy.json"\n'
+            'artifact_policy_manifest = "locks/rextio.artifact-policy.json"\n'
             f'artifact_policy_manifest_sha256 = "{_SHA_B}"\n',
             "strict-evidence",
         ),
@@ -462,11 +462,11 @@ def test_full_c6_path_fields_reject_non_string_values(
         (
             'artifact_trusted_public_key = "keys/release.pub"\n'
             f'artifact_trusted_public_key_sha256 = "{_SHA_A}"\n',
-            "signed Full C6 inputs require",
+            "signed artifact-contract inputs require",
         ),
         (
             "artifact_signing_request_output = "
-            '"build/rextio.full-c6-final-authorization-request.json"\n',
+            '"build/rextio.artifact-authorization-request.json"\n',
             "strict-evidence",
         ),
     ],
@@ -500,7 +500,7 @@ artifact_cargo_lock_sha256 = "{_SHA_A}"
 artifact_toolchain_support_lock = "locks/toolchain-support.json"
 artifact_toolchain_support_lock_sha256 = "{_SHA_B}"
 artifact_final_signature = "signatures/final.sig.json"
-artifact_signing_request_output = "state/rextio.full-c6-final-authorization-request.json"
+artifact_signing_request_output = "state/rextio.artifact-authorization-request.json"
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -535,7 +535,7 @@ artifact_signing_request_output = "state/rextio.full-c6-final-authorization-requ
                     'artifact_source_lock_signature = "locks/source-lock.v2.sig.json"',
                 )
             ),
-            "signed Full C6 inputs require",
+            "signed artifact-contract inputs require",
         ),
         (
             'artifact_trusted_public_key = "keys/release.pub"',
@@ -570,10 +570,10 @@ artifact_signing_request_output = "state/rextio.full-c6-final-authorization-requ
                 (
                     'artifact_final_signature = "signatures/final.sig.json"',
                     "artifact_signing_request_output = "
-                    '"state/rextio.full-c6-final-authorization-request.json"',
+                    '"state/rextio.artifact-authorization-request.json"',
                 )
             ),
-            "signed Full C6 inputs require",
+            "signed artifact-contract inputs require",
         ),
         (
             '\n'.join(
@@ -589,10 +589,10 @@ artifact_signing_request_output = "state/rextio.full-c6-final-authorization-requ
                 '\n'.join(
                     (
                     "artifact_trusted_public_key = "
-                    '"state/rextio.full-c6-final-authorization-request.json"',
+                    '"state/rextio.artifact-authorization-request.json"',
                     f'artifact_trusted_public_key_sha256 = "{_SHA_A}"',
                     "artifact_signing_request_output = "
-                    '"state/rextio.full-c6-final-authorization-request.json"',
+                    '"state/rextio.artifact-authorization-request.json"',
                 )
             ),
             "paths must be distinct",
@@ -672,7 +672,7 @@ def test_full_c6_config_survives_override_serialization(tmp_path: Path) -> None:
     assert rebuilt.build.artifact_trusted_public_key == "keys/release.pub"
     assert (
         rebuilt.build.artifact_signing_request_output
-        == "build/rextio.full-c6-final-authorization-request.json"
+        == "build/rextio.artifact-authorization-request.json"
     )
     assert rebuilt.imports.packages["demo_math"].source_archive_sha256 == _SHA_B
 
@@ -738,7 +738,10 @@ version = "2.0"
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="exactly one source-native external package"):
+    with pytest.raises(
+        ConfigError,
+        match="source-native preview permits exactly one external package",
+    ):
         load_config(tmp_path)
 
 

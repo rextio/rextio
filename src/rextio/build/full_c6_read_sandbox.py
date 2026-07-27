@@ -1,6 +1,6 @@
-"""Deny-by-default filesystem-read sandbox primitives for strict Full C6.
+"""Deny-by-default filesystem-read sandbox primitives for strict artifact build.
 
-The Full C6 build is allowed to claim a complete input closure only when the
+The artifact build is allowed to claim a complete input closure only when the
 kernel prevents Cargo, build scripts, rustc, and the linker from reading an
 unbound host file.  This module provides that enforcement boundary for the two
 frozen Alpha hosts:
@@ -35,6 +35,7 @@ import subprocess
 import sys
 from typing import Literal, Protocol
 
+from rextio.artifacts.contract_dialects import CURRENT, READ_SANDBOX_DOMAIN
 from rextio.build.full_c6_linux_launcher import (
     FULL_C6_LINUX_CARGO,
     FULL_C6_LINUX_LAUNCHER,
@@ -51,19 +52,15 @@ from rextio.build.full_c6_linux_launcher import (
 )
 
 
-FULL_C6_READ_SANDBOX_DOMAIN = "rextio.full-c6-read-sandbox.v1"
-_SUPPORTED_TARGETS = frozenset(
-    {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}
-)
+FULL_C6_READ_SANDBOX_DOMAIN = CURRENT.string_value(READ_SANDBOX_DOMAIN)
+_SUPPORTED_TARGETS = frozenset({"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_RULES = 256
 _MAX_PATH_BYTES = 4096
 _PLATFORM_PROBE_MAX_BYTES = 1024 * 1024
 _APPLE_SNAPSHOT_RE = re.compile(r"^com\.apple\.os\.update-([0-9A-F]{64})$")
 _APPLE_OS_BUILD_RE = re.compile(r"^[0-9]{2}[A-Z][0-9A-Za-z]{1,31}$")
-_APPLE_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+_APPLE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _APPLE_SYSTEM_SNAPSHOT_DEVICE_RE = re.compile(r"^disk[0-9]+s[0-9]+s[0-9]+$")
 
 _SECCOMP_RET_ALLOW = 0x7FFF0000
@@ -80,17 +77,13 @@ _F_SEAL_SEAL = 0x0001
 _F_SEAL_SHRINK = 0x0002
 _F_SEAL_GROW = 0x0004
 _F_SEAL_WRITE = 0x0008
-_FULL_C6_SECCOMP_REQUIRED_SEALS = (
-    _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL
-)
+_FULL_C6_SECCOMP_REQUIRED_SEALS = _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL
 _LINUX_SECCOMP_LEASE_TOKEN = object()
 _LINUX_SOCKETPAIR_SYSCALL_X86_64 = 53
 _LINUX_AF_UNIX = 1
 _LINUX_SOCK_SEQPACKET = 5
 _LINUX_SOCK_CLOEXEC = 0x00080000
-_LINUX_RUST_PROCESS_SOCKETPAIR_TYPE = (
-    _LINUX_SOCK_SEQPACKET | _LINUX_SOCK_CLOEXEC
-)
+_LINUX_RUST_PROCESS_SOCKETPAIR_TYPE = _LINUX_SOCK_SEQPACKET | _LINUX_SOCK_CLOEXEC
 _SECCOMP_DATA_ARGUMENT_WORDS = (
     (16, _LINUX_AF_UNIX),
     (20, 0),
@@ -179,9 +172,7 @@ _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS = frozenset(
 _MAX_BUBBLEWRAP_BYTES = 64 * 1024 * 1024
 
 SandboxAccess = Literal["read", "read-execute", "read-write"]
-SandboxEngine = Literal[
-    "linux-bwrap-landlock-v1", "macos-sandbox-exec-v1"
-]
+SandboxEngine = Literal["linux-bwrap-landlock-v1", "macos-sandbox-exec-v1"]
 
 
 class FullC6ReadSandboxError(RuntimeError):
@@ -208,9 +199,7 @@ class LinuxSeccompLease:
         identity: tuple[int, int, int],
     ) -> None:
         if token is not _LINUX_SECCOMP_LEASE_TOKEN:
-            raise TypeError(
-                "Linux seccomp leases must be created by the Full C6 factory"
-            )
+            raise TypeError("Linux seccomp leases must be created by the artifact build factory")
         self._token = token
         self._fd = fd
         self._owner_pid = owner_pid
@@ -224,18 +213,11 @@ class LinuxSeccompLease:
 
     def fileno(self) -> int:
         """Return the live descriptor or fail closed for an invalid lease."""
-        if (
-            getattr(self, "_token", None) is not _LINUX_SECCOMP_LEASE_TOKEN
-            or self.closed
-        ):
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp lease is invalid or closed"
-            )
+        if getattr(self, "_token", None) is not _LINUX_SECCOMP_LEASE_TOKEN or self.closed:
+            raise FullC6ReadSandboxError("artifact build Linux seccomp lease is invalid or closed")
         descriptor = getattr(self, "_fd", -1)
         if type(descriptor) is not int or descriptor < 3:
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp lease descriptor is invalid"
-            )
+            raise FullC6ReadSandboxError("artifact build Linux seccomp lease descriptor is invalid")
         return descriptor
 
     def close(self) -> None:
@@ -303,14 +285,14 @@ class SandboxPathRule:
     def __post_init__(self) -> None:
         path = Path(self.path)
         if not path.is_absolute() or len(os.fsencode(path)) > _MAX_PATH_BYTES:
-            raise ValueError("Full C6 sandbox path must be a bounded absolute path")
+            raise ValueError("artifact build sandbox path must be a bounded absolute path")
         if self.access not in {"read", "read-execute", "read-write"}:
-            raise ValueError("Full C6 sandbox access is invalid")
+            raise ValueError("artifact build sandbox access is invalid")
         if (
             type(self.logical_role) is not str
             or re.fullmatch(r"[a-z][a-z0-9-]{0,127}", self.logical_role) is None
         ):
-            raise ValueError("Full C6 sandbox logical role is invalid")
+            raise ValueError("artifact build sandbox logical role is invalid")
         object.__setattr__(self, "path", path)
 
 
@@ -362,7 +344,7 @@ class UnavailableMacOSPlatformAnchorProvider:
         """Reject because no authenticated snapshot provider exists."""
         del expected
         raise FullC6ReadSandboxError(
-            "Full C6 cannot verify the active macOS APFS/SSV platform seal"
+            "artifact build cannot verify the active macOS APFS/SSV platform seal"
         )
 
 
@@ -372,11 +354,11 @@ class AppleAPFSPlatformAnchorProvider:
     def verify_active_anchor(self, expected: MacOSPlatformAnchor) -> None:
         """Recollect and compare the active authenticated APFS snapshot."""
         if type(expected) is not MacOSPlatformAnchor:
-            raise FullC6ReadSandboxError("Full C6 macOS platform anchor is invalid")
+            raise FullC6ReadSandboxError("artifact build macOS platform anchor is invalid")
         observed = capture_active_macos_platform_anchor()
         if observed != expected:
             raise FullC6ReadSandboxError(
-                "Full C6 active macOS APFS/SSV platform seal changed"
+                "artifact build active macOS APFS/SSV platform seal changed"
             )
 
 
@@ -391,36 +373,34 @@ class FullC6ReadSandboxPlan:
 
     def __post_init__(self) -> None:
         if self.target_triple not in _SUPPORTED_TARGETS:
-            raise ValueError("Full C6 sandbox target is unsupported")
+            raise ValueError("artifact build sandbox target is unsupported")
         expected_engine: SandboxEngine = (
             "macos-sandbox-exec-v1"
             if self.target_triple == "aarch64-apple-darwin"
             else "linux-bwrap-landlock-v1"
         )
         if self.engine != expected_engine:
-            raise ValueError("Full C6 sandbox engine does not match the target")
+            raise ValueError("artifact build sandbox engine does not match the target")
         rules = tuple(self.rules)
         if not rules or len(rules) > _MAX_RULES:
-            raise ValueError("Full C6 sandbox rule count is outside the bound")
+            raise ValueError("artifact build sandbox rule count is outside the bound")
         if not all(type(rule) is SandboxPathRule for rule in rules):
-            raise TypeError("Full C6 sandbox rule has an invalid type")
+            raise TypeError("artifact build sandbox rule has an invalid type")
         keys = [(rule.logical_role, rule.access, os.fsencode(rule.path)) for rule in rules]
         if keys != sorted(keys) or len({item[2] for item in keys}) != len(keys):
-            raise ValueError("Full C6 sandbox rules are not canonical and unique")
+            raise ValueError("artifact build sandbox rules are not canonical and unique")
         if self.target_triple == "x86_64-unknown-linux-gnu":
             _validate_linux_rules(rules)
         if _SHA256_RE.fullmatch(self.platform_anchor_sha256) is None:
-            raise ValueError("Full C6 sandbox platform anchor digest is invalid")
+            raise ValueError("artifact build sandbox platform anchor digest is invalid")
         object.__setattr__(self, "rules", rules)
 
     @property
     def digest(self) -> str:
         """Bind semantic rules without exposing private absolute paths."""
-        rows = [
-            f"{rule.logical_role}\0{rule.access}" for rule in self.rules
-        ]
+        rows = [f"{rule.logical_role}\0{rule.access}" for rule in self.rules]
         payload = (
-            "rextio.full-c6-read-sandbox-plan.v1\0"
+            "rextio.artifact-read-sandbox-plan.v2\0"
             + self.target_triple
             + "\0"
             + self.engine
@@ -459,25 +439,19 @@ class FullC6SandboxLaunch:
     def __post_init__(self) -> None:
         if self.seccomp_lease is None:
             if self.pass_fds or self.seccomp_sha256 is not None:
-                raise ValueError(
-                    "Full C6 launch has an invalid seccomp capability contract"
-                )
+                raise ValueError("artifact build launch has an invalid seccomp capability contract")
             return
         try:
-            descriptor, observed_sha256 = _verify_linux_seccomp_lease(
-                self.seccomp_lease
-            )
+            descriptor, observed_sha256 = _verify_linux_seccomp_lease(self.seccomp_lease)
         except FullC6ReadSandboxError as exc:
-            raise ValueError("Full C6 launch seccomp lease is invalid") from exc
+            raise ValueError("artifact build launch seccomp lease is invalid") from exc
         if (
             self.pass_fds != (descriptor,)
             or type(self.seccomp_sha256) is not str
             or _SHA256_RE.fullmatch(self.seccomp_sha256) is None
             or self.seccomp_sha256 != observed_sha256
         ):
-            raise ValueError(
-                "Full C6 launch seccomp receipt or descriptor contract differs"
-            )
+            raise ValueError("artifact build launch seccomp receipt or descriptor contract differs")
 
     def close(self) -> None:
         """Release private launch capabilities after the subprocess spawns."""
@@ -538,19 +512,19 @@ def prepare_full_c6_sandbox_launch(
 ) -> FullC6SandboxLaunch:
     """Return a fail-closed launch boundary for one already-validated plan."""
     if type(plan) is not FullC6ReadSandboxPlan:
-        raise FullC6ReadSandboxError("Full C6 sandbox plan has an invalid type")
+        raise FullC6ReadSandboxError("artifact build sandbox plan has an invalid type")
     values = tuple(command)
     if (
         not values
         or len(values) > 512
         or not all(type(value) is str and value and "\0" not in value for value in values)
     ):
-        raise FullC6ReadSandboxError("Full C6 sandbox command is invalid")
+        raise FullC6ReadSandboxError("artifact build sandbox command is invalid")
     _verify_rule_roots(plan.rules)
     if plan.engine == "linux-bwrap-landlock-v1":
         if sys.platform != "linux" and bubblewrap_verifier is None:
             raise FullC6ReadSandboxError(
-                "Full C6 Linux namespace sandbox is unavailable on this host"
+                "artifact build Linux namespace sandbox is unavailable on this host"
             )
         _verify_linux_rule_types(plan.rules)
         bwrap_path = Path(bubblewrap)
@@ -558,22 +532,14 @@ def prepare_full_c6_sandbox_launch(
         bwrap_sha256 = verifier(bwrap_path)
         if _SHA256_RE.fullmatch(bwrap_sha256) is None:
             raise FullC6ReadSandboxError(
-                "Full C6 bubblewrap verifier returned an invalid digest"
+                "artifact build bubblewrap verifier returned an invalid digest"
             )
-        seccomp_fd, seccomp_sha256 = _verify_linux_seccomp_lease(
-            linux_seccomp_lease
-        )
+        seccomp_fd, seccomp_sha256 = _verify_linux_seccomp_lease(linux_seccomp_lease)
         if linux_payload_environment is None:
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux payload environment is missing"
-            )
+            raise FullC6ReadSandboxError("artifact build Linux payload environment is missing")
         try:
-            environment_rows = canonical_linux_payload_environment(
-                linux_payload_environment
-            )
-            environment_sha256 = linux_payload_environment_digest(
-                linux_payload_environment
-            )
+            environment_rows = canonical_linux_payload_environment(linux_payload_environment)
+            environment_sha256 = linux_payload_environment_digest(linux_payload_environment)
         except FullC6LinuxLauncherError as exc:
             raise FullC6ReadSandboxError(str(exc)) from exc
         command_wrapper, virtual_rows = _linux_bubblewrap_command(
@@ -585,7 +551,7 @@ def prepare_full_c6_sandbox_launch(
             environment_sha256=environment_sha256,
         )
         profile_payload = (
-            "rextio.full-c6-linux-sandbox-profile.v1\0"
+            "rextio.artifact-linux-sandbox-profile.v2\0"
             + plan.digest
             + "\0"
             + bwrap_sha256
@@ -616,12 +582,12 @@ def prepare_full_c6_sandbox_launch(
 
     if linux_seccomp_lease is not None:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease is invalid for the macOS sandbox"
+            "artifact build Linux seccomp lease is invalid for the macOS sandbox"
         )
     if macos_anchor is None or type(macos_anchor) is not MacOSPlatformAnchor:
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor is missing")
+        raise FullC6ReadSandboxError("artifact build macOS platform anchor is missing")
     if macos_anchor.digest != plan.platform_anchor_sha256:
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor differs from the plan")
+        raise FullC6ReadSandboxError("artifact build macOS platform anchor differs from the plan")
     provider = macos_anchor_provider or AppleAPFSPlatformAnchorProvider()
     provider.verify_active_anchor(macos_anchor)
     _verify_sandbox_exec(sandbox_exec)
@@ -644,53 +610,42 @@ def _verify_rule_roots(rules: Sequence[SandboxPathRule]) -> None:
         try:
             observed = os.lstat(rule.path)
         except OSError as exc:
-            raise FullC6ReadSandboxError("Full C6 sandbox path is unavailable") from exc
+            raise FullC6ReadSandboxError("artifact build sandbox path is unavailable") from exc
         if stat.S_ISLNK(observed.st_mode) or not (
             stat.S_ISREG(observed.st_mode)
             or stat.S_ISDIR(observed.st_mode)
             or stat.S_ISCHR(observed.st_mode)
         ):
-            raise FullC6ReadSandboxError("Full C6 sandbox path type is unsafe")
+            raise FullC6ReadSandboxError("artifact build sandbox path type is unsafe")
         if stat.S_ISCHR(observed.st_mode) and rule.logical_role != "required-device":
-            raise FullC6ReadSandboxError("Full C6 sandbox device role is invalid")
+            raise FullC6ReadSandboxError("artifact build sandbox device role is invalid")
         if stat.S_ISCHR(observed.st_mode) and rule.access == "read-execute":
-            raise FullC6ReadSandboxError("Full C6 sandbox device cannot be executable")
+            raise FullC6ReadSandboxError("artifact build sandbox device cannot be executable")
 
 
 def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
     """Validate the closed Linux namespace vocabulary without reading paths."""
     project = [rule for rule in rules if rule.logical_role == "project-root"]
     build = [rule for rule in rules if rule.logical_role == "build-root"]
-    loaders = [
-        rule for rule in rules if rule.logical_role == "runtime-loader-mirror"
-    ]
-    toolchain = [
-        rule for rule in rules if rule.logical_role.startswith("toolchain-")
-    ]
-    support = [
-        rule for rule in rules if rule.logical_role.startswith("support-")
-    ]
-    launcher = [
-        rule for rule in rules if rule.logical_role.startswith("launcher-support-")
-    ]
+    loaders = [rule for rule in rules if rule.logical_role == "runtime-loader-mirror"]
+    toolchain = [rule for rule in rules if rule.logical_role.startswith("toolchain-")]
+    support = [rule for rule in rules if rule.logical_role.startswith("support-")]
+    launcher = [rule for rule in rules if rule.logical_role.startswith("launcher-support-")]
     recognized = {
-        id(rule)
-        for rule in (*project, *build, *loaders, *toolchain, *support, *launcher)
+        id(rule) for rule in (*project, *build, *loaders, *toolchain, *support, *launcher)
     }
     if len(recognized) != len(rules):
-        raise ValueError("Full C6 Linux sandbox contains an unknown semantic role")
+        raise ValueError("artifact build Linux sandbox contains an unknown semantic role")
     if len(project) != 1 or project[0].access != "read":
-        raise ValueError("Full C6 Linux sandbox requires one read-only project-root")
+        raise ValueError("artifact build Linux sandbox requires one read-only project-root")
     if len(build) != 1 or build[0].access != "read-write":
-        raise ValueError("Full C6 Linux sandbox requires one writable build-root")
+        raise ValueError("artifact build Linux sandbox requires one writable build-root")
     if len(loaders) != 1 or loaders[0].access != "read-execute":
         raise ValueError(
-            "Full C6 Linux sandbox requires one executable runtime-loader-mirror"
+            "artifact build Linux sandbox requires one executable runtime-loader-mirror"
         )
     if not toolchain or not support:
-        raise ValueError(
-            "Full C6 Linux sandbox requires toolchain and support leaves"
-        )
+        raise ValueError("artifact build Linux sandbox requires toolchain and support leaves")
     required_special = {
         "toolchain-ar": "read-execute",
         "toolchain-cargo": "read-execute",
@@ -712,9 +667,7 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
     for role, access in required_special.items():
         rule = by_role.get(role)
         if rule is None or rule.access != access:
-            raise ValueError(
-                "Full C6 Linux sandbox is missing a fixed launcher input"
-            )
+            raise ValueError("artifact build Linux sandbox is missing a fixed launcher input")
     rust_sysroot_lib = by_role["toolchain-rust-sysroot"].path
     rust_sysroot = rust_sysroot_lib.parent
     if (
@@ -724,17 +677,16 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
         or by_role["toolchain-rustc"].path != rust_sysroot / "bin" / "rustc"
     ):
         raise ValueError(
-            "Full C6 Linux Cargo or rustc differs from the exact Rust sysroot leaf"
+            "artifact build Linux Cargo or rustc differs from the exact Rust sysroot leaf"
         )
     python_library_root = by_role["support-python-library-root"].path
     if (
-        by_role["toolchain-python311-stdlib"].path
-        != python_library_root / "python3.11"
+        by_role["toolchain-python311-stdlib"].path != python_library_root / "python3.11"
         or by_role["toolchain-python311-runtime-library"].path
         != python_library_root / "libpython3.11.so.1.0"
     ):
         raise ValueError(
-            "Full C6 Linux Python runtime differs from the exact library root leaves"
+            "artifact build Linux Python runtime differs from the exact library root leaves"
         )
     for rule, prefix in (
         *((rule, "toolchain-") for rule in toolchain),
@@ -743,11 +695,9 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
     ):
         leaf = rule.logical_role.removeprefix(prefix)
         if _LINUX_ROLE_LEAF_RE.fullmatch(leaf) is None:
-            raise ValueError("Full C6 Linux sandbox leaf role is invalid")
+            raise ValueError("artifact build Linux sandbox leaf role is invalid")
         if rule.access == "read-write":
-            raise ValueError(
-                "Full C6 Linux toolchain/support inputs must be read-only"
-            )
+            raise ValueError("artifact build Linux toolchain/support inputs must be read-only")
     fixed_toolchain_roles = {
         "toolchain-ar",
         "toolchain-cargo",
@@ -762,12 +712,12 @@ def _validate_linux_rules(rules: Sequence[SandboxPathRule]) -> None:
     }
     if {rule.logical_role for rule in toolchain} != fixed_toolchain_roles:
         raise ValueError(
-            "Full C6 Linux sandbox toolchain role set differs from the fixed contract"
+            "artifact build Linux sandbox toolchain role set differs from the fixed contract"
         )
     destinations = tuple(_linux_rule_destination(rule) for rule in rules)
     exposed = tuple(destination for destination in destinations if destination is not None)
     if len(set(exposed)) != len(exposed):
-        raise ValueError("Full C6 Linux sandbox virtual destinations collide")
+        raise ValueError("artifact build Linux sandbox virtual destinations collide")
     _validate_linux_unmapped_virtual_targets(exposed)
 
 
@@ -777,31 +727,23 @@ def _validate_linux_unmapped_virtual_targets(
     """Keep denied host aliases outside every bubblewrap virtual mapping."""
     runtime_root = PurePosixPath(FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT)
     targets = tuple(
-        PurePosixPath(value)
-        for value in sorted(_LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS)
+        PurePosixPath(value) for value in sorted(_LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS)
     )
-    if (
-        len(targets) != 6
-        or any(
-            not target.is_absolute()
-            or target.as_posix() not in _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS
-            or target == runtime_root
-            or runtime_root in target.parents
-            for target in targets
-        )
+    if len(targets) != 6 or any(
+        not target.is_absolute()
+        or target.as_posix() not in _LINUX_DENIED_UNMAPPED_VIRTUAL_TARGETS
+        or target == runtime_root
+        or runtime_root in target.parents
+        for target in targets
     ):
-        raise ValueError(
-            "Full C6 Linux denied unmapped virtual target policy is invalid"
-        )
+        raise ValueError("artifact build Linux denied unmapped virtual target policy is invalid")
     mapped = tuple(PurePosixPath(value) for value in destinations)
     if any(
         target == destination or destination in target.parents
         for target in targets
         for destination in mapped
     ):
-        raise ValueError(
-            "Full C6 Linux sandbox exposes a denied unmapped virtual target"
-        )
+        raise ValueError("artifact build Linux sandbox exposes a denied unmapped virtual target")
 
 
 def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
@@ -810,13 +752,13 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             observed = os.lstat(rule.path)
         except OSError as exc:
             raise FullC6ReadSandboxError(
-                "Full C6 Linux sandbox path is unavailable"
+                "artifact build Linux sandbox path is unavailable"
             ) from exc
         if rule.logical_role in {"project-root", "build-root"} and not stat.S_ISDIR(
             observed.st_mode
         ):
             raise FullC6ReadSandboxError(
-                "Full C6 Linux project/build mapping must be a directory"
+                "artifact build Linux project/build mapping must be a directory"
             )
         if rule.logical_role in {
             "toolchain-python311-stdlib",
@@ -826,7 +768,7 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             "support-runtime-libs",
         } and not stat.S_ISDIR(observed.st_mode):
             raise FullC6ReadSandboxError(
-                "Full C6 Linux runtime tree mapping must be a directory"
+                "artifact build Linux runtime tree mapping must be a directory"
             )
         if rule.logical_role in {
             "toolchain-python311",
@@ -841,14 +783,14 @@ def _verify_linux_rule_types(rules: Sequence[SandboxPathRule]) -> None:
             "support-pyo3-config",
         } and not stat.S_ISREG(observed.st_mode):
             raise FullC6ReadSandboxError(
-                "Full C6 Linux launcher mapping must be a regular file"
+                "artifact build Linux launcher mapping must be a regular file"
             )
-        if rule.logical_role == "runtime-loader-mirror" and not stat.S_ISREG(
-            observed.st_mode
-        ):
+        if rule.logical_role == "runtime-loader-mirror" and not stat.S_ISREG(observed.st_mode):
             raise FullC6ReadSandboxError(
-                "Full C6 Linux runtime loader must be a regular file"
+                "artifact build Linux runtime loader must be a regular file"
             )
+
+
 def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
     if rule.logical_role == "project-root":
         return _LINUX_PROJECT_DESTINATION
@@ -890,9 +832,7 @@ def _linux_rule_destination(rule: SandboxPathRule) -> str | None:
         return f"{_LINUX_SUPPORT_DESTINATION}/{leaf}"
     if rule.logical_role.startswith("launcher-support-"):
         return None
-    raise FullC6ReadSandboxError(
-        "Full C6 Linux sandbox contains an unknown semantic role"
-    )
+    raise FullC6ReadSandboxError("artifact build Linux sandbox contains an unknown semantic role")
 
 
 def _linux_bubblewrap_command(
@@ -905,7 +845,7 @@ def _linux_bubblewrap_command(
     environment_sha256: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if seccomp_fd is None:
-        raise FullC6ReadSandboxError("Full C6 Linux seccomp descriptor is missing")
+        raise FullC6ReadSandboxError("artifact build Linux seccomp descriptor is missing")
     mappings = sorted(
         (
             (destination, rule)
@@ -922,7 +862,7 @@ def _linux_bubblewrap_command(
         for destination, rule in mappings
     ):
         raise FullC6ReadSandboxError(
-            "Full C6 Linux payload executable is not a mapped executable input"
+            "artifact build Linux payload executable is not a mapped executable input"
         )
 
     arguments: list[str] = [os.fspath(bubblewrap), *_LINUX_BWRAP_FLAGS]
@@ -941,26 +881,19 @@ def _linux_bubblewrap_command(
     arguments.extend(("--dir", _LINUX_SUPPORT_DESTINATION))
     arguments.extend(("--dir", "/rextio/support/rextio"))
     arguments.extend(("--dir", FULL_C6_LINUX_RUNTIME_SUPPORT_ROOT))
-    if any(
-        destination == _LINUX_RUNTIME_LOADER_DESTINATION
-        for destination, _rule in mappings
-    ):
+    if any(destination == _LINUX_RUNTIME_LOADER_DESTINATION for destination, _rule in mappings):
         arguments.extend(("--dir", "/lib64"))
 
     virtual_rows: list[str] = []
     for destination, rule in mappings:
         operation = "--bind" if rule.logical_role == "build-root" else "--ro-bind"
         arguments.extend((operation, os.fspath(rule.path), destination))
-        virtual_rows.append(
-            f"{rule.logical_role}\0{rule.access}\0{operation}\0{destination}"
-        )
+        virtual_rows.append(f"{rule.logical_role}\0{rule.access}\0{operation}\0{destination}")
     for rule in sorted(
         (item for item in rules if _linux_rule_destination(item) is None),
         key=lambda item: (item.logical_role, item.access),
     ):
-        virtual_rows.append(
-            f"{rule.logical_role}\0{rule.access}\0pre-namespace-only"
-        )
+        virtual_rows.append(f"{rule.logical_role}\0{rule.access}\0pre-namespace-only")
     arguments.extend(("--dir", "/rextio/build/home"))
     arguments.extend(("--dir", "/rextio/build/cargo-home"))
     arguments.extend(("--dir", "/rextio/build/target"))
@@ -994,16 +927,13 @@ def _linux_mapping_rank(rule: SandboxPathRule) -> int:
         return 3
     if rule.logical_role == "runtime-loader-mirror":
         return 4
-    raise FullC6ReadSandboxError("Full C6 Linux mapping role is invalid")
+    raise FullC6ReadSandboxError("artifact build Linux mapping role is invalid")
 
 
 def _canonical_linux_payload_executable(value: str) -> str:
-    if (
-        value != FULL_C6_LINUX_CARGO
-        or len(os.fsencode(value)) > _MAX_PATH_BYTES
-    ):
+    if value != FULL_C6_LINUX_CARGO or len(os.fsencode(value)) > _MAX_PATH_BYTES:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux payload executable must be the fixed Cargo binary"
+            "artifact build Linux payload executable must be the fixed Cargo binary"
         )
     return value
 
@@ -1046,28 +976,26 @@ def linux_full_c6_seccomp_program() -> bytes:
 
 
 def create_linux_full_c6_seccomp_lease() -> LinuxSeccompLease:
-    """Create and seal the exact Linux Full C6 seccomp filter memfd."""
+    """Create and seal the exact Linux artifact build seccomp filter memfd."""
     if not _is_linux_platform():
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp memfd is unavailable on this host"
+            "artifact build Linux seccomp memfd is unavailable on this host"
         )
     descriptor: int | None = None
     try:
         descriptor = _memfd_create(
-            "rextio-full-c6-seccomp",
+            "rextio-artifact-seccomp",
             _MFD_CLOEXEC | _MFD_ALLOW_SEALING,
         )
         if type(descriptor) is not int or descriptor < 3:
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp memfd descriptor is invalid"
-            )
+            raise FullC6ReadSandboxError("artifact build Linux seccomp memfd descriptor is invalid")
         _write_exact_descriptor(
             descriptor,
             linux_full_c6_seccomp_program(),
         )
         if _seek_descriptor(descriptor, 0, os.SEEK_SET) != 0:
             raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp memfd offset cannot be reset"
+                "artifact build Linux seccomp memfd offset cannot be reset"
             )
         seal_result = _fcntl_descriptor(
             descriptor,
@@ -1075,15 +1003,11 @@ def create_linux_full_c6_seccomp_lease() -> LinuxSeccompLease:
             _FULL_C6_SECCOMP_REQUIRED_SEALS,
         )
         if type(seal_result) is not int or seal_result != 0:
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp memfd sealing failed"
-            )
+            raise FullC6ReadSandboxError("artifact build Linux seccomp memfd sealing failed")
         identity, _digest = _inspect_linux_seccomp_descriptor(descriptor)
         owner_pid = _process_id()
         if type(owner_pid) is not int or owner_pid <= 0:
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp lease owner is invalid"
-            )
+            raise FullC6ReadSandboxError("artifact build Linux seccomp lease owner is invalid")
         lease = LinuxSeccompLease(
             _LINUX_SECCOMP_LEASE_TOKEN,
             fd=descriptor,
@@ -1100,7 +1024,7 @@ def create_linux_full_c6_seccomp_lease() -> LinuxSeccompLease:
         if descriptor is not None:
             _close_descriptor_quietly(descriptor)
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp memfd cannot be created and sealed"
+            "artifact build Linux seccomp memfd cannot be created and sealed"
         ) from exc
 
 
@@ -1108,9 +1032,7 @@ def _verify_linux_seccomp_lease(
     lease: LinuxSeccompLease | None,
 ) -> tuple[int, str]:
     if type(lease) is not LinuxSeccompLease:
-        raise FullC6ReadSandboxError(
-            "Full C6 Linux requires a typed sealed seccomp lease"
-        )
+        raise FullC6ReadSandboxError("artifact build Linux requires a typed sealed seccomp lease")
     try:
         token = lease._token
         closed = lease._closed
@@ -1119,7 +1041,7 @@ def _verify_linux_seccomp_lease(
         identity = lease._identity
     except AttributeError as exc:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease is forged or incomplete"
+            "artifact build Linux seccomp lease is forged or incomplete"
         ) from exc
     if (
         token is not _LINUX_SECCOMP_LEASE_TOKEN
@@ -1134,7 +1056,7 @@ def _verify_linux_seccomp_lease(
         or not all(type(value) is int for value in identity)
     ):
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease is forged, stale, or closed"
+            "artifact build Linux seccomp lease is forged, stale, or closed"
         )
     _observed_identity, digest = _inspect_linux_seccomp_descriptor(
         descriptor,
@@ -1153,29 +1075,29 @@ def _inspect_linux_seccomp_descriptor(
         observed = _fstat_descriptor(descriptor)
     except OSError as exc:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease descriptor is unavailable"
+            "artifact build Linux seccomp lease descriptor is unavailable"
         ) from exc
     identity = (observed.st_dev, observed.st_ino, observed.st_size)
     if expected_identity is not None and identity != expected_identity:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease descriptor identity changed"
+            "artifact build Linux seccomp lease descriptor identity changed"
         )
     try:
         seals = _fcntl_descriptor(descriptor, _F_GET_SEALS)
     except OSError as exc:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease seals are unavailable"
+            "artifact build Linux seccomp lease seals are unavailable"
         ) from exc
     if type(seals) is not int or seals != _FULL_C6_SECCOMP_REQUIRED_SEALS:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease does not have the exact required seals"
+            "artifact build Linux seccomp lease does not have the exact required seals"
         )
     try:
         offset = _seek_descriptor(descriptor, 0, os.SEEK_CUR)
         payload = _pread_descriptor(descriptor, len(expected) + 1, 0)
     except OSError as exc:
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease cannot be inspected"
+            "artifact build Linux seccomp lease cannot be inspected"
         ) from exc
     if (
         not stat.S_ISREG(observed.st_mode)
@@ -1184,7 +1106,7 @@ def _inspect_linux_seccomp_descriptor(
         or payload != expected
     ):
         raise FullC6ReadSandboxError(
-            "Full C6 Linux seccomp lease does not contain the exact filter"
+            "artifact build Linux seccomp lease does not contain the exact filter"
         )
     return identity, hashlib.sha256(expected).hexdigest()
 
@@ -1218,9 +1140,7 @@ def _write_exact_descriptor(descriptor: int, payload: bytes) -> None:
     while offset < len(payload):
         written = _write_descriptor(descriptor, payload[offset:])
         if type(written) is not int or written <= 0 or written > len(payload) - offset:
-            raise FullC6ReadSandboxError(
-                "Full C6 Linux seccomp memfd write was incomplete"
-            )
+            raise FullC6ReadSandboxError("artifact build Linux seccomp memfd write was incomplete")
         offset += written
 
 
@@ -1260,11 +1180,11 @@ def _verify_bubblewrap(path: Path) -> str:
         or raw_path != os.path.normpath(raw_path)
         or len(os.fsencode(path)) > _MAX_PATH_BYTES
     ):
-        raise FullC6ReadSandboxError("Full C6 bubblewrap path is not canonical")
+        raise FullC6ReadSandboxError("artifact build bubblewrap path is not canonical")
     try:
         observed = os.lstat(path)
     except OSError as exc:
-        raise FullC6ReadSandboxError("Full C6 bubblewrap is unavailable") from exc
+        raise FullC6ReadSandboxError("artifact build bubblewrap is unavailable") from exc
     if (
         stat.S_ISLNK(observed.st_mode)
         or not stat.S_ISREG(observed.st_mode)
@@ -1274,22 +1194,20 @@ def _verify_bubblewrap(path: Path) -> str:
         or not observed.st_mode & 0o111
         or not os.access(path, os.X_OK)
     ):
-        raise FullC6ReadSandboxError("Full C6 bubblewrap executable is unsafe")
+        raise FullC6ReadSandboxError("artifact build bubblewrap executable is unsafe")
     parent = path.parent
     while True:
         try:
             parent_observed = os.lstat(parent)
         except OSError as exc:
-            raise FullC6ReadSandboxError(
-                "Full C6 bubblewrap parent is unavailable"
-            ) from exc
+            raise FullC6ReadSandboxError("artifact build bubblewrap parent is unavailable") from exc
         if (
             stat.S_ISLNK(parent_observed.st_mode)
             or not stat.S_ISDIR(parent_observed.st_mode)
             or parent_observed.st_uid != 0
             or parent_observed.st_mode & 0o022
         ):
-            raise FullC6ReadSandboxError("Full C6 bubblewrap parent is unsafe")
+            raise FullC6ReadSandboxError("artifact build bubblewrap parent is unsafe")
         if parent.parent == parent:
             break
         parent = parent.parent
@@ -1299,7 +1217,7 @@ def _verify_bubblewrap(path: Path) -> str:
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise FullC6ReadSandboxError("Full C6 bubblewrap could not be opened") from exc
+        raise FullC6ReadSandboxError("artifact build bubblewrap could not be opened") from exc
     try:
         before = os.fstat(descriptor)
         digest = hashlib.sha256()
@@ -1311,12 +1229,12 @@ def _verify_bubblewrap(path: Path) -> str:
             total += len(chunk)
             if total > _MAX_BUBBLEWRAP_BYTES:
                 raise FullC6ReadSandboxError(
-                    "Full C6 bubblewrap executable exceeds the byte bound"
+                    "artifact build bubblewrap executable exceeds the byte bound"
                 )
             digest.update(chunk)
         after = os.fstat(descriptor)
     except OSError as exc:
-        raise FullC6ReadSandboxError("Full C6 bubblewrap could not be hashed") from exc
+        raise FullC6ReadSandboxError("artifact build bubblewrap could not be hashed") from exc
     finally:
         os.close(descriptor)
     identity_before = (
@@ -1340,24 +1258,24 @@ def _verify_bubblewrap(path: Path) -> str:
         after.st_ctime_ns,
     )
     if identity_before != identity_after or before.st_ino != observed.st_ino:
-        raise FullC6ReadSandboxError("Full C6 bubblewrap changed while hashing")
+        raise FullC6ReadSandboxError("artifact build bubblewrap changed while hashing")
     return digest.hexdigest()
 
 
 def _verify_sandbox_exec(path: Path) -> None:
     if path != Path("/usr/bin/sandbox-exec") or not path.is_absolute():
-        raise FullC6ReadSandboxError("Full C6 sandbox-exec path is not canonical")
+        raise FullC6ReadSandboxError("artifact build sandbox-exec path is not canonical")
     try:
         observed = os.lstat(path)
     except OSError as exc:
-        raise FullC6ReadSandboxError("Full C6 sandbox-exec is unavailable") from exc
+        raise FullC6ReadSandboxError("artifact build sandbox-exec is unavailable") from exc
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
-        raise FullC6ReadSandboxError("Full C6 sandbox-exec is unsafe")
+        raise FullC6ReadSandboxError("artifact build sandbox-exec is unsafe")
     if not os.access(path, os.X_OK):
-        raise FullC6ReadSandboxError("Full C6 sandbox-exec is not executable")
+        raise FullC6ReadSandboxError("artifact build sandbox-exec is not executable")
 
 
-_MACOS_PROFILE_CONTRACT_DOMAIN = "rextio.full-c6-macos-sandbox-profile.v2"
+_MACOS_PROFILE_CONTRACT_DOMAIN = "rextio.artifact-macos-sandbox-profile.v3"
 _MACOS_PROFILE_BASE_LINES = (
     "(version 1)",
     # system.sb supplies Apple's process/dyld bootstrap baseline.  The support
@@ -1367,10 +1285,10 @@ _MACOS_PROFILE_BASE_LINES = (
     "(deny default)",
     "(deny network*)",
     # Remove mutable/data-volume allowances inherited from system.sb.
-    '(deny file-read* file-test-existence file-map-executable '
+    "(deny file-read* file-test-existence file-map-executable "
     '(subpath "/private/var") '
     '(subpath "/private/etc") (subpath "/Library/Preferences"))',
-    '(deny file-read* file-write* file-test-existence file-map-executable '
+    "(deny file-read* file-write* file-test-existence file-map-executable "
     '(subpath "/Library") '
     '(subpath "/dev") (subpath "/cores") '
     '(subpath "/System/Volumes/Preboot"))',
@@ -1394,7 +1312,7 @@ def _macos_profile_bindings(
         try:
             observed = os.lstat(rule.path)
         except OSError as exc:
-            raise FullC6ReadSandboxError("Full C6 sandbox path is unavailable") from exc
+            raise FullC6ReadSandboxError("artifact build sandbox path is unavailable") from exc
         selector = "subpath" if stat.S_ISDIR(observed.st_mode) else "literal"
         bindings.append((rule, selector))
     return tuple(bindings)
@@ -1446,8 +1364,7 @@ def _macos_profile_contract_sha256(
     already authenticated plan/platform anchor.
     """
     semantic_rows = sorted(
-        (rule.logical_role, rule.access, selector)
-        for rule, selector in bindings
+        (rule.logical_role, rule.access, selector) for rule, selector in bindings
     )
     lines = list(_MACOS_PROFILE_BASE_LINES)
     occurrences: dict[tuple[str, SandboxAccess, str], int] = {}
@@ -1466,12 +1383,7 @@ def _macos_profile_contract_sha256(
             )
         )
     payload = (
-        _MACOS_PROFILE_CONTRACT_DOMAIN
-        + "\0"
-        + plan.digest
-        + "\0"
-        + "\n".join(lines)
-        + "\n"
+        _MACOS_PROFILE_CONTRACT_DOMAIN + "\0" + plan.digest + "\0" + "\n".join(lines) + "\n"
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -1482,9 +1394,9 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
     try:
         observed = os.lstat(probe)
     except OSError as exc:
-        raise FullC6ReadSandboxError("Full C6 sandbox profile probe is unavailable") from exc
+        raise FullC6ReadSandboxError("artifact build sandbox profile probe is unavailable") from exc
     if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
-        raise FullC6ReadSandboxError("Full C6 sandbox profile probe is unsafe")
+        raise FullC6ReadSandboxError("artifact build sandbox profile probe is unsafe")
     probe_profile = profile + (
         f"(allow file-read* (literal {_sandbox_literal(str(probe))}))\n"
         f"(allow process-exec (literal {_sandbox_literal(str(probe))}))\n"
@@ -1499,17 +1411,19 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
             env={},
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise FullC6ReadSandboxError("Full C6 sandbox profile could not be compiled") from exc
+        raise FullC6ReadSandboxError(
+            "artifact build sandbox profile could not be compiled"
+        ) from exc
     if completed.returncode != 0:
-        raise FullC6ReadSandboxError("Full C6 sandbox profile failed its enforcement probe")
+        raise FullC6ReadSandboxError("artifact build sandbox profile failed its enforcement probe")
     # Prove that system.sb's mutable data-volume allowances were removed.
     stat_tool = Path("/usr/bin/stat")
     try:
         stat_observed = os.lstat(stat_tool)
     except OSError as exc:
-        raise FullC6ReadSandboxError("Full C6 sandbox denial probe is unavailable") from exc
+        raise FullC6ReadSandboxError("artifact build sandbox denial probe is unavailable") from exc
     if stat.S_ISLNK(stat_observed.st_mode) or not stat.S_ISREG(stat_observed.st_mode):
-        raise FullC6ReadSandboxError("Full C6 sandbox denial probe is unsafe")
+        raise FullC6ReadSandboxError("artifact build sandbox denial probe is unsafe")
     denial_profile = profile + (
         f"(allow file-read* (literal {_sandbox_literal(str(stat_tool))}))\n"
         f"(allow process-exec (literal {_sandbox_literal(str(stat_tool))}))\n"
@@ -1536,10 +1450,10 @@ def _compile_macos_profile(sandbox_exec: Path, profile: str) -> None:
                 env={},
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise FullC6ReadSandboxError("Full C6 sandbox denial probe failed") from exc
+            raise FullC6ReadSandboxError("artifact build sandbox denial probe failed") from exc
         if denied.returncode == 0:
             raise FullC6ReadSandboxError(
-                "Full C6 sandbox mutable-host read denial is ineffective"
+                "artifact build sandbox mutable-host read denial is ineffective"
             )
 
 
@@ -1552,16 +1466,16 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
     sandbox profile bytes are separate mandatory support-lock members.
     """
     if sys.platform != "darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor host is unsupported")
+        raise FullC6ReadSandboxError("artifact build macOS platform anchor host is unsupported")
     diskutil = Path("/usr/sbin/diskutil")
     sw_vers = Path("/usr/bin/sw_vers")
     for tool in (diskutil, sw_vers):
         try:
             observed = os.lstat(tool)
         except OSError as exc:
-            raise FullC6ReadSandboxError("Full C6 macOS anchor tool is unavailable") from exc
+            raise FullC6ReadSandboxError("artifact build macOS anchor tool is unavailable") from exc
         if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
-            raise FullC6ReadSandboxError("Full C6 macOS anchor tool is unsafe")
+            raise FullC6ReadSandboxError("artifact build macOS anchor tool is unsafe")
     environment = {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/usr/sbin"}
     try:
         disk = subprocess.run(
@@ -1579,7 +1493,7 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
             env=environment,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor probe failed") from exc
+        raise FullC6ReadSandboxError("artifact build macOS platform anchor probe failed") from exc
     if (
         disk.returncode != 0
         or build.returncode != 0
@@ -1588,14 +1502,16 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
         or not build.stdout
         or len(build.stdout) > 1024
     ):
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor probe failed")
+        raise FullC6ReadSandboxError("artifact build macOS platform anchor probe failed")
     try:
         document = plistlib.loads(disk.stdout)
         os_build = build.stdout.decode("ascii").strip()
     except (ValueError, UnicodeDecodeError, plistlib.InvalidFileException) as exc:
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor output is malformed") from exc
+        raise FullC6ReadSandboxError(
+            "artifact build macOS platform anchor output is malformed"
+        ) from exc
     if not isinstance(document, dict) or _APPLE_OS_BUILD_RE.fullmatch(os_build) is None:
-        raise FullC6ReadSandboxError("Full C6 macOS platform anchor output is malformed")
+        raise FullC6ReadSandboxError("artifact build macOS platform anchor output is malformed")
     snapshot_name = document.get("APFSSnapshotName")
     match = _APPLE_SNAPSHOT_RE.fullmatch(snapshot_name) if type(snapshot_name) is str else None
     snapshot_uuid = document.get("APFSSnapshotUUID")
@@ -1619,7 +1535,7 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
         or _APPLE_SYSTEM_SNAPSHOT_DEVICE_RE.fullmatch(device_identifier) is None
     ):
         raise FullC6ReadSandboxError(
-            "Full C6 active macOS root is not one internal read-only sealed APFS snapshot"
+            "artifact build active macOS root is not one internal read-only sealed APFS snapshot"
         )
     return MacOSPlatformAnchor(
         authenticated_snapshot_id=match.group(1).lower(),
@@ -1631,14 +1547,14 @@ def capture_active_macos_platform_anchor() -> MacOSPlatformAnchor:
 
 def _sandbox_literal(value: str) -> str:
     if "\0" in value or any(ord(character) < 32 for character in value):
-        raise FullC6ReadSandboxError("Full C6 sandbox path cannot be encoded safely")
+        raise FullC6ReadSandboxError("artifact build sandbox path cannot be encoded safely")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def canonical_platform_context(target_triple: str) -> tuple[str, ...]:
     """Return bounded OS context; context never substitutes for support bytes."""
     if target_triple not in _SUPPORTED_TARGETS:
-        raise FullC6ReadSandboxError("Full C6 sandbox target is unsupported")
+        raise FullC6ReadSandboxError("artifact build sandbox target is unsupported")
     values = (
         platform.system(),
         platform.machine(),
@@ -1646,12 +1562,10 @@ def canonical_platform_context(target_triple: str) -> tuple[str, ...]:
         platform.version(),
     )
     if any(
-        not value
-        or len(value) > 1024
-        or any(ord(character) < 32 for character in value)
+        not value or len(value) > 1024 or any(ord(character) < 32 for character in value)
         for value in values
     ):
-        raise FullC6ReadSandboxError("Full C6 platform context is invalid")
+        raise FullC6ReadSandboxError("artifact build platform context is invalid")
     return values
 
 

@@ -1,8 +1,9 @@
 # Unsupported Features in 0.1.x
 
-Rextio is a focused, alpha-stage hybrid build tool. The current package version
-is **0.1.7** (published to PyPI on 2026-07-27; plugin API **1.7**; tooling
-contract **2.28.0**), superseding 0.1.6. The
+Rextio is a focused, alpha-stage hybrid build tool. The current published
+package version is **0.1.8** (published to PyPI on 2026-07-27; plugin API
+**1.7**; tooling contract **3.0.0**), superseding **0.1.7** (plugin API
+**1.7**; tooling contract **2.28.0**). The
 direct-Rust subset and boundary rules below still rest
 on the original **0.1.0** design; historical “0.1.0” wording in later sections
 is preserved as design scope, not as a claim that 0.1.0 is the only shipped
@@ -33,12 +34,13 @@ Cargo component-license policy receipt, and C6.12's separate scoped
 project-source/generated-Rust owner-declaration receipt, C6.13's scoped
 analysis-input receipt, C6.14's compact artifact-policy coverage inventory,
 and C6.15's exact scoped artifact-class policy receipt,
-plus the separate strict Full-C6 primitives in 2.21.0, bounded C5.2/initial CLI
+plus the separate strict artifact-contract primitives introduced in 2.21.0,
+bounded external-source linkage/initial CLI
 coordinator in 2.22.0, exact policy handoff/closure hardening in 2.23.0, and
 the public support-lock bootstrap plus path-free production sandbox/support
 receipt surface in 2.24.0. These surfaces are shipped but remain
 Experimental/Alpha. Train C boundaries are called out explicitly below so
-planning records are not mistaken for broad source-AOT support, broad Full C6,
+planning records are not mistaken for broad source-AOT or artifact authority,
 general package AOT, general hermeticity, CUDA support, or heavy host-lifecycle
 CI certification.
 
@@ -393,11 +395,11 @@ subject snapshot binding, closed license attestation); Rextio never
 auto-approves licenses. Outside the separately configured strict profile, every
 resulting plan still blocks `build` before
 configured toolchain or artifact work: missing/invalid authorization is
-`external-source-c6-blocked`, and verified authorization is the distinct
-`external-source-c5-not-implemented` block because the preview itself cannot
-authorize C5.2.
+`external-source-authorization-blocked`, and verified authorization is the
+distinct `external-source-native-linkage-not-implemented` block because the
+preview itself cannot authorize native linkage.
 
-The `strict-evidence` Alpha is the sole narrow exception. On macOS arm64 or
+The `strict-evidence` artifact-contract Alpha is the sole narrow exception. On macOS arm64 or
 Linux x86_64 with CPython 3.11/PyO3/Cargo, it requires a non-editable
 RECORD-verified, cache-free Rextio install, no project `.rextioignore`, a sealed
 bounded project Python namespace, and owner-pinned Cargo lock/vendor inputs for
@@ -457,7 +459,8 @@ public nor signed identity.
 One local macOS arm64 run observed about 104,645 members / 2.67 GB and about
 45 seconds for each full verification. This is an observation, not a limit or
 guarantee. Evidence for the current `HEAD` on macOS arm64 and Linux x86_64
-requires the manual `python scripts/validate-full-c6-host.py` host validation and is not
+requires the manual
+`python scripts/validate-artifact-contract-host.py` host validation and is not
 CI-certified. This bounded profile is not a general hermetic-build claim.
 
 The profile securely reopens exactly one
@@ -476,22 +479,24 @@ state—are outside the C5.2 closure. The final wheel includes the exact
 SourceLock PEP 639 license bytes under
 `.dist-info/licenses/external/<normalized-distribution>/<version>/`.
 
-Bootstrap v2 contains the exact C6.14+C5.2 technical rows, transformations, and
+The current artifact-policy bootstrap contains the exact bounded technical
+rows, transformations, and
 internal/external license observations but no owner decision or authority. The
 owner must provide a separate explicit completion and run `rextio policy
-finalize` to create canonical manifest v2. Signing-request and publication runs
+finalize` to create the canonical policy manifest. Signing-request and
+publication runs
 then rederive that lineage and fresh evidence. All three `rextio build`
 lifecycle stages perform two actual isolated builds; the process-local
-`FullC6ProductionAuthority` is not serializable distribution authority. Atomic
+production-authority seal is not serializable distribution authority. Atomic
 publication still requires an externally produced detached signature over
-`b"REXTIO-FULL-C6-ED25519-V1\0" + canonical_request_bytes`, a separately
+`b"REXTIO-ARTIFACT-AUTHORIZATION-ED25519-V2\0" + canonical_request_bytes`, a separately
 pinned 32-byte raw Ed25519 public key, and a canonical envelope containing the
 canonical Base64 form of the exact 64-byte raw signature. Signing the unprefixed
 request fails. The exact closed seven-field, compact, sorted UTF-8 envelope
 (with no trailing newline) is bounded to 16 KiB and is:
 
 ```json
-{"algorithm":"ed25519","domain":"rextio.full-c6-detached-signature.v1","kind":"full-c6-detached-signature","manifest_sha256":"<request-bytes-sha256>","public_key_sha256":"<raw-public-key-sha256>","schema_version":1,"signature":"<base64-raw-64-byte-signature>"}
+{"algorithm":"ed25519","domain":"rextio.artifact-authorization-detached-signature.v2","kind":"artifact-authorization-detached-signature","manifest_sha256":"<request-bytes-sha256>","public_key_sha256":"<raw-public-key-sha256>","schema_version":2,"signature":"<base64-raw-64-byte-signature>"}
 ```
 
 A successful atomic publication has seven files: the wheel, CycloneDX, SLSA
@@ -754,8 +759,9 @@ The Train C planning records shipped in 0.1.5 do not change these additional lim
   final local real-E2E at `f9eb5e6` certifies that complete installed-wheel
   lifecycle on macOS arm64; subsequent byte-budget and support-lock/sandbox
   hardening is unit-tested, while evidence for the current `HEAD` on macOS arm64
-  and Linux x86_64 requires manual host validation and is not CI-certified. Full-C6
-  authority outside macOS arm64/Linux x86_64, broader C5.2 linkage/codegen/
+  and Linux x86_64 requires manual host validation and is not CI-certified.
+  Strict artifact-contract authority outside macOS arm64/Linux x86_64, broader
+  external-source linkage/codegen/
   packaging, output license sets above 128 files or 64 MiB, general standards
   SBOM coverage, and general redistribution remain future work.
 - Device Provider API 1 has explicit selected-only discovery, preflight, and
