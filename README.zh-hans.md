@@ -4,10 +4,8 @@
 
 **把符合条件的 typed Python 函数编译为 Rust，其余一切保留在 Python fallback 上。**
 
-Rextio **0.1.7** 是本分支的 Core 候选（plugin API **1.7**、tooling contract
-**2.28.0**）。最新 **已发布** PyPI 仍为 **0.1.6**（2026-07-26；plugin API
-**1.6**、tooling contract **2.27.0** 和 readiness policy
-**11**，并取代 0.1.5。
+Rextio **0.1.7** 是 alpha 阶段的本地 Python 构建工具，于 2026-07-27 以
+plugin API **1.7**、tooling contract **2.28.0** 发布到 PyPI，取代 0.1.6。
 它找出可以安全下沉到 Rust
 的带类型 Python 函数，用 PyO3 提前（ahead-of-time）编译它们，其余部分
 全部继续通过生成的 Python fallback 代码运行 — import 路径与行为保持不变。
@@ -41,7 +39,7 @@ Rextio **0.1.7** 是本分支的 Core 候选（plugin API **1.7**、tooling cont
 这些数值仅代表对应 workload，并非对整个库的性能声明。这些 steady-state 行不含构建、import、首次调用和 worker 进程启动。Core 可执行文件因包含进程启动而单独报告。NumPy `dot` 保留为 BLAS negative control；手工向量化的 pandas/NumPy 重写可能更快。低于 1× 表示 Rextio 更慢；接近 1× 表示性能相当，而非实质性加速。
 结果不声称 BLAS、libtorch、TensorFlow kernel 或 CUDA 内核本身得到加速。
 
-标为 **candidate** 的包（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）为未发布版本，不是 PyPI 发行版。rextio-networkx 0.1.1 与 rextio-pandas 0.1.2 为已发布包。
+标为 **candidate** 的包（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）为测量时的 pre-release 候选修订，不是之后的 PyPI 产物。rextio-networkx 0.1.1 与 rextio-pandas 0.1.2 为已发布包。
 
 **完整方法、确切修订、证据、诊断与详细结果，请使用 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 仓库。**
 <!-- rextio-benchmark:end -->
@@ -339,6 +337,8 @@ Core **0.1.6** 于 2026-07-26 发布，使用 plugin API **1.6** 和 tooling
 contract **2.27.0**。它加入有限的插件比较表达式、Device Provider API 1
 选择/preflight/构建接线，以及静态 device-domain lowering 授权；Core 本身
 并不声称 CUDA framework 支持或加速器执行认证。
+Core **0.1.7** 于 2026-07-27 发布，使用 plugin API **1.7** 和 tooling
+contract **2.28.0**，加入可选的 plugin function-scope RAII 守卫。
 一般依赖下沉不随发行版捆绑；`try-native` 是显式的规划策略，没有安全的
 direct 下沉时仍会 fallback。
 

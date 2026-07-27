@@ -4,7 +4,7 @@ Status: **draft** (targets 0.1.1+, experimental tier; plugin API 1.0 → 1.1 →
 Builds on: [tooling-contract.md](tooling-contract.md) (protocol v2: `describe()`/`covers()`)
 First consumer: rextio-numpy
 
-**Release framing:** candidate core **0.1.7** implements plugin API **1.7** and
+**Release framing:** published core **0.1.7** implements plugin API **1.7** and
 tooling contract **2.28.0**. Published core **0.1.6** ships plugin API **1.6**,
 tooling contract **2.27.0**, and readiness policy **11**. Core 0.1.5 shipped plugin API
 1.4 and tooling contract 2.24.0. The standalone artifact
@@ -46,7 +46,7 @@ requires `[plugins] enabled = []` and excludes plugin, executable, rust-crate,
 native-top-level, embedding, and Windows artifacts; no plugin claim or
 `artifact_capability()` result can opt into that profile.
 
-Core 0.1.7 candidate implements plugin API **1.7** and tooling contract **2.28.0**.
+Core 0.1.7 implements plugin API **1.7** and tooling contract **2.28.0**.
 API 1.7 adds optional function-scope RAII guards (§11). Core 0.1.6 implements
 plugin API **1.6** and tooling contract **2.27.0**.
 API 1.5 was introduced by contract 2.25.0 with one
@@ -643,9 +643,9 @@ result equivalence with hypothesis — the same posture as core's own
   stable key and can flow from one claim into another, but source annotations
   cannot name it. Codegen rechecks that every `compare` claim still has an
   API-1.5 provider, guarding against stale IR/provider-version drift.
-- **Plugin API 1.7** (additive, same major; candidate with core **0.1.7**):
-  optional `function_scope_guard(ctx)` for used plugins; Core-owned let-bound
-  RAII guards; capabilities presence `function_scope_guard_declared`.
+- **Plugin API 1.7** (additive, same major; published with core **0.1.7** on
+  2026-07-27): optional `function_scope_guard(ctx)` for used plugins; Core-owned
+  let-bound RAII guards; capabilities presence `function_scope_guard_declared`.
 - **Plugin API 1.6** (additive, same major; published with core **0.1.6** on
   2026-07-26): adds optional
   structured static device-value metadata to `PluginType` and a defaulted

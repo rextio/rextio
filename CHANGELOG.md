@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.1.7 — unreleased candidate
+## 0.1.7 — 2026-07-27
 
-**Candidate package version** `0.1.7` (not yet tagged/published). Plugin API
-**1.7**, tooling contract **2.28.0**. Additive over published 0.1.6; API 1.1–1.6
-providers without the new hook keep load and generated-output behavior.
+**Published release.** Package version `0.1.7` is tagged and published to PyPI
+with plugin API **1.7** and tooling contract **2.28.0**. Additive over published
+0.1.6; API 1.1–1.6 providers without the new hook keep load and
+generated-output behavior.
 
 ### Plugin function-scope RAII guards (plugin API 1.7; tooling contract 2.28.0)
 

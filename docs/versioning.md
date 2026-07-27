@@ -1,25 +1,25 @@
 # Versioning policy
 
 Rextio follows [Semantic Versioning 2.0.0](https://semver.org/), with the
-explicit pre-1.0 caveats below. The current **candidate** package version on
-this branch is **0.1.7** (plugin API **1.7**; tooling contract **2.28.0**).
-The latest **published** PyPI release remains **0.1.6** (2026-07-26; plugin API
-**1.6**; tooling contract **2.27.0**; readiness policy **11**), superseding
-**0.1.5**. The related-package releases for the 0.1.2 line were integrated in
-strict order (not simultaneously): rextio-lsp 0.1.1 → core 0.1.2 →
-rextio-numpy 0.1.1 — see [tooling-contract.md](specs/tooling-contract.md).
-Release Train B likewise completed consumer first: rextio-lsp 0.1.2 → core
-0.1.4. Release Train C then shipped the Experimental/Alpha host source-AOT,
-executable, and bounded Full-C6/C5.2 surfaces in core 0.1.5. Core 0.1.6 added
-Experimental plugin comparison expressions, Device Provider API 1
-selection/preflight/build wiring, and static device-domain lowering
-authorization without claiming certified accelerator execution. Candidate
-0.1.7 adds optional function-scope RAII guards (plugin API 1.7), including an
-RXT075 Python-boundary fact and a provider-local lowering-active bit so a
-whole-function guard cannot silently span an in-process Python callback.
-Materialized plugin input/output conversion also stays outside guard state:
-guards begin after PyO3 input conversion and are explicitly unwound before a
-normal PyO3 output materializer runs.
+explicit pre-1.0 caveats below. The current **published** package version is
+**0.1.7** (2026-07-27; plugin API **1.7**; tooling contract **2.28.0**),
+superseding **0.1.6** (2026-07-26; plugin API **1.6**; tooling contract
+**2.27.0**; readiness policy **11**). The related-package releases for the
+0.1.2 line were integrated in strict order (not simultaneously): rextio-lsp
+0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 — see
+[tooling-contract.md](specs/tooling-contract.md). Release Train B likewise
+completed consumer first: rextio-lsp 0.1.2 → core 0.1.4. Release Train C then
+shipped the Experimental/Alpha host source-AOT, executable, and bounded
+Full-C6/C5.2 surfaces in core 0.1.5. Core 0.1.6 added Experimental plugin
+comparison expressions, Device Provider API 1 selection/preflight/build
+wiring, and static device-domain lowering authorization without claiming
+certified accelerator execution. Core 0.1.7 adds optional function-scope RAII
+guards (plugin API 1.7), including an RXT075 Python-boundary fact and a
+provider-local lowering-active bit so a whole-function guard cannot silently
+span an in-process Python callback. Materialized plugin input/output
+conversion also stays outside guard state: guards begin after PyO3 input
+conversion and are explicitly unwound before a normal PyO3 output materializer
+runs.
 
 ## Pre-1.0 (0.x): what "alpha" means
 

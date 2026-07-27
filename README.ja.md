@@ -5,11 +5,10 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio **0.1.7** はこのブランチの Core 候補（plugin API **1.7**、tooling contract
-**2.28.0**）です。最新の **公開** PyPI は **0.1.6**（2026-07-26; plugin API **1.6**、
-tooling contract **2.27.0**、readiness policy **11**）であり 0.1.5 を置き換えます。
-型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて PyO3 で事前
-（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
+Rextio **0.1.7** は alpha 段階のローカル Python ビルドツールで、2026-07-27 に
+plugin API **1.7**、tooling contract **2.28.0** として PyPI に公開され、0.1.6 を
+置き換えます。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
+PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
 
 <!-- rextio-benchmark:start -->
@@ -41,7 +40,7 @@ fallback コードで動かし続けます — import パスも動作もその�
 各数値は個別 workload の結果であり、ライブラリ全体の性能を示すものではありません。build、import、初回呼び出し、worker 起動時間は steady-state 行から除外します。Core 実行ファイルはプロセス起動を含むため別掲です。NumPy `dot` は BLAS negative control で、手動ベクトル化 pandas/NumPy 書き換えの方が速い場合があります。1× 未満は Rextio の方が遅く、1× 付近は実質的な高速化ではなく同等性能を示します。
 BLAS、libtorch、TensorFlow kernel、CUDA 自体の高速化を主張する結果ではありません。
 
-**candidate** と記したパッケージ（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）は未公開バージョンであり、PyPI リリースではありません。rextio-networkx 0.1.1 と rextio-pandas 0.1.2 はリリース済みパッケージです。
+**candidate** と記したパッケージ（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）は測定時点の pre-release 候補リビジョンであり、後から出た PyPI 成果物ではありません。rextio-networkx 0.1.1 と rextio-pandas 0.1.2 はリリース済みパッケージです。
 
 **方法論の全文、正確なリビジョン、証拠、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
 <!-- rextio-benchmark:end -->
@@ -360,6 +359,8 @@ Core **0.1.6** は plugin API **1.6**、tooling contract **2.27.0** として
 API 1 の選択・preflight・ビルド接続、静的 device-domain lowering 認可を
 追加しますが、Core 自体は CUDA framework サポートやアクセラレータ実行の
 認証を主張しません。
+Core **0.1.7** は plugin API **1.7**、tooling contract **2.28.0** として
+2026-07-27 に公開され、任意の plugin function-scope RAII ガードを追加します。
 一般的な依存 lowering はバンドルされません。`try-native` は明示的な計画
 ポリシーで、安全な direct lowering がなければやはり
 fallback します。

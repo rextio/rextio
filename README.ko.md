@@ -5,10 +5,8 @@
 **적합한 typed Python 함수는 Rust로 컴파일하고, 나머지는 전부 Python
 fallback으로 유지합니다.**
 
-Rextio **0.1.7**은 이 브랜치의 Core 후보(plugin API **1.7**, tooling contract
-**2.28.0**)입니다. 최신 **게시** PyPI 릴리스는 **0.1.6**(2026-07-26; plugin API
-**1.6**, tooling contract **2.27.0**, readiness policy **11**)이며 0.1.5를
-대체합니다.
+Rextio **0.1.7**은 alpha 단계 로컬 Python 빌드 도구로, 2026-07-27에 plugin API
+**1.7**, tooling contract **2.28.0**으로 PyPI에 게시되어 0.1.6을 대체합니다.
 타입이 지정된 Python
 함수 중 안전하게 Rust로 낮출 수 있는 것을 찾아 PyO3로 미리(ahead-of-time)
 컴파일하고, 나머지는 전부 생성된 Python fallback 코드로 계속 실행합니다 —
@@ -43,7 +41,7 @@ import 경로도, 동작도 그대로입니다.
 각 수치는 해당 workload의 결과이며 라이브러리 전체 성능을 뜻하지 않습니다. 빌드, import, 첫 호출, worker 프로세스 시작 시간은 이 steady-state 행에서 제외됩니다. Core 실행 파일은 프로세스 시작을 포함하므로 별도 보고됩니다. NumPy `dot`은 BLAS negative control이며 수동 벡터화한 pandas/NumPy 재작성은 더 빠를 수 있습니다. 1× 미만은 Rextio가 더 느렸다는 뜻이며, 1× 부근의 값은 실질적인 속도 향상이 아니라 성능이 대체로 동등하다는 뜻입니다.
 어떤 결과도 BLAS, libtorch, TensorFlow kernel 또는 CUDA 자체의 가속을 주장하지 않습니다.
 
-**candidate**로 표시된 패키지(Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, rextio-tensorflow 0.1.3)는 미배포 버전이며 PyPI 릴리스가 아닙니다. rextio-networkx 0.1.1과 rextio-pandas 0.1.2는 릴리스된 패키지입니다.
+**candidate**로 표시된 패키지(Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, rextio-tensorflow 0.1.3)는 측정 시점의 pre-release 후보 리비전이며, 이후 PyPI 아티팩트가 아닙니다. rextio-networkx 0.1.1과 rextio-pandas 0.1.2는 릴리스된 패키지입니다.
 
 **전체 방법론, 정확한 리비전, 증거, 진단, 상세 결과는 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 저장소를 사용하세요.**
 <!-- rextio-benchmark:end -->
@@ -305,7 +303,7 @@ CLI 파라미터 > 환경변수 > rextio.toml > 내장 기본값
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.6에서 구현된 native target은 Rust뿐입니다.
+0.1.7에서 구현된 native target은 Rust뿐입니다.
 
 Rextio 플러그인은 `pip`이나 `uv` 같은 도구로 설치하는 평범한 Python
 패키지입니다. 플러그인 패키지는 자신이 다루는 Python 패키지 이름을 포함한
@@ -355,6 +353,8 @@ Core **0.1.6**은 plugin API **1.6**, tooling contract **2.27.0**으로
 2026-07-26 게시되었습니다. 제한된 plugin 비교식, Device Provider API 1
 선택·preflight·빌드 연결, 정적 device-domain lowering 승인을 추가하지만
 Core 자체가 CUDA framework 지원이나 가속기 실행 인증을 주장하지는 않습니다.
+Core **0.1.7**은 plugin API **1.7**, tooling contract **2.28.0**으로
+2026-07-27 게시되며, 선택적 plugin function-scope RAII 가드를 추가합니다.
 일반 의존성 lowering은 번들되지 않습니다. `try-native`는 명시적 계획
 정책이며, 안전한 direct lowering이 없으면 여전히 fallback합니다.
 

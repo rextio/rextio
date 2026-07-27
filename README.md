@@ -5,15 +5,14 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio **0.1.7** is the current Core candidate on this branch (plugin API
-**1.7**, tooling contract **2.28.0**). The latest **published** PyPI release
-remains **0.1.6** (2026-07-26; plugin API **1.6**, tooling contract **2.27.0**,
-readiness policy **11**), superseding 0.1.5. It finds
+Rextio **0.1.7** is an alpha-stage local build tool for Python projects,
+published to PyPI on 2026-07-27 with plugin API **1.7**, tooling contract
+**2.28.0**, superseding 0.1.6. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
 
-**0.1.7 candidate:** optional plugin function-scope RAII guards (API 1.7 /
+**0.1.7:** optional plugin function-scope RAII guards (API 1.7 /
 contract 2.28.0) for used plugins on accepted generated native functions.
 
 <!-- rextio-benchmark:start -->
@@ -45,7 +44,7 @@ Stability: all six frozen headline rows passed the 10% stability veto. Three-run
 These are workload-specific results, not library-wide performance claims. Build, import, first-call, and worker-process startup are excluded from these steady-state rows. The Core executable is separate because process startup is included. NumPy `dot` remains a BLAS-owned negative control; a manually vectorized pandas/NumPy rewrite may be faster. Ratios below 1× mean Rextio was slower; values near 1× indicate parity, not a material speedup.
 No result claims intrinsic BLAS, libtorch, TensorFlow-kernel, or CUDA acceleration.
 
-Packages marked **candidate** (Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, and rextio-tensorflow 0.1.3) are unreleased versions, not PyPI releases. rextio-networkx 0.1.1 and rextio-pandas 0.1.2 are released packages.
+Packages marked **candidate** (Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, and rextio-tensorflow 0.1.3) were measured as pre-release candidate revisions, not later PyPI artifacts of those versions. rextio-networkx 0.1.1 and rextio-pandas 0.1.2 are released packages.
 
 **For full methodology, exact revisions, evidence, diagnostics, and detailed results, use the [rextio-benchmark](https://github.com/rextio/rextio-benchmark) repository.**
 <!-- rextio-benchmark:end -->
@@ -663,7 +662,7 @@ binding digest. `rextio capabilities` reports a configured provider/capability
 identity without provider discovery, preflight, or option disclosure. See
 [Device Provider API 1](docs/specs/device-provider.md).
 
-Core 0.1.7 candidate adds plugin API **1.7** / tooling contract **2.28.0** function-scope guards. Core 0.1.6 added plugin API **1.6** / tooling contract **2.27.0** static
+Core 0.1.7 adds plugin API **1.7** / tooling contract **2.28.0** function-scope guards. Core 0.1.6 added plugin API **1.6** / tooling contract **2.27.0** static
 device-domain authorization. An accepted
 accelerator plugin type contributes structured artifact requirements, and its
 lowerer receives a minimal redacted authorization only after the explicitly
@@ -1092,8 +1091,9 @@ Core **0.1.5** was published on 2026-07-23 with plugin API **1.4**, tooling
 contract **2.24.0**, and readiness policy **11**. Its Train C surfaces remain
 Experimental/Alpha under the bounded scope described above.
 Core **0.1.6** was published on 2026-07-26 with plugin API **1.6**, tooling
-contract **2.27.0**, and Device Provider API **1**. Core **0.1.7** candidate
-adds plugin API **1.7** / contract **2.28.0** function-scope RAII guards. It retains the same
+contract **2.27.0**, and Device Provider API **1**. Core **0.1.7** was
+published on 2026-07-27 with plugin API **1.7** and tooling contract
+**2.28.0** (function-scope RAII guards). It retains the same
 readiness policy and fail-closed Alpha boundaries.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
