@@ -1,13 +1,13 @@
-# Rextio 0.1.6 Notes
+# Rextio 0.1.7 Notes
 
 > **Security:** Rextio analyzes source, generates Rust, and runs external build
 > tools — treat it like a compiler and only build trusted projects. See
 > [`SECURITY.md`](./SECURITY.md) for the threat model and protections.
 
-> **Release status:** Package version **0.1.6** is published to PyPI on
-> 2026-07-26 (plugin API **1.6**; tooling contract **2.27.0**; readiness policy
-> **11**), superseding **0.1.5** (2026-07-23; tooling contract **2.24.0**).
-> Related 0.1.2-line
+> **Release status:** Package version **0.1.7** is published to PyPI on
+> 2026-07-27 (plugin API **1.7**; tooling contract **2.28.0**), superseding
+> **0.1.6** (2026-07-26; plugin API **1.6**; tooling contract **2.27.0**;
+> readiness policy **11**). Related 0.1.2-line
 > releases were published in the completed strict order: rextio-lsp 0.1.1 →
 > core 0.1.2 → rextio-numpy 0.1.1. Release Train B also completed consumer
 > first: rextio-lsp 0.1.2 → core 0.1.4.
@@ -15,8 +15,9 @@
 > and bounded Full-C6/C5.2 surfaces remaining Experimental/Alpha.
 > Core 0.1.6 adds bounded plugin comparison expressions, Device Provider API 1
 > selection/preflight/build wiring, and static device-domain lowering
-> authorization. Those additions remain Experimental/Alpha and do not
-> themselves claim CUDA framework support or certified accelerator execution.
+> authorization. Core 0.1.7 adds optional plugin function-scope RAII guards.
+> Those additions remain Experimental/Alpha and do not themselves claim CUDA
+> framework support or certified accelerator execution.
 > See [docs/specs/tooling-contract.md](./docs/specs/tooling-contract.md).
 
 Rextio 0.1.1 added the machine-readable tooling contract (`rextio
@@ -52,6 +53,12 @@ expressions and resident-result chaining; API 1.6 adds structured static
 device-domain requirements and a redacted lowering authorization after an
 explicit Device Provider API 1 selection has passed preflight. These contracts
 fail closed and are not CUDA framework support or certification claims.
+
+**0.1.7** advances to plugin API **1.7** and tooling contract **2.28.0**. API
+1.7 adds optional function-scope RAII guards for used plugins on accepted
+generated native functions (Core-owned bindings after input conversion,
+across the native body, and explicitly unwound before normal output
+materialization). Pre-1.7 providers keep load and generated-output behavior.
 
 Rextio proves a focused hybrid build workflow:
 

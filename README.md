@@ -5,18 +5,30 @@
 **Compiles eligible typed Python functions to Rust and keeps everything
 else on the Python fallback.**
 
-Rextio **0.1.6** is an alpha-stage local build tool for Python projects,
-published to PyPI on 2026-07-26 with plugin API **1.6**, tooling contract
-**2.27.0**, and readiness policy **11**, superseding 0.1.5. It finds
+Rextio **0.1.7** is an alpha-stage local build tool for Python projects,
+published to PyPI on 2026-07-27 with plugin API **1.7**, tooling contract
+**2.28.0**, superseding 0.1.6. It finds
 typed Python functions that can be safely lowered to Rust, compiles them ahead
 of time with PyO3, and keeps everything else running through generated Python
 fallback code - same imports, same behavior.
+
+**0.1.7:** optional plugin function-scope RAII guards (API 1.7 /
+contract 2.28.0) for used plugins on accepted generated native functions.
 
 <!-- rextio-benchmark:start -->
 ## Verified CPU benchmark snapshot
 
 Same Python source and deterministic inputs; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-Versions: rextio 0.1.7 candidate@b8b8ed11f6b7, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@cf461e677578, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@1fdb2e1cd91d, rextio-torch 0.1.3 candidate@1e92b24b154c.
+
+This snapshot used **Rextio Core together with all five first-party plugins**. Packages (PyPI name · version · repository):
+
+- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
+- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
+- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
+- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
+- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
+- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
+
 Selection: the chronologically first report (index 0) of exactly three qualifying publish reports; never selected by speedup.
 Stability: all six frozen headline rows passed the 10% stability veto. Three-run medians: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
 
@@ -32,10 +44,9 @@ Stability: all six frozen headline rows passed the 10% stability veto. Three-run
 These are workload-specific results, not library-wide performance claims. Build, import, first-call, and worker-process startup are excluded from these steady-state rows. The Core executable is separate because process startup is included. NumPy `dot` remains a BLAS-owned negative control; a manually vectorized pandas/NumPy rewrite may be faster. Ratios below 1× mean Rextio was slower; values near 1× indicate parity, not a material speedup.
 No result claims intrinsic BLAS, libtorch, TensorFlow-kernel, or CUDA acceleration.
 
-Packages marked candidate are unreleased exact Git commit pins, including Core 0.1.7 and rextio-torch 0.1.3; they are not PyPI releases. The same applies to rextio-numpy 0.1.3 and rextio-tensorflow 0.1.3.
-`candidate@` labels display the first 12 hexadecimal characters only; each candidate is verified and pinned by its full 40-character Git commit.
+Packages marked **candidate** (Core 0.1.7, rextio-numpy 0.1.3, rextio-torch 0.1.3, and rextio-tensorflow 0.1.3) were measured as pre-release candidate revisions, not later PyPI artifacts of those versions. rextio-networkx 0.1.1 and rextio-pandas 0.1.2 are released packages.
 
-[Canonical report](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [measurement commit](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [evidence commit](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
+**For full methodology, exact revisions, evidence, diagnostics, and detailed results, use the [rextio-benchmark](https://github.com/rextio/rextio-benchmark) repository.**
 <!-- rextio-benchmark:end -->
 
 **0.1.6 Release Train E foundation:** this published release adds bounded
@@ -638,7 +649,7 @@ Common settings:
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-Rust is the only implemented native target in 0.1.6.
+Rust is the only implemented native target in 0.1.7.
 
 Device-provider selection is an advanced, experimental build integration. It
 loads only the explicitly named `rextio.device_providers` entry point and
@@ -651,7 +662,7 @@ binding digest. `rextio capabilities` reports a configured provider/capability
 identity without provider discovery, preflight, or option disclosure. See
 [Device Provider API 1](docs/specs/device-provider.md).
 
-Core 0.1.6 adds plugin API **1.6** / tooling contract **2.27.0** static
+Core 0.1.7 adds plugin API **1.7** / tooling contract **2.28.0** function-scope guards. Core 0.1.6 added plugin API **1.6** / tooling contract **2.27.0** static
 device-domain authorization. An accepted
 accelerator plugin type contributes structured artifact requirements, and its
 lowerer receives a minimal redacted authorization only after the explicitly
@@ -1080,7 +1091,9 @@ Core **0.1.5** was published on 2026-07-23 with plugin API **1.4**, tooling
 contract **2.24.0**, and readiness policy **11**. Its Train C surfaces remain
 Experimental/Alpha under the bounded scope described above.
 Core **0.1.6** was published on 2026-07-26 with plugin API **1.6**, tooling
-contract **2.27.0**, and Device Provider API **1**. It retains the same
+contract **2.27.0**, and Device Provider API **1**. Core **0.1.7** was
+published on 2026-07-27 with plugin API **1.7** and tooling contract
+**2.28.0** (function-scope RAII guards). It retains the same
 readiness policy and fail-closed Alpha boundaries.
 General dependency lowering is not bundled; `try-native` is an explicit
 planning policy and still falls back when no safe direct lowering exists.
@@ -1166,7 +1179,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## Supported Direct Rust Subset
 
-Rextio 0.1.6 supports a deliberately small subset. This is the code
+Rextio 0.1.7 supports a deliberately small subset. This is the code
 that runs as native Rust.
 
 Supported types include:

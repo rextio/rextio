@@ -5,18 +5,26 @@
 **適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
 Python fallback のまま動かします。**
 
-Rextio **0.1.6** は、plugin API **1.6**、tooling contract **2.27.0**、
-readiness policy **11** として 2026-07-26 に PyPI 公開された alpha 段階の
-ローカルビルドツールです。0.1.5 を置き換えます。型付きの
-Python 関数のうち安全に Rust へ下ろせるものを見つけて PyO3 で事前
-（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
+Rextio **0.1.7** は alpha 段階のローカル Python ビルドツールで、2026-07-27 に
+plugin API **1.7**、tooling contract **2.28.0** として PyPI に公開され、0.1.6 を
+置き換えます。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
+PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
 fallback コードで動かし続けます — import パスも動作もそのままです。
 
 <!-- rextio-benchmark:start -->
 ## 検証済み CPU ベンチマーク
 
 同一の Python ソースと決定論的な入力; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-バージョン: rextio 0.1.7 candidate@b8b8ed11f6b7, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@cf461e677578, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@1fdb2e1cd91d, rextio-torch 0.1.3 candidate@1e92b24b154c.
+
+このスナップショットは **Rextio Core と 1st-party プラグイン 5 つすべて**を組み合わせて測定しました。パッケージ（PyPI 名 · バージョン · リポジトリ）:
+
+- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
+- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
+- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
+- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
+- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
+- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
+
 選択: 正確に 3 件の適格な publish レポートのうち時系列で最初のレポート（index 0）を使い、速度比では選択しません。
 安定性: 固定された 6 つの headline 行はすべて 10% の安定性 veto を通過しました。 3 回実行の中央値: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
 
@@ -32,10 +40,9 @@ fallback コードで動かし続けます — import パスも動作もその�
 各数値は個別 workload の結果であり、ライブラリ全体の性能を示すものではありません。build、import、初回呼び出し、worker 起動時間は steady-state 行から除外します。Core 実行ファイルはプロセス起動を含むため別掲です。NumPy `dot` は BLAS negative control で、手動ベクトル化 pandas/NumPy 書き換えの方が速い場合があります。1× 未満は Rextio の方が遅く、1× 付近は実質的な高速化ではなく同等性能を示します。
 BLAS、libtorch、TensorFlow kernel、CUDA 自体の高速化を主張する結果ではありません。
 
-candidate と記したパッケージは Core 0.1.7 と rextio-torch 0.1.3 を含む未公開の exact Git コミット固定であり、PyPI リリースではありません。rextio-numpy 0.1.3 と rextio-tensorflow 0.1.3 も同様です。
-`candidate@` は先頭 12 桁の 16 進表示のみで、各 candidate は完全な 40 桁 Git コミットで検証・固定されます。
+**candidate** と記したパッケージ（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）は測定時点の pre-release 候補リビジョンであり、後から出た PyPI 成果物ではありません。rextio-networkx 0.1.1 と rextio-pandas 0.1.2 はリリース済みパッケージです。
 
-[正規レポート](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [測定コミット](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [証拠コミット](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
+**方法論の全文、正確なリビジョン、証拠、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
 <!-- rextio-benchmark:end -->
 
 ```text
@@ -300,7 +307,7 @@ CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.6 で実装済みの native ターゲットは Rust だけです。
+0.1.7 で実装済みの native ターゲットは Rust だけです。
 
 Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
 パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
@@ -352,6 +359,8 @@ Core **0.1.6** は plugin API **1.6**、tooling contract **2.27.0** として
 API 1 の選択・preflight・ビルド接続、静的 device-domain lowering 認可を
 追加しますが、Core 自体は CUDA framework サポートやアクセラレータ実行の
 認証を主張しません。
+Core **0.1.7** は plugin API **1.7**、tooling contract **2.28.0** として
+2026-07-27 に公開され、任意の plugin function-scope RAII ガードを追加します。
 一般的な依存 lowering はバンドルされません。`try-native` は明示的な計画
 ポリシーで、安全な direct lowering がなければやはり
 fallback します。
@@ -436,7 +445,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.6 は意図的に小さな subset をサポートします。この subset が
+Rextio 0.1.7 は意図的に小さな subset をサポートします。この subset が
 native Rust として実行されるコードです。
 
 サポートされる型:

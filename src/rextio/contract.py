@@ -112,7 +112,11 @@ from __future__ import annotations
 # requirements, and a minimal resolved authorization passed to lowerers.
 # Accelerator lowering fails closed without an exact selected provider plan;
 # CPU-only and plugin-API-1.1-1.5 behavior remains unchanged.
+# Contract 2.28.0 adds plugin-API-1.7 function-scope RAII guard presence on the
+# capabilities/plugin manifest and related public records without changing
+# route, native-status, rejection, or promotion semantics. Pre-1.7 providers
+# and absent-hook providers keep prior generated-output behavior.
 # The strict surface deliberately excludes the general external-source, plugin,
 # executable, rust-crate, top-level, embedding, and Windows cases.
 # See docs/specs/tooling-contract.md §Contract versioning and §Positions.
-TOOLING_CONTRACT_VERSION = "2.27.0"
+TOOLING_CONTRACT_VERSION = "2.28.0"

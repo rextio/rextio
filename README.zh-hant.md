@@ -4,9 +4,8 @@
 
 **把符合條件的 typed Python 函式編譯為 Rust，其餘一切保留在 Python fallback 上。**
 
-Rextio **0.1.6** 是 alpha 階段本地建置工具，已於 2026-07-26 發佈至 PyPI，
-使用 plugin API **1.6**、tooling contract **2.27.0** 和 readiness policy
-**11**，並取代 0.1.5。
+Rextio **0.1.7** 是 alpha 階段的本地 Python 建置工具，於 2026-07-27 以
+plugin API **1.7**、tooling contract **2.28.0** 發佈到 PyPI，取代 0.1.6。
 它找出可以安全下沉到 Rust
 的帶型別 Python 函式，用 PyO3 提前（ahead-of-time）編譯它們，其餘部分
 全部繼續透過產生的 Python fallback 程式碼運行 — import 路徑與行為保持不變。
@@ -15,7 +14,16 @@ Rextio **0.1.6** 是 alpha 階段本地建置工具，已於 2026-07-26 發佈�
 ## 已驗證的 CPU 基準快照
 
 相同的 Python 原始碼和確定性輸入; **Mac16,11 / Apple M4 Pro**, **2026-07-26**, CPython **3.11.9**.
-版本: rextio 0.1.7 candidate@b8b8ed11f6b7, rextio-networkx 0.1.1, rextio-numpy 0.1.3 candidate@cf461e677578, rextio-pandas 0.1.2, rextio-tensorflow 0.1.3 candidate@1fdb2e1cd91d, rextio-torch 0.1.3 candidate@1e92b24b154c.
+
+本快照使用 **Rextio Core 與全部五個一等外掛** 共同測量。套件（PyPI 名稱 · 版本 · 儲存庫）：
+
+- [rextio](https://github.com/rextio/rextio) 0.1.7 candidate
+- [rextio-numpy](https://github.com/rextio/rextio-numpy) 0.1.3 candidate
+- [rextio-networkx](https://github.com/rextio/rextio-networkx) 0.1.1
+- [rextio-pandas](https://github.com/rextio/rextio-pandas) 0.1.2
+- [rextio-torch](https://github.com/rextio/rextio-torch) 0.1.3 candidate
+- [rextio-tensorflow](https://github.com/rextio/rextio-tensorflow) 0.1.3 candidate
+
 選擇：恰好三份合格 publish 報告中按時間順序第一份（index 0）；絕不按加速比選擇。
 穩定性：六個固定 headline 行全部通過了 10% 穩定性 veto。 三次執行中位數: Core 57.729×; NumPy 2.523×; NetworkX 3.679×; pandas 66.143×; Torch 1.017×; TensorFlow 1.040×.
 
@@ -31,10 +39,9 @@ Rextio **0.1.6** 是 alpha 階段本地建置工具，已於 2026-07-26 發佈�
 這些數值僅代表對應 workload，並非對整個函式庫的效能聲明。這些 steady-state 行不含建置、import、首次呼叫和 worker 行程啟動。Core 執行檔因包含行程啟動而單獨報告。NumPy `dot` 保留為 BLAS negative control；手動向量化的 pandas/NumPy 重寫可能更快。低於 1× 表示 Rextio 較慢；接近 1× 表示效能相當，而非實質性加速。
 結果不聲稱 BLAS、libtorch、TensorFlow kernel 或 CUDA 核心本身得到加速。
 
-標為 candidate 的套件（包括 Core 0.1.7 和 rextio-torch 0.1.3）是未發佈的 exact Git 提交固定，不是 PyPI 發行版；rextio-numpy 0.1.3 和 rextio-tensorflow 0.1.3 也同樣如此。
-`candidate@` 只顯示前 12 個十六進位字元；每個 candidate 都按完整 40 字元 Git 提交驗證並固定。
+標為 **candidate** 的套件（Core 0.1.7、rextio-numpy 0.1.3、rextio-torch 0.1.3、rextio-tensorflow 0.1.3）為測量時的 pre-release 候選修訂，不是之後的 PyPI 產物。rextio-networkx 0.1.1 與 rextio-pandas 0.1.2 為已發佈套件。
 
-[正式報告](https://github.com/rextio/rextio-benchmark/blob/0fed54c64283aaa08dfef0c9973e1d522d52bf1b/results/canonical/cohort-15e2f2527664ea2ed5c36e0c03b054ea6da69d1e476c07934727c252b947ccec/report.md) · [測量提交](https://github.com/rextio/rextio-benchmark/commit/92ef027cea25f9d6bf1d730de4c226d40016ba6e) · [證據提交](https://github.com/rextio/rextio-benchmark/commit/0fed54c64283aaa08dfef0c9973e1d522d52bf1b)
+**完整方法、確切修訂、證據、診斷與詳細結果，請使用 [rextio-benchmark](https://github.com/rextio/rextio-benchmark) 儲存庫。**
 <!-- rextio-benchmark:end -->
 
 ```text
@@ -287,7 +294,7 @@ CLI 參數 > 環境變數 > rextio.toml > 內建預設值
 | `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
 | `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
 
-0.1.6 中唯一實作的 native 目標是 Rust。
+0.1.7 中唯一實作的 native 目標是 Rust。
 
 Rextio 外掛是用 `pip` 或 `uv` 等工具安裝的普通 Python 套件。外掛套件透過
 `rextio.plugins` entry point 群組暴露中繼資料，包括它涵蓋的 Python 套件
@@ -332,6 +339,8 @@ Core **0.1.6** 於 2026-07-26 發佈，使用 plugin API **1.6** 和 tooling
 contract **2.27.0**。它加入有限的外掛比較運算式、Device Provider API 1
 選擇/preflight/建置接線，以及靜態 device-domain lowering 授權；Core 本身
 並不聲稱 CUDA framework 支援或加速器執行認證。
+Core **0.1.7** 於 2026-07-27 發佈，使用 plugin API **1.7** 和 tooling
+contract **2.28.0**，加入可選的 plugin function-scope RAII 守衛。
 一般依賴下沉不隨發行版捆綁；`try-native` 是顯式的規劃策略，沒有安全的
 direct 下沉時仍會 fallback。
 
@@ -412,7 +421,7 @@ REXTIO_NATIVE_MODE=auto|fallback|native
 
 ## direct Rust subset
 
-Rextio 0.1.6 刻意支援一個小的 subset。這個 subset 就是以 native
+Rextio 0.1.7 刻意支援一個小的 subset。這個 subset 就是以 native
 Rust 執行的程式碼。
 
 支援的型別:

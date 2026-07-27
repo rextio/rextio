@@ -1,8 +1,8 @@
 # Unsupported Features in 0.1.x
 
 Rextio is a focused, alpha-stage hybrid build tool. The current package version
-is **0.1.6** (published to PyPI on 2026-07-26; plugin API **1.6**; tooling
-contract **2.27.0**; readiness policy **11**), superseding 0.1.5. The
+is **0.1.7** (published to PyPI on 2026-07-27; plugin API **1.7**; tooling
+contract **2.28.0**), superseding 0.1.6. The
 direct-Rust subset and boundary rules below still rest
 on the original **0.1.0** design; historical “0.1.0” wording in later sections
 is preserved as design scope, not as a claim that 0.1.0 is the only shipped
@@ -12,10 +12,11 @@ fallback.
 
 Core 0.1.6 adds bounded plugin comparison expressions, Device Provider API 1
 selection/preflight/build wiring, and static device-domain lowering
-authorization. Those additions fail closed: they do not make provider
-selection automatic, materialize every declared provider contribution, add
-framework lowering by themselves, certify accelerator execution, or create a
-CUDA support claim.
+authorization. Core 0.1.7 adds optional plugin function-scope RAII guards
+(API 1.7). Those additions fail closed: they do not make provider selection
+automatic, materialize every declared provider contribution, add framework
+lowering by themselves, certify accelerator execution, or create a CUDA
+support claim.
 
 Release Train C shipped in 0.1.5 with experimental host source/executable
 planning, plugin standalone capability, the C5.1 external-source inventory gate, and the
