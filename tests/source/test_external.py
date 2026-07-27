@@ -151,7 +151,7 @@ def test_external_source_preview_is_sanitized_deterministic_and_non_executing(
     payload = plan.to_dict()
     assert payload["execution_authority"] == "preview-only"
     assert payload["distributable"] is False
-    assert payload["c6_gate"] == "required"
+    assert payload["source_authorization_gate"] == "required"
     assert str(tmp_path) not in json.dumps(payload)
     assert payload["modules"][0]["source_origin"] == "distribution"
     assert len(payload["modules"][0]["sha256"]) == 64

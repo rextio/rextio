@@ -1,6 +1,6 @@
-"""Bounded C6.10 replay verification for one narrow PyO3 source closure.
+"""Bounded replay verification for one narrow PyO3 source closure.
 
-The first slice is intentionally smaller than C6.6's descriptive inventory:
+This slice is intentionally smaller than the descriptive source inventory:
 all source modules must be project-owned, every accepted function must be a
 plugin-free module-level direct-native function, and the full accepted set is
 reanalyzed, relowered, and regenerated. Any unsupported or inconsistent state
@@ -96,7 +96,7 @@ class _ReplayResult:
 
 
 class SourceTransformationReplayAuthority:
-    """Process-local proof that the exact C6.10 replay actually completed."""
+    """Process-local proof that the exact transformation replay completed."""
 
     __slots__ = (
         "verification",
@@ -241,7 +241,7 @@ def collect_scoped_source_transformation_replay_authority(
     full_c6_analysis_scope: FullC6AnalysisScope | None = None,
     full_c6_config: RextioConfig | None = None,
 ) -> SourceTransformationReplayAuthority | None:
-    """Replay exact C6.10 outputs and mint a process-local authority, or ``None``."""
+    """Replay exact transformation outputs and mint local authority, or ``None``."""
     try:
         result = _collect_scoped_source_transformation_replay(
             project_root=project_root,
@@ -569,12 +569,12 @@ def _require_replay_analysis_scope(
             or full_c6_config is not None
             or plan_scope is not None
         ):
-            raise ValueError("source transformation verification Full C6 scope is incomplete")
+            raise ValueError("source transformation verification strict scope is incomplete")
         return None
     if type(full_c6_config) is not RextioConfig:
-        raise TypeError("source transformation verification Full C6 config is invalid")
+        raise TypeError("source transformation verification strict config is invalid")
     if plan_scope is not full_c6_analysis_scope:
-        raise ValueError("source transformation verification Full C6 scope disagrees")
+        raise ValueError("source transformation verification strict scope disagrees")
     _revalidate_replay_analysis_scope(
         root=root,
         full_c6_analysis_scope=full_c6_analysis_scope,
@@ -591,10 +591,10 @@ def _revalidate_replay_analysis_scope(
 ) -> None:
     if full_c6_analysis_scope is None:
         if full_c6_config is not None:
-            raise ValueError("source transformation verification Full C6 scope is incomplete")
+            raise ValueError("source transformation verification strict scope is incomplete")
         return
     if type(full_c6_config) is not RextioConfig:
-        raise TypeError("source transformation verification Full C6 config is invalid")
+        raise TypeError("source transformation verification strict config is invalid")
     from rextio.build.full_c6_host_inputs import require_full_c6_analysis_scope
 
     require_full_c6_analysis_scope(

@@ -360,10 +360,10 @@ def test_bootstrap_lifecycle_preserves_context_and_writes_non_authorizing_result
 
     report = _report(project)
     assert report["lifecycle"] == "bootstrap-required"
-    assert report["status"] == "full-c6-bootstrap-required"
+    assert report["status"] == "artifact-policy-bootstrap-required"
     assert report["distribution_authorized"] is False
     assert report["analysis"]["project_root"] == "."  # type: ignore[index]
-    assert report["full_c6"]["production_authority"] == authority.to_dict()  # type: ignore[index]
+    assert report["artifact_contract"]["production_authority"] == authority.to_dict()  # type: ignore[index]
     assert events == ["host-enter", "production-authority", "policy-bootstrap", "host-exit"]
     assert "next owner action" in stdout.getvalue()
     assert stderr.getvalue() == ""
@@ -386,7 +386,7 @@ def test_strict_lifecycle_projects_every_nested_file_path_once_for_both_reports(
             "cpython",
             reporter,
             lifecycle="bootstrap-required",
-            status="full-c6-bootstrap-required",
+            status="artifact-policy-bootstrap-required",
             distribution_authorized=False,
             details={},
             next_action="complete the owner policy",
@@ -432,7 +432,7 @@ def test_strict_success_projection_failure_uses_fixed_stderr_boundary(
             "cpython",
             reporter,
             lifecycle="bootstrap-required",
-            status="full-c6-bootstrap-required",
+            status="artifact-policy-bootstrap-required",
             distribution_authorized=False,
             details={},
             next_action="must not be serialized",
@@ -672,9 +672,9 @@ def test_signing_lifecycle_is_idempotent_and_emits_json_primary_result(
     report = _report(project)
     assert finalizations == 2
     assert primary["lifecycle"] == "signing-required"
-    assert primary["status"] == "full-c6-signing-required"
+    assert primary["status"] == "artifact-signing-required"
     assert primary["distribution_authorized"] is False
-    assert report["full_c6"]["signing_request_receipt"]["already_present"] is True  # type: ignore[index]
+    assert report["artifact_contract"]["signing_request_receipt"]["already_present"] is True  # type: ignore[index]
     assert second_stderr.getvalue() == ""
     assert not (project / "dist").exists()
 
@@ -741,9 +741,9 @@ def test_publication_lifecycle_uses_exact_adapter_and_reports_receipt(
         "host-exit",
     ]
     assert primary["lifecycle"] == "publication-required"
-    assert primary["status"] == "full-c6-published"
+    assert primary["status"] == "artifact-published"
     assert primary["distribution_authorized"] is True
-    assert report["full_c6"]["publication_receipt"]["publication_completed"] is True  # type: ignore[index]
+    assert report["artifact_contract"]["publication_receipt"]["publication_completed"] is True  # type: ignore[index]
     assert stderr.getvalue() == ""
     assert (project / "dist" / "demo-0.1.0-cp311.full-c6").is_dir()
 
@@ -837,7 +837,7 @@ def test_completed_publication_has_no_fallible_context_cleanup(
     assert _run_lifecycle(project, config, preflight, reporter) == 0
 
     report = _report(project)
-    assert report["status"] == "full-c6-published"
+    assert report["status"] == "artifact-published"
     assert report["distribution_authorized"] is True
     assert events[-1] == "host-exit"
     assert stdout.getvalue()

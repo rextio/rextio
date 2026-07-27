@@ -1,4 +1,4 @@
-"""Exact, non-executing source-wheel authority for the bounded C5.2 slice.
+"""Exact, non-executing source-wheel authority for the bounded source-native slice.
 
 The verifier reads one explicitly configured wheel through a pinned descriptor,
 parses only the resulting immutable bytes, and never extracts or imports it.
@@ -437,7 +437,7 @@ def verify_source_wheel(
     expected_sha256: str,
     plan: ExternalSourcePlan,
 ) -> VerifiedSourceWheel:
-    """Verify one exact pure wheel and bind it strictly to a C5.1 plan.
+    """Verify one exact pure wheel and bind it strictly to a source plan.
 
     A normal wheel installer rewrites the installed ``RECORD`` to add its own
     provenance rows.  The plan therefore binds that installed ``RECORD`` while

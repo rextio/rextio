@@ -1,4 +1,4 @@
-"""Optional C6.13 verification of the exact analysis inputs used by C6.10."""
+"""Optional verification of the exact inputs used for source transformation."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def collect_scoped_analysis_input_verification(
     plan: BuildPlan,
     source_transformation_verification: SourceTransformationVerification,
 ) -> AnalysisInputVerification | None:
-    """Capture C6.13 analysis inputs, returning ``None`` on every failure."""
+    """Capture scoped analysis inputs, returning ``None`` on every failure."""
     try:
         return _collect_scoped_analysis_input_verification(
             project_root=project_root,
@@ -58,7 +58,7 @@ def _collect_scoped_analysis_input_verification(
     if type(plan) is not BuildPlan or type(source_transformation_verification) is not SourceTransformationVerification:
         raise TypeError("analysis input verification inputs are invalid")
     if source_transformation_verification.scope != SOURCE_TRANSFORMATION_VERIFICATION_SCOPE:
-        raise ValueError("analysis input verification requires the exact C6.10 scope")
+        raise ValueError("analysis input verification requires the exact transformation scope")
     if STUB_SIGNATURE_PROJECTION_VERSION != SUPPORTED_SIGNATURE_PROJECTION_VERSION:
         raise ValueError("analyzer and evidence projection versions differ")
     verification = _reconstruct_verification(source_transformation_verification)
@@ -80,7 +80,7 @@ def _collect_scoped_analysis_input_verification(
     if source_paths != tuple(sorted(source_paths)) or not source_paths:
         raise ValueError("analysis input verification source coverage is noncanonical")
     if len(snapshot.records) > MAX_INPUT_FILES or tuple(record.source_path for record in snapshot.records) != source_paths:
-        raise ValueError("analysis input verification snapshot scope differs from C6.10")
+        raise ValueError("analysis input verification snapshot scope differs from transformation")
     _reject_path_aliases(source_paths, "source")
     _reject_path_aliases(tuple(record.stub_path for record in snapshot.records), "stub")
 
@@ -213,13 +213,13 @@ def _reconstruct_stub_snapshot(value: StubInputSnapshot | None) -> StubInputSnap
 
 def _reconstruct_verification(value: SourceTransformationVerification) -> SourceTransformationVerification:
     if type(value.source_inputs) is not tuple or len(value.source_inputs) > MAX_INPUT_FILES:
-        raise TypeError("analysis input verification C6.10 source inputs are invalid")
+        raise TypeError("analysis input verification source inputs are invalid")
     if type(value.function_qualnames) is not tuple:
-        raise TypeError("analysis input verification C6.10 function names are invalid")
+        raise TypeError("analysis input verification function names are invalid")
     if any(type(item) is not EvidenceFileRef for item in value.source_inputs):
-        raise TypeError("analysis input verification C6.10 source references are invalid")
+        raise TypeError("analysis input verification source references are invalid")
     if type(value.generated_rust) is not EvidenceFileRef:
-        raise TypeError("analysis input verification C6.10 generated reference is invalid")
+        raise TypeError("analysis input verification generated reference is invalid")
     source_inputs = tuple(_reconstruct_file_ref(item) for item in value.source_inputs)
     generated_rust = _reconstruct_file_ref(value.generated_rust)
     rebuilt = SourceTransformationVerification(
@@ -241,7 +241,7 @@ def _reconstruct_verification(value: SourceTransformationVerification) -> Source
         authority=value.authority,
     )
     if rebuilt != value:
-        raise ValueError("analysis input verification C6.10 receipt is not immutable")
+        raise ValueError("analysis input verification receipt is not immutable")
     return rebuilt
 
 

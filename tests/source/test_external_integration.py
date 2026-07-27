@@ -238,7 +238,7 @@ def test_analyze_project_creates_sanitized_external_source_plan(
     payload = analysis.to_dict()["external_source_plan"]
     assert payload["execution_authority"] == "preview-only"
     assert payload["distributable"] is False
-    assert payload["c6_gate"] == "required"
+    assert payload["source_authorization_gate"] == "required"
     assert payload["authorization"]["status"] == "missing"
     assert payload["modules"][0]["path"] == (
         f"distributions/{DIST_NAME}/{PACKAGE}/__init__.py"
@@ -330,10 +330,10 @@ def test_cli_build_reports_c6_gate_without_starting_artifact_work(
     report = json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    assert "C6.1 SourceLock" in captured.err or "C6 SourceLock" in captured.err
+    assert "SourceLock" in captured.err
     assert "GNU/copyleft" in captured.err
     assert "authorization: status=missing" in captured.err
-    assert report["status"] == "external-source-c6-blocked"
+    assert report["status"] == "external-source-authorization-blocked"
     assert report["error"]["code"] == "RXT060"
     from rextio.contract import TOOLING_CONTRACT_VERSION
 
@@ -377,13 +377,16 @@ def test_cli_build_verified_authorization_still_blocks_c5_not_implemented(
     report = json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    assert report["status"] == "external-source-c5-not-implemented"
+    assert report["status"] == "external-source-native-linkage-not-implemented"
     assert report["error"]["code"] == "RXT060"
     from rextio.contract import TOOLING_CONTRACT_VERSION
 
     assert report["contract_version"] == TOOLING_CONTRACT_VERSION
     assert "not implemented" in report["error"]["message"]
-    assert report["external_source_plan"]["c6_gate"] == "authorization-verified"
+    assert (
+        report["external_source_plan"]["source_authorization_gate"]
+        == "authorization-verified"
+    )
     assert report["external_source_plan"]["authorization"]["status"] == "verified"
     assert "external_source_authorization" not in report
     assert "call-site linkage" in captured.err
@@ -399,7 +402,7 @@ def test_cli_build_verified_authorization_still_blocks_c5_not_implemented(
     assert not list(project.rglob("*.cdx.json"))
     assert not list(project.rglob("*.intoto.json"))
     assert "artifact_evidence" not in report
-    assert report["status"] == "external-source-c5-not-implemented"
+    assert report["status"] == "external-source-native-linkage-not-implemented"
 
 
 def test_check_and_generate_report_verified_authorization_without_local_paths(
@@ -847,7 +850,7 @@ def test_cli_build_stale_lock_after_hash_drift_is_c6_blocked(
     report = json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    assert report["status"] == "external-source-c6-blocked"
+    assert report["status"] == "external-source-authorization-blocked"
     assert report["external_source_plan"]["authorization"]["status"] == "stale"
 
 
@@ -874,7 +877,7 @@ def test_cli_build_unavailable_plan_still_precedes_toolchain_work(
     report = json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    assert report["status"] == "external-source-c6-blocked"
+    assert report["status"] == "external-source-authorization-blocked"
     assert report["external_source_plan"]["status"] == "unavailable"
     assert "GNU/copyleft" in captured.err
 
@@ -900,7 +903,7 @@ def test_cli_external_plan_precedes_unrelated_parse_failure(
     report = json.loads(
         (project / ".rextio" / "reports" / "build.json").read_text(encoding="utf-8")
     )
-    assert report["status"] == "external-source-c6-blocked"
+    assert report["status"] == "external-source-authorization-blocked"
     assert any(
         diagnostic["code"] == "RXT000"
         for diagnostic in report["analysis"]["diagnostics"]

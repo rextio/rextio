@@ -323,7 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_parser = subparsers.add_parser(
         "policy",
-        help="Operate on strict Full C6 owner-policy handoff files.",
+        help="Operate on strict artifact owner-policy handoff files.",
     )
     policy_subparsers = policy_parser.add_subparsers(
         dest="policy_command",
@@ -332,14 +332,14 @@ def build_parser() -> argparse.ArgumentParser:
     policy_finalize_parser = policy_subparsers.add_parser(
         "finalize",
         help=(
-            "Combine an exact Full C6 bootstrap and owner completion into a "
+            "Combine an exact artifact-policy bootstrap and owner completion into a "
             "non-authorizing policy manifest."
         ),
     )
     policy_finalize_parser.add_argument(
         "--bootstrap",
         required=True,
-        help="Canonical Full C6 bootstrap request JSON.",
+        help="Canonical artifact-policy bootstrap request JSON.",
     )
     policy_finalize_parser.add_argument(
         "--completion",
@@ -357,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     policy_support_lock_parser = policy_subparsers.add_parser(
         "bootstrap-support-lock",
         help=(
-            "Create or exactly reuse the canonical Full C6 toolchain support "
+            "Create or exactly reuse the canonical artifact toolchain support "
             "lock for this host."
         ),
     )

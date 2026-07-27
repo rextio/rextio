@@ -1,4 +1,4 @@
-"""Tests for the repository-only Full C6 manual validation command."""
+"""Tests for the repository-only strict artifact validation command."""
 
 from __future__ import annotations
 
@@ -13,8 +13,15 @@ import pytest
 
 
 def _load_validation_script() -> ModuleType:
-    path = Path(__file__).resolve().parents[1] / "scripts" / "validate-full-c6-host.py"
-    spec = importlib.util.spec_from_file_location("rextio_full_c6_host_validation", path)
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "validate-artifact-contract-host.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "rextio_artifact_contract_host_validation",
+        path,
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -23,6 +30,20 @@ def _load_validation_script() -> ModuleType:
 
 
 VALIDATION_SCRIPT = _load_validation_script()
+
+
+def test_manual_validation_public_surface_uses_semantic_artifact_terms() -> None:
+    script_path = Path(VALIDATION_SCRIPT.__file__).resolve()
+    source = script_path.read_text(encoding="utf-8")
+    help_text = VALIDATION_SCRIPT._parser().format_help()
+
+    assert script_path.name == "validate-artifact-contract-host.py"
+    assert "REXTIO_ARTIFACT_CONTRACT_E2E" in source
+    assert "REXTIO_ARTIFACT_CONTRACT_WHEEL" in source
+    assert "REXTIO_FULL_C6" not in source
+    assert "Full C6" not in help_text
+    assert "C5" not in help_text
+    assert "C6" not in help_text
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -39,8 +60,8 @@ def _clean_repository(root: Path) -> Path:
     repository = root / "repository"
     repository.mkdir()
     _git(repository, "init", "--quiet")
-    _git(repository, "config", "user.email", "full-c6-test@example.invalid")
-    _git(repository, "config", "user.name", "Full C6 test")
+    _git(repository, "config", "user.email", "artifact-test@example.invalid")
+    _git(repository, "config", "user.name", "Artifact contract test")
     (repository / ".gitignore").write_text("build/\ndist/\n", encoding="utf-8")
     (repository / "tracked.txt").write_text("tracked HEAD bytes\n", encoding="utf-8")
     executable = repository / "tracked-tool"

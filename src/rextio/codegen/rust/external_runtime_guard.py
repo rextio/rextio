@@ -1,4 +1,4 @@
-"""Render the strict C5.2 installed-distribution runtime guard."""
+"""Render the strict installed-distribution runtime guard."""
 
 from __future__ import annotations
 

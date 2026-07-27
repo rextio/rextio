@@ -1,4 +1,4 @@
-"""CLI tests for strict offline Full C6 owner-policy finalization."""
+"""CLI tests for strict offline artifact owner-policy finalization."""
 
 from __future__ import annotations
 
@@ -169,7 +169,7 @@ def test_policy_finalize_failure_uses_stderr_and_no_result_stdout(
     ) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "RXT060 Full C6 owner-policy finalization failed" in captured.err
+    assert "RXT060 Artifact owner-policy finalization failed" in captured.err
     assert not output.exists()
 
 
@@ -319,7 +319,7 @@ def test_policy_bootstrap_support_lock_failure_is_stderr_only(
     ) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "RXT060 Full C6 support-lock bootstrap failed" in captured.err
+    assert "RXT060 Artifact support-lock bootstrap failed" in captured.err
     assert "unsupported Full C6 host" in captured.err
 
 

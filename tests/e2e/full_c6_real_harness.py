@@ -3213,7 +3213,7 @@ def _assert_lifecycle_report(
         "contract_version",
         "distribution_authorized",
         "fallback",
-        "full_c6",
+        "artifact_contract",
         "lifecycle",
         "next_action",
         "status",
@@ -3234,7 +3234,7 @@ def _assert_lifecycle_report(
     analysis = report["analysis"]
     if type(analysis) is not dict or analysis.get("project_root") != ".":
         raise AssertionError("Full C6 report leaked or changed the project-root contract")
-    details = report["full_c6"]
+    details = report["artifact_contract"]
     if type(details) is not dict:
         raise AssertionError("Full C6 report details are invalid")
     expected_detail_keys = {
@@ -3560,7 +3560,7 @@ def _write_final_signature(
     )
     if document != request.to_dict() or raw != request.canonical_manifest_bytes:
         raise AssertionError("materialized Full C6 signing request is noncanonical")
-    details = signing_report["full_c6"]
+    details = signing_report["artifact_contract"]
     if type(details) is not dict:
         raise AssertionError("signing report details are invalid")
     receipt = details["signing_request_receipt"]
@@ -3593,12 +3593,14 @@ def _write_final_signature(
 
 
 def _installed_rextio_wheel() -> Path:
-    configured = os.environ.get("REXTIO_FULL_C6_WHEEL")
+    configured = os.environ.get("REXTIO_ARTIFACT_CONTRACT_WHEEL")
     if configured:
         candidate = Path(configured).resolve()
         if candidate.is_file() and candidate.suffix == ".whl":
             return candidate
-        raise AssertionError("REXTIO_FULL_C6_WHEEL does not name the installed wheel")
+        raise AssertionError(
+            "REXTIO_ARTIFACT_CONTRACT_WHEEL does not name the installed wheel"
+        )
     direct_url = metadata.distribution("rextio").read_text("direct_url.json")
     if direct_url is not None:
         raw_url = json.loads(direct_url).get("url")
@@ -3609,7 +3611,8 @@ def _installed_rextio_wheel() -> Path:
                 if candidate.is_file() and candidate.suffix == ".whl":
                     return candidate
     raise AssertionError(
-        "set REXTIO_FULL_C6_WHEEL to the exact non-editable wheel installed in the E2E venv"
+        "set REXTIO_ARTIFACT_CONTRACT_WHEEL to the exact non-editable wheel "
+        "installed in the E2E venv"
     )
 
 
@@ -3785,7 +3788,7 @@ def _verify_published_native_wheel(
         "detached-signature",
         "distribution-authorization",
     )
-    details = publication_report["full_c6"]
+    details = publication_report["artifact_contract"]
     if type(details) is not dict:
         raise AssertionError("publication report details are invalid")
     receipt = details["publication_receipt"]
@@ -3972,11 +3975,11 @@ def _run_lifecycle(
     bootstrap_report = _invoke_build_lifecycle(
         project,
         lifecycle="bootstrap-required",
-        status="full-c6-bootstrap-required",
+        status="artifact-policy-bootstrap-required",
         support_lock_raw_sha256=support_lock_raw_sha256,
         support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
-    bootstrap_details = bootstrap_report["full_c6"]
+    bootstrap_details = bootstrap_report["artifact_contract"]
     if type(bootstrap_details) is not dict:
         raise AssertionError("bootstrap report details are invalid")
     bootstrap_receipt = bootstrap_details["policy_bootstrap"]
@@ -4014,7 +4017,7 @@ def _run_lifecycle(
     signing_report = _invoke_build_lifecycle(
         project,
         lifecycle="signing-required",
-        status="full-c6-signing-required",
+        status="artifact-signing-required",
         support_lock_raw_sha256=support_lock_raw_sha256,
         support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
@@ -4040,7 +4043,7 @@ def _run_lifecycle(
     publication_report = _invoke_build_lifecycle(
         project,
         lifecycle="publication-required",
-        status="full-c6-published",
+        status="artifact-published",
         support_lock_raw_sha256=support_lock_raw_sha256,
         support_lock_merkle_sha256=support_lock_merkle_sha256,
     )
@@ -4048,7 +4051,7 @@ def _run_lifecycle(
     reports = (bootstrap_report, signing_report, publication_report)
     production_authorities = []
     for report in reports:
-        details = report["full_c6"]
+        details = report["artifact_contract"]
         if type(details) is not dict:
             raise AssertionError("Full C6 lifecycle details are invalid")
         production = details["production_authority"]
@@ -4088,8 +4091,8 @@ def _run_lifecycle(
             "fresh Full C6 lifecycle recollection changed toolchain authority"
         )
 
-    signing_details = signing_report["full_c6"]
-    publication_details = publication_report["full_c6"]
+    signing_details = signing_report["artifact_contract"]
+    publication_details = publication_report["artifact_contract"]
     if type(signing_details) is not dict or type(publication_details) is not dict:
         raise AssertionError("Full C6 signing/publication details are invalid")
     publication_signing_receipt = publication_details["signing_request_receipt"]
@@ -4119,7 +4122,10 @@ def _assert_run_root_isolated(run_root: Path) -> None:
 
 
 def main() -> None:
-    if os.environ.get("REXTIO_FULL_C6_E2E_CHILD") != "1" or len(sys.argv) != 2:
+    if (
+        os.environ.get("REXTIO_ARTIFACT_CONTRACT_E2E_CHILD") != "1"
+        or len(sys.argv) != 2
+    ):
         raise SystemExit("this helper runs only through the dedicated Full C6 E2E test")
     if sys.dont_write_bytecode is not True:
         raise AssertionError("dedicated Full C6 E2E requires a cache-free Python host")

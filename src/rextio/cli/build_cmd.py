@@ -419,16 +419,15 @@ def _report_external_source_build_blocked(
     plan = analysis.external_source_plan
     if plan.authorization_verified:
         error: Exception = ExternalSourceC5NotImplementedError(plan)
-        status = "external-source-c5-not-implemented"
+        status = "external-source-native-linkage-not-implemented"
         suggestion = (
-            "Suggestion: C6.1 SourceLock authorization succeeded; remaining C5.2 "
+            "Suggestion: SourceLock authorization succeeded, but source-native "
             "call-site linkage, body lowerability, Rust codegen, and packaging "
-            "are not implemented. Keep using check/generate for inventory "
-            "evidence only."
+            "are not implemented. Keep using check/generate for inventory evidence only."
         )
     else:
         error = ExternalSourceBuildBlockedError(plan)
-        status = "external-source-c6-blocked"
+        status = "external-source-authorization-blocked"
         suggestion = (
             "Suggestion: add a verified project-owned "
             "rextio.external-source.lock.json authored from rextio check "
@@ -478,7 +477,7 @@ def _report_full_c6_pipeline_failure(
     *,
     stage: str,
 ) -> int:
-    """Report one actionable strict Full C6 fail-closed result."""
+    """Report one actionable strict artifact-contract fail-closed result."""
     reports_dir = project_root / ".rextio" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     for stale in ("build.json", "generate.json", "check.json"):
@@ -795,7 +794,7 @@ def _report_full_c6_pipeline_success(
         "contract_version": TOOLING_CONTRACT_VERSION,
         "distribution_authorized": distribution_authorized,
         "fallback": fallback,
-        "full_c6": details,
+        "artifact_contract": details,
         "lifecycle": lifecycle,
         "next_action": next_action,
         "status": status,
@@ -819,7 +818,7 @@ def _report_full_c6_pipeline_success(
         ),
         data={
             "distribution_authorized": distribution_authorized,
-            "full_c6": details,
+            "artifact_contract": details,
             "lifecycle": lifecycle,
             "next_action": next_action,
             "report": report_name,
@@ -862,13 +861,13 @@ def _run_full_c6_cli_lifecycle(
                 request = authority.bootstrap_request
                 if request is None:
                     raise FullC6ProductionError(
-                        "Full C6 bootstrap lifecycle lacks its typed request"
+                        "Artifact-policy bootstrap lifecycle lacks its typed request"
                     )
                 bootstrap = materialize_full_c6_policy_bootstrap_request(
                     state_directory=prerequisites.state_directory,
                     request=request,
                 )
-                status = "full-c6-bootstrap-required"
+                status = "artifact-policy-bootstrap-required"
                 distribution_authorized = False
                 next_action = (
                     "complete and pin the owner policy manifest from the bootstrap request"
@@ -886,9 +885,9 @@ def _run_full_c6_cli_lifecycle(
                 )
                 if result.status != "signing-required" or result.distribution_authorized:
                     raise FullC6PipelineError(
-                        "RXT060 unsigned Full C6 lifecycle returned invalid authority"
+                        "RXT060 unsigned artifact lifecycle returned invalid authority"
                     )
-                status = "full-c6-signing-required"
+                status = "artifact-signing-required"
                 distribution_authorized = False
                 next_action = (
                     "sign the canonical authorization request externally and configure "
@@ -920,9 +919,9 @@ def _run_full_c6_cli_lifecycle(
                     or result.publication_receipt is None
                 ):
                     raise FullC6PipelineError(
-                        "RXT060 published Full C6 lifecycle returned invalid authority"
+                        "RXT060 published artifact lifecycle returned invalid authority"
                     )
-                status = "full-c6-published"
+                status = "artifact-published"
                 distribution_authorized = True
                 next_action = "review and retain the atomic publication receipt"
                 details = {
@@ -936,7 +935,7 @@ def _run_full_c6_cli_lifecycle(
                 }
             else:
                 raise FullC6ProductionError(
-                    "Full C6 production authority returned an invalid lifecycle"
+                    "Artifact production authority returned an invalid lifecycle"
                 )
             stage = "host-cleanup"
     except (
@@ -975,7 +974,7 @@ def _report_required_evidence_failure(
     error: ArtifactEvidenceRequiredError,
     reporter: Reporter,
 ) -> int:
-    """Report the stable fail-closed C6.3 diagnostic and exit status."""
+    """Report the stable fail-closed required-evidence diagnostic and exit status."""
     if error.result is None:
         reports_dir = project_root / ".rextio" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1061,7 +1060,7 @@ def _toolchain_preflight_error(config: RextioConfig) -> str | None:
 
 
 def _external_source_preview_declared(config: RextioConfig) -> bool:
-    """Return whether config requests the C5 analysis-first preview path."""
+    """Return whether config requests the external-source analysis preview path."""
     return any(
         policy.distribution is not None and policy.version is not None
         for policy in config.imports.packages.values()
@@ -1213,9 +1212,9 @@ def run(args: Namespace) -> int:
         )
         return 1
 
-    # Ordinary builds retain the early preflight. C5 declarations defer these
-    # executable probes until after analysis so a preview is always stopped by
-    # the C6 authority gate before any configured tool is invoked.
+    # Ordinary builds retain the early preflight. External-source declarations
+    # defer executable probes until after analysis so a preview is always
+    # stopped by the authorization gate before any configured tool is invoked.
     external_preview_declared = _external_source_preview_declared(config)
     required_evidence = (
         config.build.artifact_evidence_policy == ARTIFACT_EVIDENCE_POLICY_REQUIRED
@@ -1365,9 +1364,9 @@ def run(args: Namespace) -> int:
             reporter,
         )
 
-    # A declaration that was not actually imported produces no C5 plan. Resume
-    # the ordinary build contract only after that has been established without
-    # invoking configured Python/Nuitka tools.
+    # A declaration that was not actually imported produces no source plan.
+    # Resume the ordinary build contract only after that has been established
+    # without invoking configured Python/Nuitka tools.
     if (external_preview_declared or required_evidence) and not _prepare_build_toolchain(
         config, fallback, reporter
     ):

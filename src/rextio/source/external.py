@@ -1,9 +1,9 @@
-"""Train C5 external pure-Python source inventory preview.
+"""External pure-Python source inventory preview.
 
 This module is intentionally non-executing: it reads installed distribution
 metadata and source bytes, but never imports the selected package.  The result
-is planning evidence only.  C6.1 verifies a project SourceLock against exact
-authority material; remaining C5.2 source-native linkage/codegen is unimplemented.
+is planning evidence only. A project SourceLock can be verified against exact
+authority material; source-native linkage and code generation remain bounded.
 """
 
 from __future__ import annotations
@@ -41,18 +41,18 @@ EXTERNAL_SOURCE_LICENSE_WARNING = (
 )
 
 EXTERNAL_SOURCE_C5_NOT_IMPLEMENTED_REASON = (
-    "C6.1 SourceLock authorization is verified, but C5.2 source-native call-site "
+    "SourceLock authorization is verified, but source-native call-site "
     "linkage, body lowerability, Rust codegen, and packaging are not implemented"
 )
 
-# Domain-separated inventory/schema identifiers for the C5.1 plan snapshot.
+# Domain-separated inventory/schema identifiers for the source plan snapshot.
 INVENTORY_SCHEMA_ID = "rextio-external-source-inventory-v1"
 PLAN_SNAPSHOT_DOMAIN = "rextio.external-source-plan-snapshot.v1"
 LICENSE_MATERIAL_DOMAIN = "rextio.external-source-license-material.v1"
 
 _METADATA_ROLES = frozenset({"record", "metadata", "wheel", "license-file"})
 
-# Bounds shared with the C6.1 SourceLock verifier so every preview-ready plan
+# Bounds shared with the SourceLock verifier so every preview-ready plan
 # can have an exact accepted lock under the same limits.
 MAX_SOURCE_MODULES = 256
 MAX_AUTHORITY_FILES = 512
@@ -154,7 +154,7 @@ class ExternalSourcePlan:
     modules: tuple[SourceModule, ...] = ()
     candidate_functions: tuple[str, ...] = ()
     reason: str | None = None
-    # Exact verified material used for C6.1 SourceLock binding.
+    # Exact verified material used for SourceLock binding.
     source_files: tuple[AuthorityFile, ...] = ()
     metadata_files: tuple[AuthorityFile, ...] = ()
     inventory_schema: str = INVENTORY_SCHEMA_ID
@@ -162,12 +162,12 @@ class ExternalSourcePlan:
 
     @property
     def build_blocked(self) -> bool:
-        """C5/C6 never grants build or redistribution authority in this train."""
+        """The source preview never grants build or redistribution authority."""
         return True
 
     @property
     def authorization_verified(self) -> bool:
-        """Return whether C6.1 verified a lock against an available plan."""
+        """Return whether a SourceLock verifies against an available plan."""
         return (
             self.status == "preview-ready"
             and self.authorization is not None
@@ -267,7 +267,7 @@ class ExternalSourcePlan:
 
     def to_dict(self) -> dict[str, object]:
         """Return deterministic tooling-contract external-source evidence."""
-        c6_gate = (
+        source_authorization_gate = (
             "authorization-verified"
             if self.authorization_verified
             else "required"
@@ -277,7 +277,7 @@ class ExternalSourcePlan:
             "status": self.status,
             "execution_authority": "preview-only",
             "distributable": False,
-            "c6_gate": c6_gate,
+            "source_authorization_gate": source_authorization_gate,
             "package": self.package,
             "distribution": self.distribution,
             "requested_version": self.requested_version,
@@ -316,7 +316,7 @@ class _VerifiedDistributionMetadata:
 
 
 class ExternalSourceBuildBlockedError(RuntimeError):
-    """A C5 preview failed the C6.1 SourceLock authorization gate."""
+    """An external-source preview failed the SourceLock authorization gate."""
 
     def __init__(self, plan: ExternalSourcePlan) -> None:
         self.plan = plan
@@ -329,12 +329,12 @@ class ExternalSourceBuildBlockedError(RuntimeError):
             message = (
                 "RXT060 External source build blocked: external source plan is "
                 f"unavailable for {plan.distribution}=={plan.requested_version} "
-                f"({detail}). A verified C6.1 SourceLock cannot authorize an "
+                f"({detail}). A verified SourceLock cannot authorize an "
                 "unavailable plan."
             )
         elif auth is None or auth.status == "missing":
             message = (
-                "RXT060 External source build blocked: missing verified C6.1 "
+                "RXT060 External source build blocked: missing verified "
                 f"SourceLock for {plan.distribution}=={plan.requested_version}. "
                 "A project-owned rextio.external-source.lock.json with exact "
                 "content hashes, source inventory, provenance, and closed license "
@@ -343,7 +343,7 @@ class ExternalSourceBuildBlockedError(RuntimeError):
         else:
             reason = auth.reason or auth.status
             message = (
-                "RXT060 External source build blocked: C6.1 SourceLock verification "
+                "RXT060 External source build blocked: SourceLock verification "
                 f"failed for {plan.distribution}=={plan.requested_version} "
                 f"({reason})."
             )
@@ -351,7 +351,7 @@ class ExternalSourceBuildBlockedError(RuntimeError):
 
 
 class ExternalSourceC5NotImplementedError(RuntimeError):
-    """C6.1 SourceLock verified, but remaining C5.2 source-native work is absent."""
+    """SourceLock verified, but required source-native work is absent."""
 
     def __init__(self, plan: ExternalSourcePlan) -> None:
         self.plan = plan
@@ -368,7 +368,7 @@ def resolve_external_source_plan(
     *,
     distribution_getter: Callable[[str], metadata.Distribution] | None = None,
 ) -> ExternalSourcePlan | None:
-    """Resolve the one used, fully pinned C5 declaration without importing it."""
+    """Resolve the one used, fully pinned source declaration without importing it."""
     declarations = [
         (package, policy)
         for package, policy in sorted(config.packages.items())
