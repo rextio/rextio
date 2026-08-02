@@ -1,36 +1,65 @@
 # Rextio
 
-[English](README.md) | [한국어](README.ko.md) | [简体中文](README.zh-hans.md) | [繁體中文](README.zh-hant.md)
+<p align="center"><img src="./assets/readme/rextio-icon.png" width="112" alt="Rextio アイコン"></p>
 
-**適格な typed Python 関数を Rust にコンパイルし、それ以外はすべて
-Python fallback のまま動かします。**
+<p align="center"><strong>対象となる型付き Python 関数を Rust/PyO3 へ事前コンパイル。<br>それ以外は安全な Python フォールバックで動かし続けます。</strong></p>
 
-Rextio は alpha 段階のローカル Python ビルドツールです。型付きの Python 関数のうち安全に Rust へ下ろせるものを見つけて
-PyO3 で事前（ahead-of-time）コンパイルし、それ以外はすべて生成された Python
-fallback コードで動かし続けます — import パスも動作もそのままです。
+<p align="center">
+  <a href="https://github.com/rextio/rextio/blob/main/README.md">English</a> · <a href="https://github.com/rextio/rextio/blob/main/README.ko.md">한국어</a> ·
+  <a href="https://github.com/rextio/rextio/blob/main/README.zh-hans.md">简体中文</a> · <a href="https://github.com/rextio/rextio/blob/main/README.zh-hant.md">繁體中文</a> ·
+  <a href="https://github.com/rextio/rextio/blob/main/README.ja.md">日本語</a>
+</p>
 
-リリースごとの変更点は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+<p align="center">
+  <a href="https://pypi.org/project/rextio/"><img alt="PyPI バージョン" src="https://img.shields.io/pypi/v/rextio"></a>
+  <a href="https://pypi.org/project/rextio/"><img alt="対応 Python バージョン" src="https://img.shields.io/pypi/pyversions/rextio"></a>
+  <a href="https://github.com/rextio/rextio/blob/main/LICENSE"><img alt="MIT ライセンス" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
 
-```text
-型付き Python プロジェクト
-  -> サポートされる native 候補を分析
-  -> 安全でない・未サポートの関数は拒否
-  -> 受理された関数は Rust + PyO3 を生成
-  -> 残りは Python fallback wrapper を生成
-  -> import 互換 artifact をビルド
+Rextio は、アプリケーションを書き直さずに一部の型付きホットパスをネイティブ Rust で実行したい **Python 開発者向けの Alpha ローカルビルドツール**です。保守的なアナライザーは、文書化された意味を保って安全に lower できるコードだけを受け入れます。未対応または曖昧なコードは生成済み Python フォールバック wrapper に残ります。ネイティブ実行を無効化した場合、または既定の `auto` モードでネイティブコードを利用できない場合も、同じ import がこれらの wrapper を通して動作します。
+
+```bash
+python -m pip install rextio
+rextio check .
 ```
 
-契約は厳格です: 関数は CPython と等価なセマンティクスで native コンパイル
-されるか、診断とともに拒否されて Python fallback に残ります。Rextio は
-確信が持てないとき推測せず、fallback を選びます。
+ビルド前に受理される関数を確認する、最短で有用な最初の一歩です。
 
-Rextio は Python の代替ではなく、プロジェクト全体を Rust へ移行する
-ツールでもありません。Native コンパイルは最適化であり、Python fallback の
-動作が正しさの基準線です。
+Core **0.1.8** は 2026-07-27 に plugin API **1.7**、tooling contract **3.0.0** とともに公開されました。履歴は[変更履歴](CHANGELOG.md)を参照してください。
 
-## クイックスタート
+> **Tooling 移行：**contract 3.0 は milestone 由来の artifact identity を意味ベースの `artifact-*` 名へ置き換えます。正確な 0.1.7 identity は legacy の読み取り/検証入力としてのみ残り、2.x 専用 consumer は major 3 で機能を縮退させる必要があります。
 
-型付きの普通の Python コードから始めます:
+## 証拠：測定済み CPU ワークロード
+
+**Mac16,11 / Apple M4 Pro**、**2026-07-26**、CPython **3.11.9** における 3 回実行の中央値です。
+
+| ワークロード | source/native 中央高速化率 |
+| --- | ---: |
+| Core hybrid | 57.729× |
+| NumPy mixed fusion | 2.523× |
+| NetworkX Dijkstra | 3.679× |
+| pandas `Series.map` | 66.143× |
+| PyTorch CPU deep MLP | 1.017× |
+| TensorFlow CPU eager chain | 1.040× |
+
+これは**特定ワークロードでの観測値**であり、ライブラリ全体の性能保証ではありません。1× 付近は同等を意味し、保存された診断ケースには Python より遅いものもあります。CUDA は測定していません。監査可能な [rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリに、正確な revision、source/fallback/native lane、生の証拠、安定性ポリシー、診断、低速・同等ケースがあります。
+
+## 仕組み
+
+```text
+typed Python
+  → 型を解決して対応サブセットを検査
+  → 安全でない native/fallback 呼び出しグラフを拒否
+  → 受理した関数を Rust + PyO3 へ lowering
+  → import 互換の Python wrapper を生成
+  → fallback を維持したままネイティブ成果物をビルド
+```
+
+正しさの基準は Python です。Rextio は Python の代替、汎用 Python-to-Rust 変換器、JIT、プロジェクト全体の移行ツールではありません。
+
+## 最初のビルド
+
+既定の自動モードではデコレーターは任意です。通常の型付き Python から始めます。
 
 ```python
 # src/myapp/math_ops.py
@@ -41,307 +70,52 @@ def sum_squares(xs: list[int]) -> int:
     return total
 
 def format_result(value: int) -> str:
-    return f"score={value}"  # direct Rust subset の外
+    return f"score={value}"  # Python fallback に残る
 ```
 
-インストールして分析/ビルドします（ソースチェックアウトでは
-`python -m pip install -e .` を代わりに使用）:
-
-```text
-python -m pip install rextio
+```bash
 rextio check .
 rextio build . --fallback=cpython
 ```
 
-Rextio は `sum_squares` を Rust にコンパイルし、`format_result` を Python
-fallback に残せます。import パスは Python のままです:
+Rextio は `sum_squares` を lower し、`format_result` をフォールバックに残せます。呼び出し側は通常の Python import を維持します。
 
 ```python
-from myapp.math_ops import sum_squares, format_result
+from myapp.math_ops import format_result, sum_squares
 
 assert sum_squares([1, 2, 3]) == 14
 assert format_result(14) == "score=14"
 ```
 
-Native は最適化であり必須ではありません。native モジュールが無い、無効、
-またはロードに失敗しても、パッケージは Python fallback で動き続けます。
-実行時に fallback を強制するには:
+ビルド済みパッケージはいつでもフォールバックに固定できます。
 
-```text
-REXTIO_NATIVE_MODE=fallback
+```bash
+REXTIO_NATIVE_MODE=fallback python -m myapp
 ```
 
-最初のプロジェクトで役立つコマンド: `rextio init`、`rextio check`、
-`rextio generate`（コンパイルせず生成ソースのみ書き出し）、`rextio build`、
-`rextio bench`、`rextio clean`。
-
-<!-- rextio-benchmark:start -->
-## 検証済み CPU ベンチマーク結果
-
-**Mac16,11 / Apple M4 Pro**、**2026-07-26**、CPython **3.11.9** での 3 回の実行における中央値です。
-
-| ワークロード | 3 回実行の高速化率中央値 |
-| --- | ---: |
-| Core hybrid | 57.729× |
-| NumPy mixed fusion | 2.523× |
-| NetworkX Dijkstra | 3.679× |
-| pandas Series.map | 66.143× |
-| PyTorch CPU deep MLP | 1.017× |
-| TensorFlow CPU eager chain | 1.040× |
-
-各数値は個別のワークロードの結果です。1× 付近は実質的な高速化ではなく同等性能（parity）を示し、CUDA は測定していません。
-
-**方法論の全文、正確なリビジョンの来歴、未加工の証拠データ、診断、詳細結果については、[rextio-benchmark](https://github.com/rextio/rextio-benchmark) リポジトリを参照してください。**
-<!-- rextio-benchmark:end -->
+主なコマンドは `rextio init`、`rextio capabilities`、`rextio check`、`rextio generate`、`rextio build`、`rextio bench`、`rextio clean` です。
 
 ## 要件
 
-| コンポーネント | バージョン | 備考 |
-| --- | --- | --- |
-| CPython | >= 3.11（3.11-3.14 で検証） | アナライザはビルドインタプリタの `ast` を使用し、生成拡張は PyO3 0.29（CPython 3.14 まで対応）を固定します。より新しいインタプリタは動作する可能性がありますが未検証です。wheel はビルドインタプリタの minor バージョンタグを持ちます。 |
-| Rust toolchain | MSRV 1.83（最新 stable で検証） | 生成 crate は edition 2021 + PyO3 0.29 を使用します。[rustup](https://rustup.rs) でインストールしてください。 |
-| Nuitka（任意） | >= 2.0 | `--fallback=nuitka`/`--executable-backend=nuitka`/`--hybrid-runtime=nuitka` 専用です。前者 2 つはビルド preflight が事前に拒否し、hybrid runtime は委譲された fallback 呼び出しが実際に Nuitka dispatcher を必要とする時点で検査されます。 |
-| Numba（任意・experimental） | インタプリタに応じて: 3.11→>=0.57, 3.12→>=0.59, 3.13→>=0.61, 3.14→>=0.63 | Rextio は Numba デコレータを認識するだけで、パッケージ自体は Rextio ではなくユーザープロジェクトのランタイム依存です。下限は [Numba のバージョンサポート表](https://numba.readthedocs.io/en/stable/user/installing.html#version-support-information) に従います。 |
-
-ツールの場所とバージョン pin は設定可能です: `rextio.toml` の `[toolchain]`
-（または `REXTIO_*` 環境変数 / CLI フラグ）でビルドが使う cargo・maturin・
-Nuitka・CPython を選択し、バージョンを検証できます。
-[REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins) を参照。
-
-## ビルド target
-
-Rextio は同じ Python プロジェクトから複数の成果物を作れます:
-
-| 成果物 | 用途 |
+| コンポーネント | 対応境界 |
 | --- | --- |
-| `.rextio/generated/rust/` | 受理された native 関数の Rust/PyO3 生成ソース。 |
-| `.rextio/generated/python/` | 生成された Python wrapper と fallback モジュール。 |
-| `.rextio/build/python/` | import 互換の hybrid パッケージツリー。 |
-| `dist/*.whl` | fallback コードと（ビルドされた場合）native 拡張を含む wheel。 |
-| `dist/<name>.pyz` | 設定した Python entrypoint 用の zipapp 実行ファイル（任意）。 |
-| `dist/<name>.dist/` または `dist/<name>` | Nuitka standalone/onefile 実行ファイル（任意）。 |
-| `dist/<name>` | 独立した native Rust バイナリ（`--executable-backend=rust`）、Python ランタイム不要（任意）。 |
-| `dist/<crate>-rust-crate/` | Rust プロジェクトが import できる Rust ライブラリ crate（任意）。 |
+| CPython | `>=3.11`。3.11–3.14 で検証済み。生成 extension は CPython 3.14 まで対応する PyO3 0.29 に固定されます。それ以降の interpreter は未検証で、wheel はビルド interpreter の minor version 用に tag されます。 |
+| Rust | MSRV 1.83。最近の stable をテスト。生成 crate は Rust 2021 を使用します。[rustup](https://rustup.rs) でインストールしてください。 |
+| Nuitka | 任意、`>=2.0`。選択した Nuitka fallback、実行ファイル、dispatcher 経路でのみ必要です。これらは Experimental です。 |
+| Numba | 任意かつ Experimental。interpreter ごとの下限は 0.57（3.11）、0.59（3.12）、0.61（3.13）、0.63（3.14）。Numba は利用者プロジェクト側の依存関係です。 |
 
-生成された Python wrapper はまず native コードを試し、native が無効・
-利用不可・分析で拒否・設定した boundary threshold 超過のときに Python へ
-fallback します。
+ツールの場所とバージョンは `[toolchain]`、環境変数、CLI オプションで固定できます。[REXTIO.md](./REXTIO.md#toolchain-selection-and-version-pins) を参照してください。
 
-```text
-REXTIO_NATIVE_MODE=fallback
-```
+## 選択とフォールバック安全性
 
-ビルド済み native モジュールのロード失敗時に、警告して fallback する
-代わりに完全な traceback を上げるには `REXTIO_DEBUG_NATIVE=1` を設定して
-ください — ABI 不一致や wrapper/codegen 名の不一致のデバッグに有用です。
-
-Zipapp:
-
-```text
-rextio build . --entrypoint=myapp.cli:main --executable-name=myapp
-```
-
-`dist/myapp.pyz` が書き出されます。ターゲットマシンには互換の Python
-インタプリタが依然として必要です。native 拡張は zipapp 内から import
-されないため、`_rextio_native` がないとき wrapper は fallback 動作を保存
-します。
-
-Nuitka:
-
-```text
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=standalone
-rextio build . --entrypoint=myapp.cli:main --executable-backend=nuitka --nuitka-mode=onefile
-```
-
-Nuitka 実行ファイルのパッケージングは experimental で、Nuitka のインス
-トールが必要です。
-
-Native Rust バイナリ:
-
-```text
-rextio build . --entrypoint=myapp.cli:main --executable-backend=rust
-```
-
-`main` が Rust で動く native バイナリ（`dist/<name>`）をコンパイルします。
-entrypoint は受理された direct-native `def main(argv: list[str]) -> int`
-でなければなりません: `argv` は `sys.argv` を反映し（index 0 はプログラム
-パス）、返した `int` がプロセスの exit code になり、送出されたエラーは
-CPython スタイル（`OverflowError: ...`）で stderr に出力され non-zero で
-終了します。Cargo が必要です。
-
-entrypoint が Python fallback に残るプロジェクト関数（Rust subset 外の
-コード）を呼ぶ場合、Rextio はその呼び出しを外部 CPython サブプロセスへ
-委譲します: ビルドは `dist/<name>.runtime/` ディレクトリ（dispatcher +
-プロジェクトソース）を同梱し、バイナリが stdio で駆動するため、コンパイル
-しづらいロジックは Python のまま残せます。このような hybrid バイナリは
-実行時に Python インタプリタを必要とします。呼び出しグラフが完全に
-direct-native のバイナリは Python 依存のない独立型です。委譲呼び出しの
-引数と結果はどちらも不変スカラー（`int`/`float`/`bool`/`str`/`None`）で
-なければなりません。`list`/`dict`/`set` はどちらの方向にも委譲されません
-（値として wire を渡り、CPython が保存する aliasing が切れて、変更された
-引数や変更された alias 付き戻り値が静かにずれるため）。非有限 float
-（`NaN`/`Infinity`）は静かに落とされる代わりに拒否されます。委譲された
-関数自身の stdout/stderr はバイナリの stderr に現れます（バイナリの
-stdout は wire プロトコル専用）。RXT080 runtime shim 上の関数は委譲され
-ません: それに依存する entry はビルドされず拒否されます。
-
-`--executable-python` はバイナリが起動するインタプリタを固定します
-（`PATH` 上の名前、絶対パス、またはバンドル用の `<binary>.runtime` 相対
-パス）。`REXTIO_RUNTIME_PYTHON` はターゲットマシン上で実行時にこれを上書き
-します。`--hybrid-runtime=nuitka` は委譲される Python を runtime ディレク
-トリに同梱される自己完結 dispatcher 実行ファイルへコンパイルし、hybrid
-バイナリが別途の Python インストールを不要にします（ビルド時に Nuitka が
-必要）。
-
-direct Rust 関数を Rust アプリケーションから使いたい場合、追加の Cargo
-ライブラリ crate をビルドします:
-
-```text
-rextio build . --rust-importable --rust-crate-name=my_native
-```
-
-Rust から生成 crate を使う:
-
-```toml
-[dependencies]
-my_native = { path = "../dist/my_native-rust-crate" }
-```
-
-```rust
-fn main() -> Result<(), my_native::RextioError> {
-    let value = my_native::myapp__math_ops__sum_squares(vec![1, 2, 3])?;
-    assert_eq!(value, 14);
-    Ok(())
-}
-```
-
-この crate から export されるのは、直接型付き Rust へ下ろされた関数だけ
-です。fallback 専用関数、runtime semantics shim、そしてスカラー boundary
-call を使う関数（いずれもインタプリタが必要）は Python 側の経路に残り
-ます。
-
-## 設定
-
-ビルド/分析の設定は次の順で解決されます:
-
-```text
-CLI パラメータ > 環境変数 > rextio.toml > 組み込みデフォルト
-```
-
-主な設定:
-
-| `rextio.toml` キー | CLI パラメータ | 環境変数 |
-| --- | --- | --- |
-| `[build] native_backend` | `--native-backend` / `--target-language` | `REXTIO_TARGET_LANGUAGE` / `REXTIO_NATIVE_BACKEND` |
-| `[build] fallback_backend` | `--fallback` | `REXTIO_FALLBACK_BACKEND` |
-| `[build] fallback_threshold` | `--fallback-threshold` | `REXTIO_BOUNDARY_FALLBACK_THRESHOLD` |
-| `[build] build_timeout_seconds` | `--build-timeout` | `REXTIO_BUILD_TIMEOUT` |
-| `[rust] binding` | `--rust-binding` | `REXTIO_RUST_BINDING` |
-| `[rust] build_tool` | `--rust-build-tool` | `REXTIO_RUST_BUILD_TOOL` |
-| `[rust] importable` | `--rust-importable` / `--no-rust-importable` | `REXTIO_RUST_IMPORTABLE` |
-| `[rust] crate_name` | `--rust-crate-name` | `REXTIO_RUST_CRATE_NAME` |
-| `[fallback] nuitka` | `--nuitka-fallback` | `REXTIO_NUITKA_FALLBACK` |
-| `[target] version` | `--target-version` | `REXTIO_TARGET_VERSION` |
-| `[target.build_options]` | `--target-build-option KEY=VALUE` | `REXTIO_TARGET_BUILD_OPTIONS` |
-| `[plugins] enabled` | `--enable-plugin` | `REXTIO_PLUGINS_ENABLED` |
-| `[imports] default_external_policy` | `--default-external-policy` | `REXTIO_IMPORTS_DEFAULT_EXTERNAL_POLICY` |
-| `[imports.packages]` | `--package-import-policy PACKAGE=POLICY` | `REXTIO_IMPORTS_PACKAGES` |
-| `[embedding] enabled` | `--embed-helpers` / `--no-embed-helpers` | `REXTIO_EMBED_HELPERS` |
-| `[executable] entrypoint` | `--entrypoint` | `REXTIO_EXECUTABLE_ENTRYPOINT` |
-| `[executable] name` | `--executable-name` | `REXTIO_EXECUTABLE_NAME` |
-| `[executable] backend` | `--executable-backend` | `REXTIO_EXECUTABLE_BACKEND` |
-| `[executable] nuitka_mode` | `--nuitka-mode` | `REXTIO_NUITKA_MODE` |
-| `[executable] python` | `--executable-python` | `REXTIO_EXECUTABLE_PYTHON` |
-| `[executable] hybrid_runtime` | `--hybrid-runtime` | `REXTIO_HYBRID_RUNTIME` |
-| `[toolchain] cargo` | `--cargo` | `REXTIO_CARGO` |
-| `[toolchain] maturin` | `--maturin` | `REXTIO_MATURIN` |
-| `[toolchain] nuitka` | `--nuitka` | `REXTIO_NUITKA` |
-| `[toolchain] python` | `--python` | `REXTIO_PYTHON` |
-| `[toolchain] rust_toolchain` | `--rust-toolchain` | `REXTIO_RUST_TOOLCHAIN` |
-| `[toolchain] *_version` pin | `--cargo-version` など | `REXTIO_CARGO_VERSION` など |
-| `[policy] native_marker` | `--native-marker` | `REXTIO_NATIVE_MARKER` |
-| `[policy] boundary_warnings` | `--boundary-warnings` / `--no-boundary-warnings` | `REXTIO_BOUNDARY_WARNINGS` |
-| `[policy] native_top_level` | `--native-top-level` / `--no-native-top-level` | `REXTIO_NATIVE_TOP_LEVEL` |
-
-0.1.8 で実装済みの native ターゲットは Rust だけです。
-
-Rextio プラグインは `pip` や `uv` などでインストールする普通の Python
-パッケージです。プラグインパッケージは、対象とする Python パッケージ名を
-含むメタデータを `rextio.plugins` entry point グループで公開します。
-プロジェクトは `[plugins] enabled` または `--enable-plugin` で特定の
-プラグイン id を有効化します。
-
-アクティブな Rextio プラグインのない外部 Python パッケージはデフォルトで
-保守的に扱います: Rextio はサードパーティのパッケージソースを黙って Rust
-に翻訳しません。そうしたパッケージの呼び出しは、プラグインを追加するか、
-既知の純 Python パッケージについて実験的な依存分析へ明示的に opt-in
-しない限り、周囲の native 候補を fallback に残します:
-
-```toml
-[imports]
-default_external_policy = "fallback"
-
-[imports.packages]
-"some_pure_python_pkg" = { policy = "try-native", max_depth = 1 }
-"legacy_dynamic_pkg" = "fallback"
-"known_pkg" = { policy = "plugin", plugin = "known-rust" }
-```
-
-サポートされるパッケージポリシーは `fallback`、`analyze`、`try-native`、
-`plugin` です。0.1.1 からはプラグインがカバーする構文を記述し、直接
-*lowering* することもできます（plugin API 1.1 —
-[plugin lowering 仕様](docs/specs/plugin-lowering.md) を参照）。0.1.2 は
-後方互換の plugin API **1.2**（静的リテラル／順序付きキーワードメタデータ、
-構造化 `ClaimExpr` 木、leaves モード lowering）を追加します。first-party の
-[rextio-numpy](https://github.com/rextio/rextio-numpy) プラグインは別途
-インストールします（core は逆依存しません）: **PyPI 0.1.1** は公開済みの
-literal-axis／fusion 拡張で、**core >= 0.1.2** が必要です（初期認証
-float64 1-D サーフェスは 0.1.0）。関連パッケージは**厳密な公開順序**
-rextio-lsp 0.1.1 → core 0.1.2 → rextio-numpy 0.1.1 で公開されました
-（[tooling contract](docs/specs/tooling-contract.md) を参照）。Core **0.1.3**
-は 2026-07-17 に plugin API 1.3 と tooling contract **2.1.0**（core 0.1.2 が
-出した **2.0.0** 形状の additive；dual-map の `2.x` 消費者は互換）として
-公開されています。
-Core **0.1.4** は rextio-lsp 0.1.2 の後、2026-07-18 に公開され、厳密な
-consumer-first 順序で Release Train B を完了しました。plugin API 1.3 を
-維持して tooling contract **2.2.0** を出力し、従来の
-route/status/rejection の意味を変えず、分離された promotion assessment、
-信頼済み marker intent、関数／名前 range を追加します。
-Core **0.1.5** は plugin API **1.4**、tooling contract **2.24.0**、readiness
-policy **11** として 2026-07-23 に公開されました。Train C の host source-AOT、
-実行ファイル、厳格な artifact-evidence 機能は引き続き Experimental/Alpha です。
-Core **0.1.6** は plugin API **1.6**、tooling contract **2.27.0** として
-2026-07-26 に公開されました。限定的なプラグイン比較式、Device Provider
-API 1 の選択・preflight・ビルド接続、静的 device-domain lowering 認可を
-追加しますが、Core 自体は CUDA framework サポートやアクセラレータ実行の
-認証を主張しません。
-Core **0.1.7** は plugin API **1.7**、tooling contract **2.28.0** として
-2026-07-27 に公開され、任意の plugin function-scope RAII ガードを追加します。
-Core **0.1.8** は plugin API **1.7**、tooling contract **3.0.0** として
-2026-07-27 に公開され、public artifact lifecycle identity を semantic
-`artifact-*` 名に変更しました。
-一般的な依存 lowering はバンドルされません。`try-native` は明示的な計画
-ポリシーで、安全な direct lowering がなければやはり
-fallback します。
-
-## Native 選択
-
-デフォルトは自動 native 探索です:
+既定は自動検出です。
 
 ```toml
 [policy]
 native_marker = "auto"
 ```
 
-このモードでは、型を解決でき、サポートされる direct Rust subset に収まる
-モジュールレベル関数を native 候補として扱うことがあります。
-
-明示的なマーカーを要求することもできます:
-
-```toml
-[policy]
-native_marker = "decorator"
-```
+`@rextio.native` を必須にするには `native_marker = "decorator"`、Python に固定するには `@rextio.exempt` を使います。実装済みのネイティブ対象は Rust のみです。
 
 ```python
 import rextio
@@ -349,301 +123,85 @@ import rextio
 @rextio.native
 def score(x: float) -> float:
     return x * 2.0
-```
 
-将来のマルチターゲット対応のため、マーカーで対象を固定できます:
-
-```python
-@rextio.native(target="rust")
-def score(x: float) -> float:
-    return x * 2.0
-```
-
-関数を必ず Python fallback に残す場合は `@rextio.exempt` を使います:
-
-```python
 @rextio.exempt
 def keep_python(x: int) -> int:
     return x + 1
 ```
 
-exempt 関数が生成 Rust に含まれることはありません。native 候補が exempt
-または fallback 専用の関数を呼ぶ場合、その候補も fallback に落ちます。
+アプリケーション設計に影響する安全規則：
 
-## 安全モデル
+- 直接ネイティブ関数は、受理されたネイティブ関数と対応 builtin/標準ライブラリ操作だけを呼び出せます。
+- 明示的に mark した呼び出し元が immutable scalar 境界経路を満たす場合を除き、fallback-only コードの呼び出しはネイティブ呼び出し元を拒否します。コンテナは境界を越えず、ループや comprehension 内の境界呼び出しはフォールバックに残ります。
+- Python ループからネイティブ関数を呼ぶと、静的な境界診断 `RXT073` が発生します。条件を満たす直接ネイティブ関数だけが wrapper 入口と scalar 境界入口を関数ごとの実行時フォールバック閾値へ加算し、plugin 経路の関数は対象外です。
+- `auto` モードでは、ネイティブ import が利用できない場合や閾値による降格時に Python fallback を使い、アナライザーで拒否された関数も fallback に残ります。`fallback` モードはネイティブ実行を明示的に無効化します。`native` モードは昇格済みネイティブコードを必須とし、その import が利用できなければ例外を送出します。`REXTIO_DEBUG_NATIVE=1` はネイティブ読み込み警告を診断用 traceback に変えます。
+- `native-shim`/`RXT080` は動的 Python 意味論を守るため PyO3 経由で Python fallback を呼びます。互換経路であり、**Rust 高速化経路ではありません**。
+- Rust ownership が挙動を変える可変 collection alias は Python に残します。「変換できそう」という理由だけでネイティブ候補を生成しません。
 
-Rextio は native コンパイルを保守的に保ちます:
-
-- direct Rust native 関数が呼べるのは、受理された native 関数、サポート
-  される builtin、サポートされる標準ライブラリ関数だけです。
-- fallback 専用コードを呼ぶ native 関数は拒否されます — ただし呼び出し側が
-  明示的にマークされ、callee のシグネチャが端から端まで不変スカラー
-  （`int`/`float`/`bool`/`str`/`None`）なら、その呼び出しは in-process の
-  スカラー boundary call（`RXT075`）になります。callee はインタプリタで
-  実行され続けるため、値と例外は CPython-正確で monkeypatch も反映
-  されます。スカラーは値で境界を越えるため、引数の identity（`is`）は
-  保存されません（`None`/`bool` のシングルトンは保存されます）。コンテナは
-  境界を越えず、内包表記本体を含む native ループ内の boundary call は
-  呼び出し側を fallback に残します（`RXT076`）。
-- Python fallback コードは native 関数を呼べます。
-- native 関数を繰り返し呼ぶ Python ループは boundary 警告を出します。
-- 生成された wrapper は、境界横断が繰り返されるとその関数を fallback へ
-  戻すことがあります — Python→native の wrapper 進入と native スカラー
-  boundary call は同じ関数別しきい値に合算されます。
-- Python/Rust の所有権の違いは明示的に扱います。所有値の読み取り専用の
-  再利用は必要に応じて Rust の clone で下ろし、可変コレクションの alias
-  変更は Python fallback に残します。
-
-boundary fallback は次で制御します:
+実行時制御：
 
 ```text
+REXTIO_NATIVE_MODE=auto|fallback|native
 REXTIO_BOUNDARY_FALLBACK_THRESHOLD=1000
 REXTIO_DISABLE_BOUNDARY_FALLBACK=1
-REXTIO_NATIVE_MODE=auto|fallback|native
+REXTIO_DEBUG_NATIVE=1
 ```
 
-## direct Rust subset
+## 対応する直接 Rust コード形状
 
-Rextio 0.1.8 は意図的に小さな subset をサポートします。この subset が
-native Rust として実行されるコードです。
+意図的に狭い直接経路は、次の対応済み組み合わせを扱います。
 
-サポートされる型:
+- scalar `int`、`float`、`bool`、`str`、`bytes`、`None`
+- list（入れ子を含む）、固定 tuple、scalar key の固定 dict、限定的な `set[int|bool|str]`、`Optional[T]` / `T | None`
+- 型付きローカル、算術、比較、`if`、`while`、対応する `for`/`range`/`enumerate`/`zip`、comprehension、受理済みネイティブ helper
+- 限定的な builtin、`math`、文字列/bytes/list method、ログ/出力、`datetime`、`time`、`hashlib.sha256`、`base64.b64encode`
 
-- `int`、`float`、`bool`、`str`、`bytes`、`None`
-- サポートされる要素型の `list[T]`（`list[list[T]]` を含む）
-- 固定 `tuple[...]`
-- キーがサポートされるスカラーキー型である固定 `dict[K, V]`
-- 限定的な `set[int]`、`set[bool]`、`set[str]`（`set[float]` は Python
-  fallback に残ります: NaN-identity の重複排除には忠実な Rust lowering が
-  なく、native コードは set を*反復*もしません — ハッシュ順序が CPython と
-  異なります）
-- `Optional[T]`、`T | None`
+重要な除外も明示されています。`set[float]` と set iteration は CPython の NaN identity/hash 順序を保持できません。`statistics.mean/fmean`、`json.dumps/loads`、`base64.b64decode` に直接ネイティブ経路はありません。ファイル/ネットワーク/データベース/ORM 操作や動的オブジェクト挙動は、フォールバックまたは明示的に mark した互換 shim に残ります。完全なバージョン別境界は[未対応機能](docs/unsupported-features.md)と[機能安定性](docs/stability.md)を参照してください。
 
-サポートされる構文:
+## ビルド出力
 
-- ローカル代入と型注釈付きローカル
-- 算術、ブール演算、比較、`if`、`while`
-- `for x in xs`
-- サポートされるループ/内包形式の `range(...)`、`enumerate(xs)`、`zip(xs, ys)`
-- `break`、`continue`、`return`
-- 制限付きの実験的 `try`/`except`/`finally` サブセット（組み込み例外
-  ハンドラのみ。[安定性ティア](docs/stability.md) を参照）
-- サポートされる形式の list/dict/set 内包表記
-- 限定的な `list.append`、dict の読み書き、インデックス参照
-- 受理された native ヘルパー関数の呼び出し
+| 指定 | 結果と境界 |
+| --- | --- |
+| 既定ビルド | import 互換パッケージ tree、および任意のネイティブコード＋Python fallback wheel。 |
+| `--entrypoint=…` | Zipapp。対象には互換 Python が必要で、zipapp 内部からネイティブ extension は import しません。 |
+| `--executable-backend=nuitka` | Experimental standalone/onefile 実行ファイル。Nuitka が必要です。任意のサードパーティ依存関係を跨いだクロスプラットフォーム packaging は主張しません。 |
+| `--executable-backend=rust` | ネイティブ Rust entrypoint。閉じた call graph は standalone にできます。`python-subprocess` は限定された immutable scalar 呼び出しのみ委譲し CPython が必要、`nuitka-sidecar` は Nuitka が必要です。runtime shim とコンテナ越境は拒否されます。移植可能な process status には exit code `0..255` を推奨します。 |
+| `--rust-importable` | 直接 Rust 関数だけを含む Experimental Cargo path dependency crate。fallback、shim、scalar 境界関数は Python-facing のままです。 |
 
-builtin・標準ライブラリの lowering（限定形式）:
+`rextio build` と `generate` は毎回再解析・再生成します。0.1.x に incremental build cache はありません。subprocess hybrid runtime はソースを `<binary>.runtime/` にコピーするため、委譲コードの `__file__` はコピー先を指します。元ファイルからの相対パスでデータを探すコードには別の方法が必要です。
 
-- `len`、`abs`、`min`、`max`、`sum`、`all`、`any`、`sorted`、`reversed`
-- 一部の `math` 関数と定数
-- 一部の `str`、`bytes`、`list` メソッド
-- `print`、`logging.debug/info/warning/error`
-- `datetime`、`time`、`hashlib.sha256`、`base64.b64encode`
-  （`statistics.mean`/`fmean`、`json.dumps`/`json.loads`、
-  `base64.b64decode` には忠実な direct-native 等価物がありません: 明示的に
-  マークされた関数は RXT080 runtime shim に乗り、自動探索された関数は
-  Python fallback に残ります）
+## Plugin、デバイス、外部ソース
 
-未サポート・曖昧なコードは fallback に残るか、サポートされる場合は Python
-runtime semantics shim として公開されます。詳細な境界は
-[0.1.0 の未サポート機能](docs/unsupported-features.md) を参照して
-ください。
+Plugin はプロジェクト設定で明示的に有効化する別の Python distribution です。active plugin がないパッケージは既定で保守的に扱います。`try-native` は Experimental な計画ポリシーであり、一般的な依存関係変換の約束ではありません。
 
-## Rextio に適した Python の書き方
+Device Provider API 1 の選択も明示的かつ Experimental です。設定だけで CPU-only Torch/TensorFlow 経路が CUDA 対応になることはありません。混在・競合する device domain、provider 不在、未対応 GPU ordinal、誤った capability は fail closed です。Provider preflight は `support_claim: false` を報告し、Core は認証済み CUDA 実行を主張しません。
 
-native への昇格と boundary の挙動はコードの形からそのまま決まります。
-Rextio を最大限に活かすには:
+外部 pure-Python ソース inventory は、正確に 1 つの固定・検証済み depth-1 `py3-none-any` distribution に対する非ビルド preview です。package の import、語彙候補とプロジェクト call の接続、lowering、copy、redistribution、build authorization は行いません。SourceLock 証拠が欠落・無効なら block され、検証済み lock だけでも build/distribution 権限は得られません。
 
-- ホットな関数は端から端まで annotate する - 引数と戻り値の型を、サポート
-  される scalar/list 型で。型が解決できない関数は fallback に残ります。
-- ホットパスはサポート subset の中に収め、`rextio check` を早めに実行する。
-  すべての拒否には原因となった構文が明示されます。
-- ループを native の中へ移す: native 関数を呼ぶ Python ループは反復ごとに
-  境界を越えますが（boundary 警告）、内部でループする native 関数は呼び出し
-  ごとに 1 回だけ越えます。
-- native 呼び出しグラフは native のまま保つ: native-to-native 呼び出しは
-  Rust 内に留まります。fallback 専用 helper の呼び出しは呼び出し側を拒否
-  させるか、呼び出しごとに発生して降格 threshold に加算される scalar
-  boundary call になります。
-- boundary call はループや内包表記本体の外に置く（`RXT076`）。外へ
-  巻き上げるか、callee が subset に収まるなら `@rextio.native` を付ける。
-- 境界は不変スカラーで越える。コンテナは境界を越えません。
-- Python に残すべき関数は `@rextio.exempt` を付け、混在した関数は typed な
-  ホットコアが独立した関数になるよう分割する。
-- `rextio bench` で測定する: 非常に小さな関数は呼び出しオーバーヘッドに
-  負けることがあるため、native 呼び出し 1 回に十分な仕事をまとめる。
+別個の `strict-evidence` **Alpha/Experimental** profile は、macOS arm64 または Linux x86_64 上の CPython 3.11 host-extension build、SourceLock 承認依存関係 1 つ、scalar leaf call、owner-pinned offline input、2 回の隔離 build、外部 Ed25519 signature に固定されています。plugin、実行ファイル、Rust crate、embedding、native top-level 初期化、Windows、広範な package lowering、一般 redistribution は対象外です。sandbox/support lock は owner 管理プロセス内の証拠完全性を守るだけで、secure boot、悪意ある同一 UID プロセスや侵害 OS への防御、一般 hermeticity、registry 認証、cross-platform certification ではありません。
 
-## Python runtime semantics shim
+> **法的境界：**依存ソースの変換・再配布には、特に GNU/copyleft 条項のライセンスや派生著作物義務が生じる可能性があります。Rextio の inventory と SourceLock 検査は法的助言や法的承認ではありません。
 
-一部の Python 機能は型付き Rust 文へ安全に翻訳できません。明示的にマーク
-された native コードに対し、Rextio は生成された Python fallback 実装を
-代わりに呼ぶ PyO3 shim を生成することがあります。
+高度な機能に依存する前に、[host source-AOT とネイティブ実行ファイル](docs/source-aot-and-executables.md)、[Device Provider API 1](docs/specs/device-provider.md)、[tooling contract](docs/specs/tooling-contract.md) を読んでください。
 
-この互換経路は class/オブジェクトの動作、インスタンスメソッド、例外、
-コンテキストマネージャ、`async`/`await`、ジェネレータ、動的属性アクセス
-などを保存できます。`RXT080` として報告されます。
+## Numba と Nuitka
 
-この経路は動作を保存します。Rust の高速化経路として扱ってはいけません。
+認識された `@numba.*` デコレーターは、フォールバック上で **Numba の**意味論を使う明示的な選択であり、Rextio の CPython 等価ネイティブ契約ではありません。`@rextio.native` と併用しないでください。Numba が導入済みなら wheel/zipapp と source-hybrid 経路は動作可能ですが、Nuitka 実行ファイルと Nuitka hybrid dispatcher は、コンパイル済み関数が bytecode を公開せず accelerator も同梱されないため、accelerated function を早期拒否します。どの accelerator でも小さな関数は境界オーバーヘッドで遅くなる可能性があります。
 
-## Experimental scalar helper 埋め込み（embedding）
+## 例とプロジェクト情報
 
-Rextio は、マークされていないごく狭い範囲のスカラーヘルパーを内部 native
-関数として任意で埋め込めます — 他のすべてと同じく事前（ahead-of-time）に
-コンパイルされます。デフォルトはオフです。
-
-有効化すると、適格な未マークヘルパー（スカラー引数と戻り値、単一の算術
-return 式）が生成 native artifact の普通の内部関数としてコンパイルされます
-— native コードから呼べ、Python へは export されません。埋め込まれた
-ヘルパーは通常の checked 経路で下ろされるため、整数 overflow は
-OverflowError を、ゼロ除算は ZeroDivisionError を他の native 関数と同じく
-発生させます。Rust 実行ファイル backend では、埋め込まれたヘルパーは呼び
-出しごとに CPython dispatcher へ委譲される代わりにバイナリへコンパイル
-されます。
-
-```toml
-[embedding]
-enabled = true
-```
-
-同等の CLI / 環境変数:
-
-```text
-rextio build . --embed-helpers
-REXTIO_EMBED_HELPERS=true rextio build .
-```
-
-埋め込みは生成 Cargo プロジェクトに crate 依存を追加しません。埋め込みが
-無効でも、適格なヘルパー呼び出しは実行時のスカラー boundary call で動作
-します — 埋め込みは呼び出しごとのインタプリタ往復を除去する高速経路です。
-boundary call と異なり、埋め込まれたヘルパーはビルド時に native 成果物へ
-コンパイルされたコピーなので、ヘルパーの実行時差し替え（monkeypatch）は
-native 呼び出し側からは見えません。
-
-## Numba 外部アクセラレータ（experimental）
-
-Numba サポートは 0.1.0 で EXPERIMENTAL です: 認識、レポート、Nuitka
-共存の挙動は最初の non-alpha リリース前に変わる可能性があります。Rextio は
-Numba デコレータ（`numba.jit`、`numba.njit`、`numba.vectorize`、
-`numba.guvectorize`）を Python fallback コード向けの外部アクセラレータ
-（experimental）として認識します — Nuitka パッケージング backend と同じ
-「外部でサポートされるツール」パターンです。デコレートされた関数は Python
-fallback にきれいに残り（自動探索とヘルパー埋め込みから除外）、レポートで
-`external_accelerator: numba` とラベル付けされ、`rextio check` がそれらを
-一覧します。認識はモジュールの import を通じて解決されます（attribute、
-from-import、別名、呼び出し形式; `numba.cuda.jit` を含む）。`rextio check`
-のレポートラベルは直線的な import のみを扱い、Nuitka ビルド時スキャンは
-より広い（star import、任意依存ガード、関数内の遅延 import）ため、関数に
-ラベルがなくてもビルドはモジュールを正しく plain のまま保てます。
-
-契約境界が重要です: `@rextio.native` 関数は Rextio が検証した CPython-正確
-セマンティクスを持ちますが、`@numba.*` 関数は **Numba の**セマンティクスで
-実行されます（例: nopython モードの整数演算は overflow で例外ではなく
-wrap）— そのトレードはユーザーの明示的な opt-in であり、`@rextio.exempt`
-と同様に Rextio の native 契約の外です。`@rextio.native` と numba
-デコレータの併用は明確に拒否されます。
-
-互換性: wheel と zipapp の配布は numba をプロジェクト依存として
-インストールすれば動作します。Rust 実行ファイルの source モード hybrid
-runtime も動作します（dispatcher が本物の CPython を実行）。
-`--fallback=nuitka` backend は自動で共存します: 認識された外部アクセラ
-レータを使うモジュールは plain Python のまま（`.py` が import され続ける）
-で、ツリーの残りは Nuitka でコンパイルされ、ビルドレポートに一覧されます。
-生成された wheel は Nuitka コンパイル済みモジュールを拡張としてのみ載せ —
-覆い隠された `.py` ソースは除外（死重であり、ソース露出でもある）—
-プラットフォームタグを持ちます。アクセラレータ対象モジュールは `.py` を
-保持します。Nuitka *実行ファイル*（`--executable-backend=nuitka`）と
-`--hybrid-runtime=nuitka` dispatcher はアクセラレータ対象関数を提供でき
-ません（コンパイル済み関数はバイトコードを公開せず、アクセラレータは
-バンドルされない）— 最初の呼び出しで死ぬ代わりに案内付きで早期に失敗
-します。型付きスカラーコードには `@rextio.native` を、NumPy/配列カーネル
-には Numba を推奨し、ごく小さな関数はどのアクセラレータでも呼び出し境界
-コストに負ける点に注意してください。
-
-first-party の [rextio-numpy](https://github.com/rextio/rextio-numpy)
-プラグインは、カバーされた NumPy を AOT コンパイルされた native Rust へ
-変換します。**公開済み rextio-numpy 0.1.1** は、初期 0.1.0 の認証済み
-float64 1-D サーフェスを F64/F32/I64 の rank-1/rank-2 broadcasting、
-literal-axis reduction、2–8 演算の要素ごとの fusion へ拡張します。core
-plugin API 1.2（**core >= 0.1.2**）を使用し、rank-2 `dot`/matmul は引き続き
-fallback です。dual-map **rextio-lsp 0.1.1** → **core 0.1.2** →
-**rextio-numpy 0.1.1** の必須公開順序は 2026-07-14 に完了しました。これにより NumPy コード
-には 2 つの経路（カバーされたサーフェスに対する Rextio plugin の AOT
-コンパイル、または Python fallback 内の Numba JIT）があります。両方が
-適用できる場合は明示的な `@numba.*` デコレータが優先され、analyzer は
-情報提供の RXT091 ノートを出力します。経路選択のより広いガイドは、
-プラグインのサーフェスが育つにつれて固まっていく予定です。
-
-## 例
-
-```text
+```bash
 rextio check examples/pure_math
 rextio build examples/pure_math --fallback=cpython
 rextio bench pure_math.math_ops.sum_squares --project-root examples/pure_math
-
-rextio check examples/boundary_demo
-rextio build examples/fallback_demo --entrypoint=fallback_demo.run_demo:main
 ```
 
-サンプルプロジェクト:
+[`examples/`](examples/) には直接計算、fallback と境界挙動、wheel、zipapp、Nuitka、Numba、Rust 実行ファイル/crate、embedded helper があります。Embedding は Experimental、既定で無効、AOT-only・scalar-only で、ネイティブ呼び出し元から見える monkeypatch 挙動を変えます。実行時 JIT ではありません。
 
-- `examples/pure_math`: 型付き数値 hot path の direct Rust lowering。
-- `examples/fallback_demo`: native が無効・欠如のときの fallback 動作。
-- `examples/boundary_demo`: native→fallback boundary の拒否と警告。
-- `examples/app_shell`: アプリの shell は Python のまま、スコアリングの
-  hot path だけ native になり得る構成。
-- `examples/wheel_package`: 既定の hybrid wheel を新しい環境にインストール
-  し、同じ import で使う例。
-- `examples/nuitka_fallback`: Nuitka でコンパイルされた fallback を含む
-  hybrid wheel。
-- `examples/numba_accelerator`: Rextio native と Numba-JIT の NumPy カーネル
-  の併用。
-- `examples/nuitka_numba`: Rust native + Nuitka fallback + plain Python の
-  まま残る Numba モジュールを 1 つのビルドで。
-- `examples/zipapp_app`: 単一ファイルの `.pyz` 実行ファイル。
-- `examples/nuitka_executable`: onefile の Nuitka 実行ファイル。
-- `examples/rust_executable`: 独立した native Rust バイナリ。
-- `examples/rust_crate`: Rust 呼び出し側向けの Cargo ライブラリ crate。
-- `examples/embedding_helpers`: scalar boundary call と埋め込み helper の
-  対比。
+- [セキュリティモデル](SECURITY.md)
+- [コントリビューション](CONTRIBUTING.md)
+- [バージョニング](docs/versioning.md)
+- [変更履歴](CHANGELOG.md)
+- [ライセンス](LICENSE) — MIT
 
-## 開発と検証
-
-テストスイートの実行:
-
-```text
-python -m pytest
-```
-
-実 Cargo、Nuitka、実行ファイルのテストは、対応する toolchain がなければ
-スキップされます。
-
-開発環境の詳細と品質ゲートは [CONTRIBUTING.md](CONTRIBUTING.md) を参照して
-ください。
-
-## 今後の計画
-
-約束ではなく計画であり、alpha のフィードバックで優先順位は変わり得ます:
-
-1. まず安定化: 表面を広げる前に、実利用に基づいて 0.1.0 の表面を
-   固めます。
-2. コーディングエージェントに Rextio に適した Python の書き方を教える
-   agentic coding 用 skill/plugin。
-3. 編集中のコードがサポート対象の native subset に収まるかを画面上で
-   示す VS Code 拡張。
-4. Rextio plugin - 特定のパッケージを使う Python コードを Rust と
-   fallback コードへ変換する規則を定義するプラグインです。NumPy を
-   皮切りに、よく使われる数値計算・AI パッケージを対象とした自前の
-   プラグインを開発する計画で、plugin の表面が安定すれば誰でも Rextio
-   plugin を作って公開できるようになります。
-5. 長期的には Rust 以外の native target backend を増やす可能性が
-   ありますが、具体的な計画はまだありません。
-
-## プロジェクト情報
-
-- [機能の安定性](docs/stability.md) — 0.1.0 で何が stable で何が experimental か。
-- [バージョニングポリシー](docs/versioning.md) — pre-1.0 の注意点付き SemVer。
-- [未サポート機能](docs/unsupported-features.md) — 0.1.0 subset の境界。
-- [セキュリティモデル](SECURITY.md) — 信頼境界と脆弱性の報告方法。
-- [コントリビュート](CONTRIBUTING.md) — セットアップ、ゲート、慣例。
-- [変更履歴](CHANGELOG.md)。
-- 開発者: 宋始永（ソン・シヨン） <rextio.co@gmail.com> — X (Twitter): [@RextioDev](https://x.com/RextioDev)。
+作者: Steve Si-young Song · [@RextioDev](https://x.com/RextioDev)
