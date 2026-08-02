@@ -1,10 +1,6 @@
 # Rextio
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/rextio/rextio/main/assets/readme/rextio-icon.png" width="112" alt="Rextio 아이콘">
-</p>
-
-<p align="center">
   <strong>조건을 충족하는 타입 명시 Python 함수를 미리 Rust/PyO3로 컴파일합니다.<br>나머지는 모두 안전한 Python 폴백으로 유지합니다.</strong>
 </p>
 

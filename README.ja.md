@@ -1,7 +1,5 @@
 # Rextio
 
-<p align="center"><img src="https://raw.githubusercontent.com/rextio/rextio/main/assets/readme/rextio-icon.png" width="112" alt="Rextio アイコン"></p>
-
 <p align="center"><strong>対象となる型付き Python 関数を Rust/PyO3 へ事前コンパイル。<br>それ以外は安全な Python フォールバックで動かし続けます。</strong></p>
 
 <p align="center">
