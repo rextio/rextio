@@ -1,6 +1,10 @@
 # Rextio
 
 <p align="center">
+  <img src="./assets/readme/rextio-icon.png" width="112" alt="Rextio icon">
+</p>
+
+<p align="center">
   <strong>Compile eligible typed Python functions to Rust/PyO3 ahead of time.<br>Keep everything else on a safe Python fallback.</strong>
 </p>
 

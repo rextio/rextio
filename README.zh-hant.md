@@ -1,5 +1,7 @@
 # Rextio
 
+<p align="center"><img src="./assets/readme/rextio-icon.png" width="112" alt="Rextio 圖示"></p>
+
 <p align="center"><strong>將符合條件的帶型別 Python 函式預先編譯為 Rust/PyO3。<br>其餘程式碼繼續使用安全的 Python fallback。</strong></p>
 
 <p align="center">

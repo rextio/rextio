@@ -1,6 +1,10 @@
 # Rextio
 
 <p align="center">
+  <img src="./assets/readme/rextio-icon.png" width="112" alt="Rextio 图标">
+</p>
+
+<p align="center">
   <strong>将符合条件的带类型 Python 函数预先编译为 Rust/PyO3。<br>其余代码继续使用安全的 Python 回退路径。</strong>
 </p>
 
